@@ -1,0 +1,13 @@
+package com.lifeguards.liveguard.contracts.enums;
+
+public enum ErrorCode {
+	VALIDATION_FAILED,
+	UNAUTHENTICATED,
+	FORBIDDEN,
+	KICKED,
+	NOT_FOUND,
+	STALE_VERSION,
+	IDEMPOTENCY_CONFLICT,
+	REVIEW_NOT_APPROVED,
+	TEMPORARY_UNAVAILABLE
+}
