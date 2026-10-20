@@ -20,10 +20,40 @@ Spring Boot 4.1에 맞는 `springdoc-openapi-starter-webmvc-ui` 3.1.1을 사용�
 - Swagger UI: http://localhost:8080/swagger-ui/index.html (`/swagger-ui.html`에서도 이동 가능)
 - OpenAPI JSON: http://localhost:8080/v3/api-docs
 
-아직 업무 API 컨트롤러가 없어 문서에 표시되는 업무 API는 없습니다.
-컨트롤러가 추가되면 자동으로 문서화됩니다.
+`Business MCP Backend` 태그에서 Agent용 내부 REST 계약을 확인할 수 있습니다.
 외부에 배포할 때 API 문서를 공개하지 않으려면
 `SPRINGDOC_API_DOCS_ENABLED=false`, `SPRINGDOC_SWAGGER_UI_ENABLED=false`를 설정합니다.
+
+## Agent Business MCP REST 계약
+
+인접한 `../liveguard-agent/app/business_mcp/tools.py` 및 `backend.py`의 실제 호출에 맞춘
+**계약 스텁**입니다. 정상 형식 요청도 HTTP `501`과
+`{error:{code:"NOT_IMPLEMENTED",message:...,retryable:false},traceId:...}`를 반환합니다.
+조회 결과를 꾸며내거나 제재·재심 조치를 실행하지 않습니다.
+`X-Trace-Id`에는 UUID를 전달하며, 생략하면 오류 응답에 새 UUID를 생성합니다.
+
+| Agent tool | Backend REST |
+| --- | --- |
+| `get_moderation_case` | `GET /internal/cases/{caseId}/context?view=moderationCase` |
+| `get_chat_context` | `GET /internal/cases/{caseId}/context?view=chatContext&before=5&after=5` |
+| `get_stream_info` | `GET /internal/cases/{caseId}/context?view=streamInfo` |
+| `get_official_links` | `GET /internal/cases/{caseId}/context?view=officialLinks` |
+| `get_security_facts` | `GET /internal/cases/{caseId}/context?view=securityFacts` |
+| `get_user_history` | `GET /internal/cases/{caseId}/history?days=30` |
+| `get_action_status` | `GET /internal/actions/{actionId}` |
+| `hide_message`, `timeout_user`, `release_message`, `kick_user` | `POST /internal/actions/{actionId}/execute` |
+| `reconcile_review` | `POST /internal/cases/{caseId}/reviews/{decisionId}/reconcile` |
+
+실행 요청 본문은 Agent의 `ActionCommand` JSON입니다. Agent 전용 `BusinessActionCommand`로
+`KICK`, 승인 `decisionId`, 서로 다른 위반 참조 `violationIds` 3개 이상을 포함한 계약을 정의하며,
+기존 업무 `ActionCommand`의 `RECONCILE_REVIEW` 계약은 변경하지 않습니다.
+재심 요청 본문은 `{caseId,decisionId}`이며 경로의 값과 같아야 합니다.
+
+기획서 v0.3과 달리 Agent는 조회를 `context?view=...`로 통합하고 `/history`를 사용합니다.
+조회 범위는 기존 Backend 정책을 유지합니다. `before/after`는 각각 0~10,
+`days`는 1~30이며 Agent에서 더 큰 값을 허용하더라도 Backend는 거부합니다.
+내부 API 인증·권한 검사도 아직 미구현이므로 `/internal/**`를 외부에 공개하지 마세요.
+실제 업무 구현 전에 서비스 토큰 검증과 권한·버전·멱등성 검증을 연결해야 합니다.
 
 ## Docker 실행
 
