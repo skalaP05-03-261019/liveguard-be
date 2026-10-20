@@ -1,90 +1,235 @@
 package com.lifeguards.liveguard.contracts;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.time.Instant;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
+import java.util.function.Consumer;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 import org.junit.jupiter.api.Test;
 
-import com.lifeguards.liveguard.contracts.dto.request.ActionCommand;
-import com.lifeguards.liveguard.contracts.dto.request.ChatContextQuery;
-import com.lifeguards.liveguard.contracts.dto.request.HistoryQuery;
-import com.lifeguards.liveguard.contracts.dto.request.MessageFinding;
-import com.lifeguards.liveguard.contracts.enums.ActionType;
+import com.lifeguards.liveguard.contracts.dto.request.AgentEventRequest;
+import com.lifeguards.liveguard.contracts.dto.request.JudgmentRequest;
+import com.lifeguards.liveguard.contracts.dto.request.KickDecisionRequest;
+import com.lifeguards.liveguard.contracts.dto.request.LoginRequest;
+import com.lifeguards.liveguard.contracts.dto.request.ReleaseRequest;
+import com.lifeguards.liveguard.contracts.dto.request.SendMessageRequest;
+import com.lifeguards.liveguard.contracts.dto.response.ApiResponse;
+import com.lifeguards.liveguard.contracts.dto.response.ContextData;
+import com.lifeguards.liveguard.contracts.dto.response.ErrorResponse;
+import com.lifeguards.liveguard.contracts.dto.response.JudgmentResult;
+import com.lifeguards.liveguard.contracts.dto.response.MaskedMessage;
+import com.lifeguards.liveguard.contracts.dto.response.MessagePage;
+import com.lifeguards.liveguard.contracts.dto.response.UserHistory;
+import com.lifeguards.liveguard.contracts.enums.AgentEventType;
+import com.lifeguards.liveguard.contracts.enums.AuthorRole;
+import com.lifeguards.liveguard.contracts.enums.CaseStatus;
+import com.lifeguards.liveguard.contracts.enums.Category;
+import com.lifeguards.liveguard.contracts.enums.ErrorCode;
+import com.lifeguards.liveguard.contracts.enums.FilterResult;
+import com.lifeguards.liveguard.contracts.enums.KickDecision;
+import com.lifeguards.liveguard.contracts.enums.KickReviewStatus;
+import com.lifeguards.liveguard.contracts.enums.Role;
 import com.lifeguards.liveguard.contracts.enums.Verdict;
+import com.lifeguards.liveguard.contracts.enums.Visibility;
+import com.lifeguards.liveguard.contracts.exception.InvalidContractException;
 
 class ModerationContractsTest {
 
+	private static final String EMOJI = "😀";
+
 	@Test
-	void timeoutCommandRequiresPositiveServerCalculatedDuration() {
-		assertThrows(IllegalArgumentException.class, () -> actionCommand(ActionType.TIMEOUT, null, null, null));
-		assertThrows(IllegalArgumentException.class, () -> actionCommand(ActionType.TIMEOUT, 0, null, null));
-		assertThrows(IllegalArgumentException.class,
-				() -> actionCommand(ActionType.TIMEOUT, 604_801, null, null));
-
-		ActionCommand command = actionCommand(ActionType.TIMEOUT, 600, null, null);
-
-		assertEquals(600, command.durationSeconds());
+	void enumValuesMatchOpenApiContract() {
+		assertValues(Role.class, "VIEWER", "MODERATOR", "PLATFORM_ADMIN");
+		assertValues(Visibility.class, "PUBLIC", "HELD", "HIDDEN");
+		assertValues(FilterResult.class, "PASS", "REVIEW", "HOLD", "FLOOD");
+		assertValues(CaseStatus.class, "ANALYZING", "NO_ACTION", "HIDDEN", "NEEDS_REVIEW",
+				"KICK_REVIEW_PENDING", "CLOSED", "FAILED");
+		assertValues(Verdict.class, "VIOLATION", "NO_VIOLATION", "NEEDS_REVIEW");
+		assertValues(Category.class, "PROFANITY", "HARASSMENT", "FLOOD", "PHISHING");
+		assertValues(KickReviewStatus.class, "PENDING", "APPROVED", "REJECTED", "EXECUTED", "FAILED");
+		assertValues(ErrorCode.class, "VALIDATION_FAILED", "UNAUTHENTICATED", "FORBIDDEN", "KICKED",
+				"NOT_FOUND", "STALE_VERSION", "IDEMPOTENCY_CONFLICT", "REVIEW_NOT_APPROVED",
+				"TEMPORARY_UNAVAILABLE");
+		assertValues(KickDecision.class, "APPROVE", "REJECT");
+		assertValues(AuthorRole.class, "VIEWER", "STREAMER", "OFFICIAL_STAFF", "MODERATOR");
+		assertValues(AgentEventType.class, "TOOL_START", "TOOL_END", "TASK_FAILED");
 	}
 
 	@Test
-	void reconcileCommandRequiresReviewDecisionAndOriginalAction() {
+	void violationJudgmentRequiresCategoryEvidenceAndPolicies() {
+		UUID evidence = UUID.randomUUID();
+
+		assertThrows(InvalidContractException.class, () -> judgment(
+				Verdict.VIOLATION, null, List.of(evidence), List.of("CP-2.1"), null));
+		assertThrows(InvalidContractException.class, () -> judgment(
+				Verdict.VIOLATION, Category.HARASSMENT, List.of(), List.of("CP-2.1"), null));
+		assertThrows(InvalidContractException.class, () -> judgment(
+				Verdict.VIOLATION, Category.HARASSMENT, List.of(evidence), List.of(), null));
+
+		JudgmentRequest request = judgment(
+				Verdict.VIOLATION, Category.HARASSMENT, List.of(evidence), List.of("CP-2.1"), null);
+
+		assertEquals(Category.HARASSMENT, request.category());
+	}
+
+	@Test
+	void needsReviewJudgmentRequiresMissingFacts() {
+		assertThrows(InvalidContractException.class, () -> judgment(
+				Verdict.NEEDS_REVIEW, null, List.of(), List.of(), null));
+		assertThrows(InvalidContractException.class, () -> judgment(
+				Verdict.NEEDS_REVIEW, null, List.of(), List.of(), List.of()));
+
+		JudgmentRequest request = judgment(
+				Verdict.NEEDS_REVIEW, null, List.of(), List.of(), List.of("공식 링크 여부 미확인"));
+
+		assertEquals(List.of("공식 링크 여부 미확인"), request.missingFacts());
+	}
+
+	@Test
+	void noViolationJudgmentNeedsNoExtraFields() {
+		JudgmentRequest request = judgment(Verdict.NO_VIOLATION, null, List.of(), List.of(), null);
+
+		assertNull(request.category());
+		assertEquals(List.of(), request.policySnapshots());
+		assertEquals(List.of(), request.missingFacts());
+		assertDoesNotThrow(() -> judgment(
+				Verdict.NO_VIOLATION, Category.FLOOD, List.of(), List.of(), null));
+	}
+
+	@Test
+	void judgmentRequiresVerdictAndNonBlankReason() {
+		assertThrows(NullPointerException.class, () -> judgment(null, null, List.of(), List.of(), null));
+		assertThrows(InvalidContractException.class, () -> new JudgmentRequest(
+				1, Verdict.NO_VIOLATION, null, List.of(), List.of(), null, "  ", null, "trace"));
+		assertThrows(NullPointerException.class, () -> new JudgmentRequest(
+				1, Verdict.NO_VIOLATION, null, List.of(), List.of(), null, "reason", null, null));
+	}
+
+	@Test
+	void chatTextMustHaveOneToFiveHundredCharacters() {
+		assertTextBounds(text -> new SendMessageRequest(UUID.randomUUID(), text));
+	}
+
+	@Test
+	void releaseReasonMustHaveOneToFiveHundredCharacters() {
+		assertTextBounds(reason -> new ReleaseRequest(1, reason));
+	}
+
+	@Test
+	void kickDecisionReasonMustHaveOneToFiveHundredCharacters() {
+		assertTextBounds(reason -> new KickDecisionRequest(
+				KickDecision.APPROVE, reason, 1, UUID.randomUUID()));
+	}
+
+	@Test
+	void requestsRequireTheirIdentifiers() {
+		assertThrows(NullPointerException.class, () -> new SendMessageRequest(null, "안녕"));
 		assertThrows(NullPointerException.class,
-				() -> actionCommand(ActionType.RECONCILE_REVIEW, null, null, null));
-
-		ActionCommand command = actionCommand(
-				ActionType.RECONCILE_REVIEW, null, UUID.randomUUID(), UUID.randomUUID());
-
-		assertEquals(ActionType.RECONCILE_REVIEW, command.type());
+				() -> new KickDecisionRequest(null, "근거", 1, UUID.randomUUID()));
+		assertThrows(NullPointerException.class,
+				() -> new KickDecisionRequest(KickDecision.REJECT, "근거", 1, null));
 	}
 
 	@Test
-	void contextQueryAppliesContractDefaultsAndMaximum() {
-		ChatContextQuery defaults = new ChatContextQuery(UUID.randomUUID(), null, null);
-		assertEquals(10, defaults.before());
-		assertEquals(10, defaults.after());
+	void loginRequestDoesNotExposePasswordInToString() {
+		String text = new LoginRequest("viewer1", "secret-pw").toString();
 
-		assertThrows(IllegalArgumentException.class,
-				() -> new ChatContextQuery(UUID.randomUUID(), 11, 0));
+		assertTrue(text.contains("viewer1"));
+		assertFalse(text.contains("secret-pw"));
 	}
 
 	@Test
-	void historyQueryDefaultsToThirtyDaysAndRejectsLargerRange() {
-		assertEquals(30, new HistoryQuery(UUID.randomUUID(), null).days());
-		assertThrows(IllegalArgumentException.class,
-				() -> new HistoryQuery(UUID.randomUUID(), 31));
+	void agentEventPayloadAcceptsNullValuesAndIsImmutable() {
+		Map<String, Object> payload = new HashMap<>();
+		payload.put("tool", "get_chat_context");
+		payload.put("status", null);
+
+		AgentEventRequest request = new AgentEventRequest(AgentEventType.TOOL_END, payload);
+		payload.put("later", "ignored");
+
+		assertEquals(2, request.payload().size());
+		assertThrows(UnsupportedOperationException.class, () -> request.payload().put("x", "y"));
 	}
 
 	@Test
-	void normalFindingRequiresAnApplicableExceptionPolicy() {
-		assertThrows(IllegalArgumentException.class, () -> new MessageFinding(
-				UUID.randomUUID(),
-				Verdict.NO_VIOLATION,
-				java.util.List.of(),
-				java.util.List.of(),
-				java.util.List.of(),
-				"정상적인 인용",
-				java.util.List.of()));
+	void contextDataAllowsAtMostTwentyMessages() {
+		assertEquals(20, new ContextData(maskedMessages(20), false).messages().size());
+		assertThrows(InvalidContractException.class, () -> new ContextData(maskedMessages(21), true));
 	}
 
-	private ActionCommand actionCommand(
-			ActionType type,
-			Integer durationSeconds,
-			UUID decisionId,
-			UUID originalActionId) {
-		return new ActionCommand(
-				UUID.randomUUID(),
-				UUID.randomUUID(),
-				UUID.randomUUID(),
-				type,
-				UUID.randomUUID(),
-				1,
-				0,
-				"0.5-draft",
-				"action:" + UUID.randomUUID(),
-				durationSeconds,
-				decisionId,
-				originalActionId);
+	@Test
+	void userHistoryWindowIsTwentyFourHours() {
+		assertEquals(24, new UserHistory(2, 24, List.of()).windowHours());
+		assertThrows(InvalidContractException.class, () -> new UserHistory(2, 12, List.of()));
+	}
+
+	@Test
+	void nullableFieldsAcceptNullButRequiredFieldsDoNot() {
+		assertNull(new JudgmentResult(CaseStatus.HIDDEN, 1, null).kickReviewId());
+		assertNull(new MessagePage(List.of(), null).nextCursor());
+		assertThrows(NullPointerException.class, () -> new JudgmentResult(null, 1, null));
+		assertThrows(NullPointerException.class, () -> new ErrorResponse.ErrorBody(
+				null, "오류", false, null, null));
+		assertThrows(NullPointerException.class, () -> new MaskedMessage(
+				null, "U1", "본문", Instant.now()));
+	}
+
+	@Test
+	void apiResponseWrapsDataWithTraceId() {
+		ApiResponse<ContextData> response = new ApiResponse<>(new ContextData(List.of(), false), "trace-1");
+
+		assertEquals("trace-1", response.traceId());
+		assertThrows(NullPointerException.class, () -> new ApiResponse<>(null, "trace-1"));
+	}
+
+	private static <E extends Enum<E>> void assertValues(Class<E> type, String... expected) {
+		Set<String> actual = Arrays.stream(type.getEnumConstants())
+				.map(Enum::name)
+				.collect(Collectors.toSet());
+
+		assertEquals(Set.of(expected), actual, type.getSimpleName());
+		assertEquals(expected.length, type.getEnumConstants().length, type.getSimpleName());
+	}
+
+	private static void assertTextBounds(Consumer<String> factory) {
+		assertThrows(InvalidContractException.class, () -> factory.accept(null));
+		assertThrows(InvalidContractException.class, () -> factory.accept(""));
+		assertThrows(InvalidContractException.class, () -> factory.accept("   "));
+		assertThrows(InvalidContractException.class, () -> factory.accept(" \n\t "));
+		assertDoesNotThrow(() -> factory.accept("a"));
+		assertDoesNotThrow(() -> factory.accept("a".repeat(500)));
+		assertThrows(InvalidContractException.class, () -> factory.accept("a".repeat(501)));
+		// maxLength는 UTF-16 단위가 아니라 코드포인트 수로 센다
+		assertDoesNotThrow(() -> factory.accept(EMOJI.repeat(500)));
+		assertThrows(InvalidContractException.class, () -> factory.accept(EMOJI.repeat(501)));
+	}
+
+	private static JudgmentRequest judgment(
+			Verdict verdict,
+			Category category,
+			List<UUID> evidenceMessageIds,
+			List<String> policyIds,
+			List<String> missingFacts) {
+		return new JudgmentRequest(
+				1, verdict, category, evidenceMessageIds, policyIds, null, "근거 설명", missingFacts, "trace-1");
+	}
+
+	private static List<MaskedMessage> maskedMessages(int count) {
+		return IntStream.range(0, count)
+				.mapToObj(i -> new MaskedMessage(UUID.randomUUID(), "U" + i, "메시지 " + i, Instant.now()))
+				.toList();
 	}
 }
