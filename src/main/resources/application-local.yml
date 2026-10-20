@@ -1,0 +1,9 @@
+spring:
+  config:
+    import: optional:file:./.env[.properties]
+  datasource:
+    url: jdbc:postgresql://localhost:${POSTGRES_PORT:5433}/${POSTGRES_DB:liveguard}
+    username: ${POSTGRES_USER:liveguard}
+    password: ${POSTGRES_PASSWORD}
+  flyway:
+    locations: classpath:db/migration,classpath:db/seed

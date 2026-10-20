@@ -68,7 +68,7 @@ class ModerationContractsTest {
 		assertValues(KickReviewStatus.class, "PENDING", "APPROVED", "REJECTED", "EXECUTED", "FAILED");
 		assertValues(ErrorCode.class, "VALIDATION_FAILED", "UNAUTHENTICATED", "FORBIDDEN", "KICKED",
 				"NOT_FOUND", "STALE_VERSION", "IDEMPOTENCY_CONFLICT", "REVIEW_NOT_APPROVED",
-				"TEMPORARY_UNAVAILABLE");
+				"TEMPORARY_UNAVAILABLE", "INTERNAL_ERROR");
 		assertValues(KickDecision.class, "APPROVE", "REJECT");
 		assertValues(AuthorRole.class, "VIEWER", "STREAMER", "OFFICIAL_STAFF", "MODERATOR");
 		assertValues(AgentEventType.class, "TOOL_START", "TOOL_END", "TASK_FAILED");
