@@ -222,6 +222,29 @@ class CandidateLinkingTest {
 	}
 
 	@Test
+	void certainProfanityOpensAHoldCaseWithTheProfanityTagAndNoRelatedMessages() throws Exception {
+		MockHttpSession viewer = login(mockMvc, "viewer");
+		UUID holdCase = UUID.randomUUID();
+		recording.behavior = request -> holdCase;
+
+		for (int i = 0; i < 3; i++) {
+			send("씨발", viewer).andExpect(status().isCreated());
+		}
+
+		// 같은 욕설 3회는 FLOOD가 아니라 HOLD 3건: 사건을 묶을지는 B2 open()이 정한다
+		assertEquals(3, recording.requests.size());
+		for (CandidateRequest request : recording.requests) {
+			assertEquals(FilterResult.HOLD, request.filterResult());
+			assertEquals(List.of(), request.relatedMessageIds());
+		}
+		assertEquals(List.of(MessageFilter.CERTAIN_PROFANITY), recording.requests.get(0).matchingTags());
+		assertEquals(List.of(MessageFilter.CERTAIN_PROFANITY, MessageFilter.REPEATED_TEXT),
+				recording.requests.get(2).matchingTags());
+		assertEquals(List.of(holdCase, holdCase, holdCase), jdbc.queryForList(
+				"SELECT case_id FROM platform.messages ORDER BY sent_at, id", UUID.class));
+	}
+
+	@Test
 	void relatedMessagesAreEmptyForHoldEvenWhenRepeated() throws Exception {
 		MockHttpSession viewer = login(mockMvc, "viewer");
 		for (int i = 0; i < 3; i++) {

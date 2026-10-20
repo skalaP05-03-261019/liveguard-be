@@ -12,9 +12,10 @@ import com.lifeguards.liveguard.contracts.enums.FilterResult;
 /**
  * 1차 필터 (docs/live-guard/v0.3/policies/classification-and-actions.md 3절).
  * <ul>
- * <li>HOLD: 공식 자칭 + 로그인·인증 요구 + 비공식 URL이 모두 있을 때</li>
+ * <li>HOLD: 피싱(공식 자칭 + 로그인·인증 요구 + 비공식 URL이 모두 있음) 또는 확실한 욕설.
+ * 둘은 matchingTags(UNOFFICIAL_URL 등 / CERTAIN_PROFANITY)로 구분한다</li>
  * <li>FLOOD: 같은 사용자·채널에서 10초 안에 같은 정규화 문장 3회 이상 (세 번째부터)</li>
- * <li>REVIEW: 공격·비하 사전 매칭</li>
+ * <li>REVIEW: 공격·비하 사전 매칭 (애매한 표현)</li>
  * </ul>
  * URL 하나만, 전화·계좌 패턴만으로는 HOLD가 아니다. 입력만으로 결정하는 순수 함수다.
  */
@@ -24,6 +25,7 @@ public class MessageFilter {
 	public static final int FLOOD_THRESHOLD = 3;
 
 	public static final String ATTACK_TERM = "ATTACK_TERM";
+	public static final String CERTAIN_PROFANITY = "CERTAIN_PROFANITY";
 	public static final String OFFICIAL_CLAIM = "OFFICIAL_CLAIM";
 	public static final String CREDENTIAL_REQUEST = "CREDENTIAL_REQUEST";
 	public static final String UNOFFICIAL_URL = "UNOFFICIAL_URL";
@@ -42,6 +44,7 @@ public class MessageFilter {
 	public FilterDecision classify(FilterInput input) {
 		String normalized = input.normalizedText();
 		boolean attack = containsAny(normalized, dictionary.attackTerms());
+		boolean certainProfanity = containsAny(withoutExceptions(normalized), dictionary.certainProfanityTerms());
 		boolean officialClaim = containsAny(normalized, dictionary.officialClaimTerms());
 		boolean credential = containsAny(normalized, dictionary.credentialTerms());
 		Set<String> official = input.officialHosts().stream().map(UrlHosts::normalizeHost).collect(Collectors.toSet());
@@ -51,6 +54,9 @@ public class MessageFilter {
 		List<String> tags = new ArrayList<>();
 		if (attack) {
 			tags.add(ATTACK_TERM);
+		}
+		if (certainProfanity) {
+			tags.add(CERTAIN_PROFANITY);
 		}
 		if (officialClaim) {
 			tags.add(OFFICIAL_CLAIM);
@@ -66,7 +72,7 @@ public class MessageFilter {
 		}
 
 		FilterResult result;
-		if (officialClaim && credential && unofficialUrl) {
+		if ((officialClaim && credential && unofficialUrl) || certainProfanity) {
 			result = FilterResult.HOLD;
 		} else if (repeated) {
 			result = FilterResult.FLOOD;
@@ -76,6 +82,15 @@ public class MessageFilter {
 			result = FilterResult.PASS;
 		}
 		return new FilterDecision(result, tags);
+	}
+
+	/** 욕설 글자를 포함하는 정상 단어(시발점 등)를 비교 전에 지운다. */
+	private String withoutExceptions(String normalized) {
+		String text = normalized;
+		for (String exception : dictionary.profanityExceptions()) {
+			text = text.replace(exception, " ");
+		}
+		return text;
 	}
 
 	private static boolean containsAny(String text, List<String> terms) {

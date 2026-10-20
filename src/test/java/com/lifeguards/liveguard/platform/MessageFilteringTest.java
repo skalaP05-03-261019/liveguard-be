@@ -4,6 +4,7 @@ import static com.lifeguards.liveguard.support.LoginSupport.login;
 import static com.lifeguards.liveguard.support.LoginSupport.withXsrf;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -153,6 +154,53 @@ class MessageFilteringTest {
 	}
 
 	@Test
+	void certainProfanityIsHoldHeldAndHiddenFromOtherViewers() throws Exception {
+		UUID otherViewer = UUID.randomUUID();
+		jdbc.update("INSERT INTO platform.users (id, username, password_hash, nickname, role) SELECT ?, "
+				+ "'profanity-viewer2', password_hash, '시청자2', 'VIEWER' FROM platform.users WHERE username = 'viewer'",
+				otherViewer);
+		jdbc.update("INSERT INTO platform.channel_members (channel_id, user_id, member_role) VALUES (?, ?, 'VIEWER')",
+				CHANNEL_A, otherViewer);
+		try {
+			mockMvc.perform(send(CHANNEL_A, UUID.randomUUID(), "씨발 진짜", login(mockMvc, "viewer")))
+					.andExpect(status().isCreated())
+					.andExpect(jsonPath("$.data.visibility").value("HELD"))
+					.andExpect(jsonPath("$.data.text").value("씨발 진짜"));
+
+			assertEquals("HOLD", jdbc.queryForObject("SELECT filter_result FROM platform.messages", String.class));
+			assertEquals("HELD", jdbc.queryForObject("SELECT visibility FROM platform.messages", String.class));
+			assertEquals(Visibility.HELD, recorder.events.getLast().chat().visibility());
+			assertTrue(history("moderator").contains("씨발 진짜"), "담당 운영자는 원문을 본다");
+			assertTrue(history("viewer").contains("씨발 진짜"), "작성자는 원문을 본다");
+			assertFalse(history("profanity-viewer2").contains("씨발"), "다른 시청자 이력에는 없다");
+		} finally {
+			jdbc.update("DELETE FROM platform.messages");
+			jdbc.update("DELETE FROM platform.channel_members WHERE user_id = ?", otherViewer);
+			jdbc.update("DELETE FROM platform.users WHERE id = ?", otherViewer);
+		}
+	}
+
+	@Test
+	void ambiguousAttackTermIsStillReviewAndPublic() throws Exception {
+		mockMvc.perform(send(CHANNEL_A, UUID.randomUUID(), "무대 미쳤다ㅋㅋ", login(mockMvc, "viewer")))
+				.andExpect(jsonPath("$.data.visibility").value("PUBLIC"));
+
+		assertEquals("REVIEW", jdbc.queryForObject("SELECT filter_result FROM platform.messages", String.class));
+	}
+
+	@Test
+	void repeatedCertainProfanityStaysHoldNotFlood() throws Exception {
+		MockHttpSession viewer = login(mockMvc, "viewer");
+		for (int i = 0; i < 3; i++) {
+			mockMvc.perform(send(CHANNEL_A, UUID.randomUUID(), "시발", viewer))
+					.andExpect(jsonPath("$.data.visibility").value("HELD"));
+		}
+
+		assertEquals(List.of("HOLD", "HOLD", "HOLD"), jdbc.queryForList(
+				"SELECT filter_result FROM platform.messages ORDER BY sent_at, id", String.class));
+	}
+
+	@Test
 	void officialHostsComeFromTheChannel() throws Exception {
 		String text = "[공식] 이벤트는 https://live-a.example.com/event 에서 로그인 후 참여하세요";
 		MockHttpSession viewer = login(mockMvc, "viewer");
@@ -165,6 +213,12 @@ class MessageFilteringTest {
 
 		assertEquals(List.of("PASS", "HOLD"),
 				jdbc.queryForList("SELECT filter_result FROM platform.messages ORDER BY sent_at", String.class));
+	}
+
+	private String history(String username) throws Exception {
+		return mockMvc.perform(get("/api/channels/" + CHANNEL_A + "/messages").session(login(mockMvc, username)))
+				.andExpect(status().isOk())
+				.andReturn().getResponse().getContentAsString();
 	}
 
 	private void insert(UUID author, String text, Instant sentAt) {
