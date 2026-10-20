@@ -54,6 +54,7 @@ public class ApiException extends RuntimeException {
 			case NOT_FOUND -> HttpStatus.NOT_FOUND;
 			case STALE_VERSION, IDEMPOTENCY_CONFLICT -> HttpStatus.CONFLICT;
 			case REVIEW_NOT_APPROVED -> HttpStatus.UNPROCESSABLE_CONTENT;
+			case NOT_IMPLEMENTED -> HttpStatus.NOT_IMPLEMENTED;
 			case TEMPORARY_UNAVAILABLE -> HttpStatus.SERVICE_UNAVAILABLE;
 			case INTERNAL_ERROR -> HttpStatus.INTERNAL_SERVER_ERROR;
 		};

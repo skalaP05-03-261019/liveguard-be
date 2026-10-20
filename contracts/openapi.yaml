@@ -553,6 +553,7 @@ components:
       type: string
       description: |
         INTERNAL_ERROR: 처리되지 않은 서버 오류. HTTP 500, retryable=false. 응답에 내부 정보는 담지 않는다.
+        NOT_IMPLEMENTED: 계약 스텁이며 업무 로직을 실행하지 않는다. HTTP 501, retryable=false.
       enum:
         - VALIDATION_FAILED
         - UNAUTHENTICATED
@@ -562,6 +563,7 @@ components:
         - STALE_VERSION
         - IDEMPOTENCY_CONFLICT
         - REVIEW_NOT_APPROVED
+        - NOT_IMPLEMENTED
         - TEMPORARY_UNAVAILABLE
         - INTERNAL_ERROR
 
