@@ -34,6 +34,8 @@ DB 데이터를 비우려면 `docker compose down -v`를 실행합니다.
 | `moderator` | MODERATOR | 라이브 채널 A, B (운영자) |
 | `admin` | PLATFORM_ADMIN | 없음 |
 
+FE 연동: FE는 Vite 개발 서버 프록시(`/api` → `http://localhost:8080`)로 같은 출처에서 붙으므로 CORS는 설정하지 않습니다. 로그인 전에 `GET /api/auth/me`(401)로 `XSRF-TOKEN` 쿠키를 받고, 변경 요청에는 `X-XSRF-TOKEN` 헤더를 보냅니다.
+
 테스트(`./gradlew test`)는 Testcontainers가 `pgvector/pgvector:pg16` 컨테이너를 직접 띄우므로
 compose 없이 Docker만 실행 중이면 됩니다.
 
