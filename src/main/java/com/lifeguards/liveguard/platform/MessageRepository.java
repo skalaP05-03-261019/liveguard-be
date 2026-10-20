@@ -50,13 +50,28 @@ class MessageRepository {
 				.single();
 	}
 
-	/** {@code since} 이후(초과) 같은 사용자·채널의 같은 정규화 문장 수. */
-	int countSameText(UUID channelId, UUID authorId, String normalizedText, Instant since) {
-		return jdbc.sql("SELECT count(*) FROM platform.messages "
-				+ "WHERE channel_id = ? AND author_id = ? AND normalized_text = ? AND sent_at > ?")
+	/** {@code since} 이후(초과) 같은 사용자·채널의 같은 정규화 문장 메시지 id (오래된 순). */
+	List<UUID> sameTextMessageIds(UUID channelId, UUID authorId, String normalizedText, Instant since) {
+		return jdbc.sql("SELECT id FROM platform.messages "
+				+ "WHERE channel_id = ? AND author_id = ? AND normalized_text = ? AND sent_at > ? "
+				+ "ORDER BY sent_at, id")
 				.params(channelId, authorId, normalizedText, Timestamp.from(since))
-				.query(Integer.class)
-				.single();
+				.query(UUID.class)
+				.list();
+	}
+
+	/** case_id가 아직 비어 있는 메시지에만 사건을 연결한다 (이미 연결된 메시지는 바꾸지 않는다). */
+	void linkCase(UUID channelId, UUID authorId, List<UUID> messageIds, UUID caseId) {
+		if (messageIds.isEmpty()) {
+			return;
+		}
+		jdbc.sql("UPDATE platform.messages SET case_id = :caseId "
+				+ "WHERE id IN (:ids) AND channel_id = :channelId AND author_id = :authorId AND case_id IS NULL")
+				.param("caseId", caseId)
+				.param("ids", messageIds)
+				.param("channelId", channelId)
+				.param("authorId", authorId)
+				.update();
 	}
 
 	Set<String> officialHosts(UUID channelId) {
