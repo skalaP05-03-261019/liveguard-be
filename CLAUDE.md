@@ -33,8 +33,8 @@
 
 ```
 com.lifeguards.liveguard
-├─ common    응답 envelope, 예외, traceId, Clock 빈
-├─ contracts 공용 DTO·enum (openapi.yaml schemas, ErrorCode 포함)
+├─ common    예외 핸들러, traceId, Clock 빈
+├─ contracts 공용 DTO·enum, 응답 envelope(dto.response.ApiResponse). openapi.yaml schemas, ErrorCode 포함
 ├─ auth      Spring Security 세션 로그인, 역할·채널 권한          (B1)
 ├─ platform  channels, channel_members, messages, 채팅 API·SSE     (B1)
 ├─ filter    1차 필터, 정규화                                       (B1)

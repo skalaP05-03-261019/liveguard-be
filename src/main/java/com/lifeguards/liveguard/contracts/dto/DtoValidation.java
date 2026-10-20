@@ -1,12 +1,18 @@
 package com.lifeguards.liveguard.contracts.dto;
 
 import java.util.List;
-import java.util.Objects;
 
 import com.lifeguards.liveguard.contracts.exception.InvalidContractException;
 
 public final class DtoValidation {
 	private DtoValidation() {
+	}
+
+	public static <T> T requireNonNull(T value, String name) {
+		if (value == null) {
+			throw new InvalidContractException(name + " is required");
+		}
+		return value;
 	}
 
 	public static String requireText(String value, String name) {
@@ -26,7 +32,7 @@ public final class DtoValidation {
 	}
 
 	public static <T> List<T> immutableList(List<T> values, String name) {
-		Objects.requireNonNull(values, name);
+		requireNonNull(values, name);
 		return List.copyOf(values);
 	}
 

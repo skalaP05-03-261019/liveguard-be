@@ -1,6 +1,5 @@
 package com.lifeguards.liveguard.contracts.dto.request;
 
-import java.util.Objects;
 import java.util.UUID;
 
 import com.lifeguards.liveguard.contracts.dto.DtoValidation;
@@ -14,8 +13,8 @@ public record KickDecisionRequest(
 	private static final int MAX_REASON_LENGTH = 500;
 
 	public KickDecisionRequest {
-		Objects.requireNonNull(decision, "decision");
+		DtoValidation.requireNonNull(decision, "decision");
 		reason = DtoValidation.requireBoundedText(reason, "reason", MAX_REASON_LENGTH);
-		Objects.requireNonNull(clientRequestId, "clientRequestId");
+		DtoValidation.requireNonNull(clientRequestId, "clientRequestId");
 	}
 }

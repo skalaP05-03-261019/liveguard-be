@@ -20,6 +20,8 @@ import java.util.stream.IntStream;
 
 import org.junit.jupiter.api.Test;
 
+import com.lifeguards.liveguard.contracts.dto.event.ChatEvent;
+import com.lifeguards.liveguard.contracts.dto.event.UserKickedEvent;
 import com.lifeguards.liveguard.contracts.dto.request.AgentEventRequest;
 import com.lifeguards.liveguard.contracts.dto.request.JudgmentRequest;
 import com.lifeguards.liveguard.contracts.dto.request.KickDecisionRequest;
@@ -27,10 +29,14 @@ import com.lifeguards.liveguard.contracts.dto.request.LoginRequest;
 import com.lifeguards.liveguard.contracts.dto.request.ReleaseRequest;
 import com.lifeguards.liveguard.contracts.dto.request.SendMessageRequest;
 import com.lifeguards.liveguard.contracts.dto.response.ApiResponse;
+import com.lifeguards.liveguard.contracts.dto.response.CaseSummary;
 import com.lifeguards.liveguard.contracts.dto.response.ContextData;
 import com.lifeguards.liveguard.contracts.dto.response.ErrorResponse;
 import com.lifeguards.liveguard.contracts.dto.response.JudgmentResult;
+import com.lifeguards.liveguard.contracts.dto.response.KickResult;
 import com.lifeguards.liveguard.contracts.dto.response.MaskedMessage;
+import com.lifeguards.liveguard.contracts.dto.response.Me;
+import com.lifeguards.liveguard.contracts.dto.response.Message;
 import com.lifeguards.liveguard.contracts.dto.response.MessagePage;
 import com.lifeguards.liveguard.contracts.dto.response.UserHistory;
 import com.lifeguards.liveguard.contracts.enums.AgentEventType;
@@ -111,10 +117,10 @@ class ModerationContractsTest {
 
 	@Test
 	void judgmentRequiresVerdictAndNonBlankReason() {
-		assertThrows(NullPointerException.class, () -> judgment(null, null, List.of(), List.of(), null));
+		assertThrows(InvalidContractException.class, () -> judgment(null, null, List.of(), List.of(), null));
 		assertThrows(InvalidContractException.class, () -> new JudgmentRequest(
 				1, Verdict.NO_VIOLATION, null, List.of(), List.of(), null, "  ", null, "trace"));
-		assertThrows(NullPointerException.class, () -> new JudgmentRequest(
+		assertThrows(InvalidContractException.class, () -> new JudgmentRequest(
 				1, Verdict.NO_VIOLATION, null, List.of(), List.of(), null, "reason", null, null));
 	}
 
@@ -136,11 +142,41 @@ class ModerationContractsTest {
 
 	@Test
 	void requestsRequireTheirIdentifiers() {
-		assertThrows(NullPointerException.class, () -> new SendMessageRequest(null, "안녕"));
-		assertThrows(NullPointerException.class,
+		assertThrows(InvalidContractException.class, () -> new SendMessageRequest(null, "안녕"));
+		assertThrows(InvalidContractException.class,
 				() -> new KickDecisionRequest(null, "근거", 1, UUID.randomUUID()));
-		assertThrows(NullPointerException.class,
+		assertThrows(InvalidContractException.class,
 				() -> new KickDecisionRequest(KickDecision.REJECT, "근거", 1, null));
+	}
+
+	@Test
+	void requiredFieldsRejectNullWithInvalidContractException() {
+		UUID id = UUID.randomUUID();
+		Instant now = Instant.now();
+
+		assertThrows(InvalidContractException.class, () -> new LoginRequest(null, "pw"));
+		assertThrows(InvalidContractException.class, () -> new LoginRequest("viewer1", null));
+		assertThrows(InvalidContractException.class,
+				() -> new AgentEventRequest(null, Map.of()));
+		assertThrows(InvalidContractException.class,
+				() -> new AgentEventRequest(AgentEventType.TOOL_END, null));
+		assertThrows(InvalidContractException.class, () -> new JudgmentRequest(
+				1, Verdict.NO_VIOLATION, null, null, List.of(), null, "근거", null, "trace-1"));
+		assertThrows(InvalidContractException.class, () -> new JudgmentRequest(
+				1, Verdict.NO_VIOLATION, null, List.of(), null, null, "근거", null, "trace-1"));
+		assertThrows(InvalidContractException.class, () -> new Me(null, "닉네임", Role.VIEWER, List.of()));
+		assertThrows(InvalidContractException.class, () -> new Me(id, "닉네임", Role.VIEWER, null));
+		assertThrows(InvalidContractException.class,
+				() -> new Message(id, id, "U1", "본문", null, 1, now, false));
+		assertThrows(InvalidContractException.class,
+				() -> new CaseSummary(id, id, "U1", FilterResult.PASS, null, null, null, 1, now));
+		assertThrows(InvalidContractException.class,
+				() -> new ChatEvent(id, "U1", "본문", Visibility.PUBLIC, 1, null));
+		assertThrows(InvalidContractException.class, () -> new UserKickedEvent(null));
+		assertThrows(InvalidContractException.class,
+				() -> new KickResult(id, KickReviewStatus.EXECUTED, now, null, false));
+		assertThrows(InvalidContractException.class, () -> new MessagePage(null, null));
+		assertThrows(InvalidContractException.class, () -> new ContextData(null, false));
 	}
 
 	@Test
@@ -180,10 +216,10 @@ class ModerationContractsTest {
 	void nullableFieldsAcceptNullButRequiredFieldsDoNot() {
 		assertNull(new JudgmentResult(CaseStatus.HIDDEN, 1, null).kickReviewId());
 		assertNull(new MessagePage(List.of(), null).nextCursor());
-		assertThrows(NullPointerException.class, () -> new JudgmentResult(null, 1, null));
-		assertThrows(NullPointerException.class, () -> new ErrorResponse.ErrorBody(
+		assertThrows(InvalidContractException.class, () -> new JudgmentResult(null, 1, null));
+		assertThrows(InvalidContractException.class, () -> new ErrorResponse.ErrorBody(
 				null, "오류", false, null, null));
-		assertThrows(NullPointerException.class, () -> new MaskedMessage(
+		assertThrows(InvalidContractException.class, () -> new MaskedMessage(
 				null, "U1", "본문", Instant.now()));
 	}
 
@@ -192,7 +228,7 @@ class ModerationContractsTest {
 		ApiResponse<ContextData> response = new ApiResponse<>(new ContextData(List.of(), false), "trace-1");
 
 		assertEquals("trace-1", response.traceId());
-		assertThrows(NullPointerException.class, () -> new ApiResponse<>(null, "trace-1"));
+		assertThrows(InvalidContractException.class, () -> new ApiResponse<>(null, "trace-1"));
 	}
 
 	private static <E extends Enum<E>> void assertValues(Class<E> type, String... expected) {

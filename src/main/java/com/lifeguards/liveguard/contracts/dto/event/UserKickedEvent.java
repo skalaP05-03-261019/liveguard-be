@@ -1,10 +1,11 @@
 package com.lifeguards.liveguard.contracts.dto.event;
 
 import java.time.Instant;
-import java.util.Objects;
+
+import com.lifeguards.liveguard.contracts.dto.DtoValidation;
 
 public record UserKickedEvent(Instant until) {
 	public UserKickedEvent {
-		Objects.requireNonNull(until, "until");
+		DtoValidation.requireNonNull(until, "until");
 	}
 }

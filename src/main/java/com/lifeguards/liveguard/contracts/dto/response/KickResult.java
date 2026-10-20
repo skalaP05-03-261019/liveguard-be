@@ -1,9 +1,9 @@
 package com.lifeguards.liveguard.contracts.dto.response;
 
 import java.time.Instant;
-import java.util.Objects;
 import java.util.UUID;
 
+import com.lifeguards.liveguard.contracts.dto.DtoValidation;
 import com.lifeguards.liveguard.contracts.enums.KickReviewStatus;
 
 public record KickResult(
@@ -13,9 +13,9 @@ public record KickResult(
 		Instant expiresAt,
 		boolean replayed) {
 	public KickResult {
-		Objects.requireNonNull(reviewId, "reviewId");
-		Objects.requireNonNull(status, "status");
-		Objects.requireNonNull(startsAt, "startsAt");
-		Objects.requireNonNull(expiresAt, "expiresAt");
+		DtoValidation.requireNonNull(reviewId, "reviewId");
+		DtoValidation.requireNonNull(status, "status");
+		DtoValidation.requireNonNull(startsAt, "startsAt");
+		DtoValidation.requireNonNull(expiresAt, "expiresAt");
 	}
 }

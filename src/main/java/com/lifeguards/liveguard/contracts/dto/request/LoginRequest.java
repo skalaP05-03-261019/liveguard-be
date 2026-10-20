@@ -1,11 +1,11 @@
 package com.lifeguards.liveguard.contracts.dto.request;
 
-import java.util.Objects;
+import com.lifeguards.liveguard.contracts.dto.DtoValidation;
 
 public record LoginRequest(String username, String password) {
 	public LoginRequest {
-		Objects.requireNonNull(username, "username");
-		Objects.requireNonNull(password, "password");
+		DtoValidation.requireNonNull(username, "username");
+		DtoValidation.requireNonNull(password, "password");
 	}
 
 	@Override

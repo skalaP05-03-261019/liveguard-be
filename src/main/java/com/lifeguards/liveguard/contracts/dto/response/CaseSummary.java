@@ -1,9 +1,9 @@
 package com.lifeguards.liveguard.contracts.dto.response;
 
 import java.time.Instant;
-import java.util.Objects;
 import java.util.UUID;
 
+import com.lifeguards.liveguard.contracts.dto.DtoValidation;
 import com.lifeguards.liveguard.contracts.enums.CaseStatus;
 import com.lifeguards.liveguard.contracts.enums.Category;
 import com.lifeguards.liveguard.contracts.enums.FilterResult;
@@ -20,11 +20,11 @@ public record CaseSummary(
 		int version,
 		Instant createdAt) {
 	public CaseSummary {
-		Objects.requireNonNull(caseId, "caseId");
-		Objects.requireNonNull(channelId, "channelId");
-		Objects.requireNonNull(userAlias, "userAlias");
-		Objects.requireNonNull(filterResult, "filterResult");
-		Objects.requireNonNull(status, "status");
-		Objects.requireNonNull(createdAt, "createdAt");
+		DtoValidation.requireNonNull(caseId, "caseId");
+		DtoValidation.requireNonNull(channelId, "channelId");
+		DtoValidation.requireNonNull(userAlias, "userAlias");
+		DtoValidation.requireNonNull(filterResult, "filterResult");
+		DtoValidation.requireNonNull(status, "status");
+		DtoValidation.requireNonNull(createdAt, "createdAt");
 	}
 }

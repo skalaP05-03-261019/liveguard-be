@@ -1,6 +1,6 @@
 package com.lifeguards.liveguard.contracts.dto.response;
 
-import java.util.Objects;
+import com.lifeguards.liveguard.contracts.dto.DtoValidation;
 
 public record PolicySnapshot(
 		String policyId,
@@ -9,10 +9,10 @@ public record PolicySnapshot(
 		String text,
 		String resourceUri) {
 	public PolicySnapshot {
-		Objects.requireNonNull(policyId, "policyId");
-		Objects.requireNonNull(version, "version");
-		Objects.requireNonNull(title, "title");
-		Objects.requireNonNull(text, "text");
-		Objects.requireNonNull(resourceUri, "resourceUri");
+		DtoValidation.requireNonNull(policyId, "policyId");
+		DtoValidation.requireNonNull(version, "version");
+		DtoValidation.requireNonNull(title, "title");
+		DtoValidation.requireNonNull(text, "text");
+		DtoValidation.requireNonNull(resourceUri, "resourceUri");
 	}
 }

@@ -2,7 +2,6 @@ package com.lifeguards.liveguard.contracts.dto.response;
 
 import java.time.Instant;
 import java.util.List;
-import java.util.Objects;
 import java.util.UUID;
 
 import com.lifeguards.liveguard.contracts.dto.DtoValidation;
@@ -21,9 +20,9 @@ public record UserHistory(int violationCount, int windowHours, List<RecentCase> 
 
 	public record RecentCase(UUID caseId, Category category, Instant judgedAt) {
 		public RecentCase {
-			Objects.requireNonNull(caseId, "caseId");
-			Objects.requireNonNull(category, "category");
-			Objects.requireNonNull(judgedAt, "judgedAt");
+			DtoValidation.requireNonNull(caseId, "caseId");
+			DtoValidation.requireNonNull(category, "category");
+			DtoValidation.requireNonNull(judgedAt, "judgedAt");
 		}
 	}
 }

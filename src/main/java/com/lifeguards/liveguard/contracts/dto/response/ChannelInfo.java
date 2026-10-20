@@ -1,7 +1,6 @@
 package com.lifeguards.liveguard.contracts.dto.response;
 
 import java.util.List;
-import java.util.Objects;
 import java.util.UUID;
 
 import com.lifeguards.liveguard.contracts.dto.DtoValidation;
@@ -16,7 +15,7 @@ public record ChannelInfo(
 	public ChannelInfo {
 		officialHosts = DtoValidation.immutableList(officialHosts, "officialHosts");
 		events = DtoValidation.immutableList(events, "events");
-		Objects.requireNonNull(authorRole, "authorRole");
+		DtoValidation.requireNonNull(authorRole, "authorRole");
 		observedLinks = DtoValidation.immutableList(observedLinks, "observedLinks");
 	}
 
@@ -25,8 +24,8 @@ public record ChannelInfo(
 
 	public record ObservedLink(UUID messageId, String host, boolean isOfficial) {
 		public ObservedLink {
-			Objects.requireNonNull(messageId, "messageId");
-			Objects.requireNonNull(host, "host");
+			DtoValidation.requireNonNull(messageId, "messageId");
+			DtoValidation.requireNonNull(host, "host");
 		}
 	}
 }

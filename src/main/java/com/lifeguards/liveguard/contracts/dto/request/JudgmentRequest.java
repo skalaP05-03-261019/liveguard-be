@@ -1,7 +1,6 @@
 package com.lifeguards.liveguard.contracts.dto.request;
 
 import java.util.List;
-import java.util.Objects;
 import java.util.UUID;
 
 import com.lifeguards.liveguard.contracts.dto.DtoValidation;
@@ -21,13 +20,13 @@ public record JudgmentRequest(
 		List<String> missingFacts,
 		String traceId) {
 	public JudgmentRequest {
-		Objects.requireNonNull(verdict, "verdict");
+		DtoValidation.requireNonNull(verdict, "verdict");
 		evidenceMessageIds = DtoValidation.immutableList(evidenceMessageIds, "evidenceMessageIds");
 		policyIds = DtoValidation.immutableList(policyIds, "policyIds");
 		policySnapshots = DtoValidation.immutableListOrEmpty(policySnapshots);
 		reason = DtoValidation.requireText(reason, "reason");
 		missingFacts = DtoValidation.immutableListOrEmpty(missingFacts);
-		Objects.requireNonNull(traceId, "traceId");
+		DtoValidation.requireNonNull(traceId, "traceId");
 		switch (verdict) {
 			case VIOLATION -> {
 				if (category == null) {

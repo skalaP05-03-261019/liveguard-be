@@ -1,7 +1,6 @@
 package com.lifeguards.liveguard.contracts.dto.response;
 
 import java.util.List;
-import java.util.Objects;
 import java.util.UUID;
 
 import com.lifeguards.liveguard.contracts.dto.DtoValidation;
@@ -15,9 +14,9 @@ public record InternalCase(
 		int version,
 		List<MaskedMessage> messages) {
 	public InternalCase {
-		Objects.requireNonNull(caseId, "caseId");
-		Objects.requireNonNull(channelId, "channelId");
-		Objects.requireNonNull(filterResult, "filterResult");
+		DtoValidation.requireNonNull(caseId, "caseId");
+		DtoValidation.requireNonNull(channelId, "channelId");
+		DtoValidation.requireNonNull(filterResult, "filterResult");
 		matchingTags = DtoValidation.immutableList(matchingTags, "matchingTags");
 		messages = DtoValidation.immutableList(messages, "messages");
 	}

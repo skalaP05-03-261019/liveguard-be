@@ -2,7 +2,6 @@ package com.lifeguards.liveguard.contracts.dto.response;
 
 import java.time.Instant;
 import java.util.List;
-import java.util.Objects;
 import java.util.UUID;
 
 import com.lifeguards.liveguard.contracts.dto.DtoValidation;
@@ -20,12 +19,12 @@ public record KickReview(
 		int version,
 		Instant createdAt) {
 	public KickReview {
-		Objects.requireNonNull(reviewId, "reviewId");
-		Objects.requireNonNull(channelId, "channelId");
-		Objects.requireNonNull(userAlias, "userAlias");
-		Objects.requireNonNull(status, "status");
-		Objects.requireNonNull(summary, "summary");
+		DtoValidation.requireNonNull(reviewId, "reviewId");
+		DtoValidation.requireNonNull(channelId, "channelId");
+		DtoValidation.requireNonNull(userAlias, "userAlias");
+		DtoValidation.requireNonNull(status, "status");
+		DtoValidation.requireNonNull(summary, "summary");
 		caseIds = DtoValidation.immutableList(caseIds, "caseIds");
-		Objects.requireNonNull(createdAt, "createdAt");
+		DtoValidation.requireNonNull(createdAt, "createdAt");
 	}
 }
