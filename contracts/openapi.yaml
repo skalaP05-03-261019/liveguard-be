@@ -551,6 +551,8 @@ components:
       enum: [PENDING, APPROVED, REJECTED, EXECUTED, FAILED]
     ErrorCode:
       type: string
+      description: |
+        INTERNAL_ERROR: 처리되지 않은 서버 오류. HTTP 500, retryable=false. 응답에 내부 정보는 담지 않는다.
       enum:
         - VALIDATION_FAILED
         - UNAUTHENTICATED
@@ -561,6 +563,7 @@ components:
         - IDEMPOTENCY_CONFLICT
         - REVIEW_NOT_APPROVED
         - TEMPORARY_UNAVAILABLE
+        - INTERNAL_ERROR
 
     ErrorResponse:
       type: object
