@@ -325,6 +325,9 @@ paths:
       tags: [Internal]
       operationId: internalGetContext
       summary: get_chat_context
+      description: |
+        사건 메시지(messages.case_id)와 앞뒤 채팅. 사건 메시지가 없으면 404. before·after가 0~10 밖이면 400.
+        서비스 토큰이 없거나 틀리면 403 (브라우저 세션으로는 호출할 수 없다).
       x-owner: B1
       security:
         - serviceToken: []
@@ -348,6 +351,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ContextResponse'
+        '400':
+          $ref: '#/components/responses/Error'
+        '403':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
 
   /internal/cases/{caseId}/user-history:
     parameters:
@@ -385,6 +394,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ChannelInfoResponse'
+        '400':
+          $ref: '#/components/responses/Error'
+        '403':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
 
   /internal/cases/{caseId}/judgment:
     parameters:
@@ -469,6 +484,12 @@ paths:
       responses:
         '202':
           description: 중계 완료
+        '400':
+          $ref: '#/components/responses/Error'
+        '403':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
 
 components:
   securitySchemes:
