@@ -24,6 +24,9 @@ import org.springframework.security.web.context.SecurityContextRepository;
 import org.springframework.security.web.csrf.CookieCsrfTokenRepository;
 import org.springframework.security.web.csrf.CsrfAuthenticationStrategy;
 import org.springframework.security.web.csrf.CsrfTokenRepository;
+import org.springframework.security.web.session.HttpSessionEventPublisher;
+
+import jakarta.servlet.DispatcherType;
 
 /**
  * 세션 쿠키 + CookieCsrfTokenRepository(XSRF-TOKEN 쿠키 → X-XSRF-TOKEN 헤더).
@@ -38,6 +41,8 @@ public class SecurityConfig {
 			throws Exception {
 		http
 				.authorizeHttpRequests(auth -> auth
+						// SSE 완료·오류 시 비동기 디스패치는 최초 요청에서 이미 인가됐다
+						.dispatcherTypeMatchers(DispatcherType.ASYNC, DispatcherType.ERROR).permitAll()
 						.requestMatchers(HttpMethod.POST, "/api/auth/login", "/api/auth/logout").permitAll()
 						.requestMatchers("/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html", "/error").permitAll()
 						// 10번에서 서비스 토큰 필터로 교체한다
@@ -77,6 +82,12 @@ public class SecurityConfig {
 		return new CompositeSessionAuthenticationStrategy(List.of(
 				new ChangeSessionIdAuthenticationStrategy(),
 				new CsrfAuthenticationStrategy(csrfTokenRepository)));
+	}
+
+	/** 로그아웃·만료로 세션이 사라지면 HttpSessionDestroyedEvent를 발행한다 (채널 SSE 종료에 사용). */
+	@Bean
+	HttpSessionEventPublisher httpSessionEventPublisher() {
+		return new HttpSessionEventPublisher();
 	}
 
 	@Bean
