@@ -10,6 +10,7 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.core.context.SecurityContextHolderStrategy;
 import org.springframework.security.web.authentication.session.SessionAuthenticationStrategy;
 import org.springframework.security.web.context.SecurityContextRepository;
+import org.springframework.security.web.csrf.CsrfToken;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -57,6 +58,12 @@ class AuthController {
 			throw new ApiException(ErrorCode.UNAUTHENTICATED, "Invalid username or password");
 		}
 		loginSessionStrategy.onAuthentication(authentication, request, response);
+		// 회전된 CSRF 토큰은 지연 생성되므로 여기서 읽어 새 XSRF-TOKEN 쿠키를 로그인 응답에 싣는다.
+		// 그러지 않으면 로그인 직후 다른 GET 없이 보낸 첫 POST가 403이 된다
+		CsrfToken csrfToken = (CsrfToken) request.getAttribute(CsrfToken.class.getName());
+		if (csrfToken != null) {
+			csrfToken.getToken();
+		}
 		SecurityContext context = contextHolder.createEmptyContext();
 		context.setAuthentication(authentication);
 		contextHolder.setContext(context);

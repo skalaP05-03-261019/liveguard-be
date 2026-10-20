@@ -9,6 +9,8 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import java.util.Arrays;
+
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -73,14 +75,24 @@ class AuthIntegrationTest {
 				.andExpect(jsonPath("$.traceId").isNotEmpty())
 				.andReturn();
 
-		Cookie rotated = login.getResponse().getCookie("XSRF-TOKEN");
-		assertNotNull(rotated, "로그인 후 CSRF 토큰을 새로 발급한다");
+		// 기존 토큰 삭제 쿠키(Max-Age=0)와 별개로, 값이 있는 새 XSRF-TOKEN이 로그인 응답에 있어야 한다
+		Cookie rotated = Arrays.stream(login.getResponse().getCookies())
+				.filter(cookie -> cookie.getName().equals("XSRF-TOKEN"))
+				.filter(cookie -> cookie.getMaxAge() != 0 && !cookie.getValue().isEmpty())
+				.reduce((first, last) -> last)
+				.orElse(null);
+		assertNotNull(rotated, "로그인 후 새 CSRF 토큰을 응답에 싣는다");
 		assertNotEquals(xsrf.getValue(), rotated.getValue());
 
 		MockHttpSession session = (MockHttpSession) login.getRequest().getSession(false);
 		mockMvc.perform(get("/api/auth/me").session(session))
 				.andExpect(status().isOk())
 				.andExpect(jsonPath("$.data.role").value("VIEWER"));
+
+		// 로그인 응답의 새 토큰만으로(추가 GET 없이) 변경 요청이 통과한다
+		mockMvc.perform(post("/api/auth/logout").session(session)
+				.cookie(rotated).header("X-XSRF-TOKEN", rotated.getValue()))
+				.andExpect(status().isNoContent());
 	}
 
 	@Test
