@@ -168,9 +168,10 @@ class AuthIntegrationTest {
 
 	@Test
 	void internalApiIsDeniedForBrowsers() throws Exception {
+		// /internal/**는 서비스 토큰 전용 체인이라 세션 유무와 관계없이 403
 		mockMvc.perform(get("/internal/cases/11111111-1111-4111-8111-111111111111/context"))
-				.andExpect(status().isUnauthorized())
-				.andExpect(jsonPath("$.error.code").value("UNAUTHENTICATED"));
+				.andExpect(status().isForbidden())
+				.andExpect(jsonPath("$.error.code").value("FORBIDDEN"));
 		mockMvc.perform(get("/internal/cases/11111111-1111-4111-8111-111111111111/context")
 				.session(loggedIn("moderator")))
 				.andExpect(status().isForbidden())

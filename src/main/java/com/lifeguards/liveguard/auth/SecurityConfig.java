@@ -45,8 +45,6 @@ public class SecurityConfig {
 						.dispatcherTypeMatchers(DispatcherType.ASYNC, DispatcherType.ERROR).permitAll()
 						.requestMatchers(HttpMethod.POST, "/api/auth/login", "/api/auth/logout").permitAll()
 						.requestMatchers("/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html", "/error").permitAll()
-						// 10번에서 서비스 토큰 필터로 교체한다
-						.requestMatchers("/internal/**").denyAll()
 						.requestMatchers("/api/**").authenticated()
 						// 그 외 경로는 막는다 (MCP 서버는 liveguard-agent에 있다)
 						.anyRequest().denyAll())
