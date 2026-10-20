@@ -48,7 +48,7 @@ public class SecurityConfig {
 						// 10번에서 서비스 토큰 필터로 교체한다
 						.requestMatchers("/internal/**").denyAll()
 						.requestMatchers("/api/**").authenticated()
-						// 그 외(Spring AI MCP 서버의 /sse, /mcp/message 포함)는 막는다
+						// 그 외 경로는 막는다 (MCP 서버는 liveguard-agent에 있다)
 						.anyRequest().denyAll())
 				.csrf(csrf -> csrf.spa().csrfTokenRepository(csrfTokenRepository))
 				.securityContext(context -> context.securityContextRepository(securityContextRepository))

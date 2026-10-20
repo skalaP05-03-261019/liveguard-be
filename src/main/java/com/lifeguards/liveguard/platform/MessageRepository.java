@@ -5,8 +5,10 @@ import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.time.OffsetDateTime;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -38,6 +40,31 @@ class MessageRepository {
 				.params(channelId, userId)
 				.query(Boolean.class)
 				.single();
+	}
+
+	/** 같은 사용자·채널의 전송을 트랜잭션 끝까지 직렬화한다 (도배 횟수를 정확히 세기 위해). */
+	void lockAuthorInChannel(UUID channelId, UUID authorId) {
+		jdbc.sql("SELECT pg_advisory_xact_lock(hashtextextended(?, 0))")
+				.param(channelId + ":" + authorId)
+				.query((rs, rowNum) -> Boolean.TRUE)
+				.single();
+	}
+
+	/** {@code since} 이후(초과) 같은 사용자·채널의 같은 정규화 문장 수. */
+	int countSameText(UUID channelId, UUID authorId, String normalizedText, Instant since) {
+		return jdbc.sql("SELECT count(*) FROM platform.messages "
+				+ "WHERE channel_id = ? AND author_id = ? AND normalized_text = ? AND sent_at > ?")
+				.params(channelId, authorId, normalizedText, Timestamp.from(since))
+				.query(Integer.class)
+				.single();
+	}
+
+	Set<String> officialHosts(UUID channelId) {
+		return new LinkedHashSet<>(jdbc.sql(
+				"SELECT jsonb_array_elements_text(official_hosts) FROM platform.channels WHERE id = ?")
+				.param(channelId)
+				.query(String.class)
+				.list());
 	}
 
 	/** 같은 (채널, 작성자, clientMessageId)가 이미 있으면 저장하지 않고 empty를 돌려준다. */

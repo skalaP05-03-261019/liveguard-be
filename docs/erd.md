@@ -73,6 +73,7 @@ erDiagram
         uuid channel_id FK
         uuid user_id FK
         text filter_result "REVIEW HOLD FLOOD"
+        jsonb matching_tags "1차 필터 매칭 태그 (InternalCase.matchingTags)"
         text status "ANALYZING NO_ACTION HIDDEN NEEDS_REVIEW KICK_REVIEW_PENDING CLOSED FAILED"
         text verdict "VIOLATION NO_VIOLATION NEEDS_REVIEW"
         text category "PROFANITY HARASSMENT FLOOD PHISHING"

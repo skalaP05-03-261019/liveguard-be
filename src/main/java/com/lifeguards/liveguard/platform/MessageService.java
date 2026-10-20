@@ -1,6 +1,7 @@
 package com.lifeguards.liveguard.platform;
 
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
@@ -18,9 +19,10 @@ import com.lifeguards.liveguard.contracts.dto.response.Message;
 import com.lifeguards.liveguard.contracts.dto.response.MessagePage;
 import com.lifeguards.liveguard.contracts.enums.AuthorRole;
 import com.lifeguards.liveguard.contracts.enums.ErrorCode;
-import com.lifeguards.liveguard.contracts.enums.FilterResult;
-import com.lifeguards.liveguard.contracts.enums.Visibility;
 import com.lifeguards.liveguard.contracts.exception.InvalidContractException;
+import com.lifeguards.liveguard.filter.FilterDecision;
+import com.lifeguards.liveguard.filter.FilterInput;
+import com.lifeguards.liveguard.filter.MessageFilter;
 import com.lifeguards.liveguard.filter.TextNormalizer;
 import com.lifeguards.liveguard.platform.MessageRepository.HistoryRow;
 import com.lifeguards.liveguard.platform.MessageRepository.StoredMessage;
@@ -29,16 +31,19 @@ import com.lifeguards.liveguard.platform.MessageRepository.StoredMessage;
 class MessageService {
 
 	private static final int MAX_PAGE_SIZE = 100;
+	private static final Duration FLOOD_WINDOW = Duration.ofSeconds(10);
 
 	private final MessageRepository messages;
 	private final JdbcChannelMembershipQuery memberships;
+	private final MessageFilter filter;
 	private final ApplicationEventPublisher events;
 	private final Clock clock;
 
-	MessageService(MessageRepository messages, JdbcChannelMembershipQuery memberships, ApplicationEventPublisher events,
-			Clock clock) {
+	MessageService(MessageRepository messages, JdbcChannelMembershipQuery memberships, MessageFilter filter,
+			ApplicationEventPublisher events, Clock clock) {
 		this.messages = messages;
 		this.memberships = memberships;
+		this.filter = filter;
 		this.events = events;
 		this.clock = clock;
 	}
@@ -51,11 +56,17 @@ class MessageService {
 			throw new ApiException(ErrorCode.FORBIDDEN, "Not a member of this channel");
 		}
 
-		// 1차 필터는 8번에서 연결한다. 그 전까지는 모두 PASS·PUBLIC
 		// timestamptz는 마이크로초 정밀도라 미리 잘라 재전송 응답의 sentAt이 최초와 같게 한다
 		Instant sentAt = clock.instant().truncatedTo(ChronoUnit.MICROS);
+		String normalizedText = TextNormalizer.normalize(request.text());
+		messages.lockAuthorInChannel(channelId, author.userId());
+		int sameTextInWindow = messages.countSameText(channelId, author.userId(), normalizedText,
+				sentAt.minus(FLOOD_WINDOW)) + 1;
+		FilterDecision decision = filter.classify(new FilterInput(request.text(), normalizedText,
+				messages.officialHosts(channelId), sameTextInWindow));
+		// 재전송이면 아래 INSERT가 무시되고 저장된 결과를 돌려주므로 이번 판정은 쓰이지 않는다
 		var inserted = messages.insertIfAbsent(channelId, author.userId(), request.clientMessageId(), request.text(),
-				TextNormalizer.normalize(request.text()), FilterResult.PASS, Visibility.PUBLIC, sentAt);
+				normalizedText, decision.result(), decision.visibility(), sentAt);
 		if (inserted.isPresent()) {
 			Message message = toMessage(channelId, author, inserted.get());
 			events.publishEvent(new MessageCreatedEvent(channelId, author.userId(), toChatEvent(message)));
