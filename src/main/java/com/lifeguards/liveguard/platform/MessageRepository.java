@@ -5,6 +5,7 @@ import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.time.OffsetDateTime;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -16,6 +17,10 @@ import com.lifeguards.liveguard.contracts.enums.Visibility;
 
 @Repository
 class MessageRepository {
+
+	record HistoryRow(UUID id, UUID authorId, String authorNickname, String text, Visibility visibility, int version,
+			Instant sentAt) {
+	}
 
 	record StoredMessage(UUID id, String text, Visibility visibility, int version, Instant sentAt) {
 	}
@@ -53,6 +58,43 @@ class MessageRepository {
 				.params(channelId, authorId, clientMessageId)
 				.query((rs, rowNum) -> toStored(rs))
 				.optional();
+	}
+
+	/**
+	 * 최신순 이력. 담당 운영자가 아니면 PUBLIC과 본인 메시지만 SQL에서 거른다
+	 * (타인의 HELD·HIDDEN 원문은 애플리케이션으로 읽어 오지도 않는다).
+	 */
+	List<HistoryRow> history(UUID channelId, UUID viewerId, boolean operator, MessageCursor after, int limit) {
+		StringBuilder sql = new StringBuilder("""
+				SELECT m.id, m.author_id, u.nickname, m.text, m.visibility, m.version, m.sent_at
+				FROM platform.messages m JOIN platform.users u ON u.id = m.author_id
+				WHERE m.channel_id = :channelId""");
+		if (!operator) {
+			sql.append(" AND (m.visibility = 'PUBLIC' OR m.author_id = :viewerId)");
+		}
+		if (after != null) {
+			sql.append(" AND (m.sent_at, m.id) < (:cursorAt, :cursorId)");
+		}
+		sql.append(" ORDER BY m.sent_at DESC, m.id DESC LIMIT :limit");
+
+		var statement = jdbc.sql(sql.toString())
+				.param("channelId", channelId)
+				.param("limit", limit);
+		if (!operator) {
+			statement = statement.param("viewerId", viewerId);
+		}
+		if (after != null) {
+			statement = statement.param("cursorAt", Timestamp.from(after.sentAt())).param("cursorId", after.id());
+		}
+		return statement.query((rs, rowNum) -> new HistoryRow(
+				rs.getObject("id", UUID.class),
+				rs.getObject("author_id", UUID.class),
+				rs.getString("nickname"),
+				rs.getString("text"),
+				Visibility.valueOf(rs.getString("visibility")),
+				rs.getInt("version"),
+				rs.getObject("sent_at", OffsetDateTime.class).toInstant()))
+				.list();
 	}
 
 	private static StoredMessage toStored(ResultSet rs) throws SQLException {

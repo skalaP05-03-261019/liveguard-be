@@ -3,6 +3,7 @@ package com.lifeguards.liveguard.platform;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.List;
 import java.util.UUID;
 
 import org.springframework.context.ApplicationEventPublisher;
@@ -14,22 +15,30 @@ import com.lifeguards.liveguard.common.security.AuthenticatedUser;
 import com.lifeguards.liveguard.contracts.dto.event.ChatEvent;
 import com.lifeguards.liveguard.contracts.dto.request.SendMessageRequest;
 import com.lifeguards.liveguard.contracts.dto.response.Message;
+import com.lifeguards.liveguard.contracts.dto.response.MessagePage;
+import com.lifeguards.liveguard.contracts.enums.AuthorRole;
 import com.lifeguards.liveguard.contracts.enums.ErrorCode;
 import com.lifeguards.liveguard.contracts.enums.FilterResult;
 import com.lifeguards.liveguard.contracts.enums.Visibility;
 import com.lifeguards.liveguard.contracts.exception.InvalidContractException;
 import com.lifeguards.liveguard.filter.TextNormalizer;
+import com.lifeguards.liveguard.platform.MessageRepository.HistoryRow;
 import com.lifeguards.liveguard.platform.MessageRepository.StoredMessage;
 
 @Service
 class MessageService {
 
+	private static final int MAX_PAGE_SIZE = 100;
+
 	private final MessageRepository messages;
+	private final JdbcChannelMembershipQuery memberships;
 	private final ApplicationEventPublisher events;
 	private final Clock clock;
 
-	MessageService(MessageRepository messages, ApplicationEventPublisher events, Clock clock) {
+	MessageService(MessageRepository messages, JdbcChannelMembershipQuery memberships, ApplicationEventPublisher events,
+			Clock clock) {
 		this.messages = messages;
+		this.memberships = memberships;
 		this.events = events;
 		this.clock = clock;
 	}
@@ -59,6 +68,29 @@ class MessageService {
 					"clientMessageId was already used with a different text");
 		}
 		return toMessage(channelId, author, existing);
+	}
+
+	@Transactional(readOnly = true)
+	MessagePage history(UUID channelId, AuthenticatedUser viewer, String cursor, int limit) {
+		if (limit < 1 || limit > MAX_PAGE_SIZE) {
+			throw new InvalidContractException("limit must be between 1 and " + MAX_PAGE_SIZE);
+		}
+		MessageCursor after = cursor == null ? null : MessageCursor.decode(cursor);
+		AuthorRole role = memberships.memberRole(channelId, viewer.userId())
+				.orElseThrow(() -> new ApiException(ErrorCode.FORBIDDEN, "Not a member of this channel"));
+
+		// 다음 페이지 유무를 알기 위해 하나 더 읽는다
+		List<HistoryRow> rows = messages.history(channelId, viewer.userId(), role == AuthorRole.MODERATOR, after,
+				limit + 1);
+		List<HistoryRow> page = rows.subList(0, Math.min(limit, rows.size()));
+		String nextCursor = rows.size() > limit
+				? new MessageCursor(page.getLast().sentAt(), page.getLast().id()).encode()
+				: null;
+		List<Message> items = page.stream()
+				.map(row -> new Message(row.id(), channelId, row.authorNickname(), row.text(), row.visibility(),
+						row.version(), row.sentAt(), row.authorId().equals(viewer.userId())))
+				.toList();
+		return new MessagePage(items, nextCursor);
 	}
 
 	private static Message toMessage(UUID channelId, AuthenticatedUser author, StoredMessage stored) {
