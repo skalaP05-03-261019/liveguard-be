@@ -2,6 +2,7 @@ package com.lifeguards.liveguard.common;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
@@ -23,6 +24,9 @@ import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
+import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.authentication.BadCredentialsException;
+import org.springframework.security.test.context.support.WithMockUser;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -38,9 +42,10 @@ import com.lifeguards.liveguard.contracts.dto.request.SendMessageRequest;
 import com.lifeguards.liveguard.contracts.enums.ErrorCode;
 import com.lifeguards.liveguard.contracts.exception.InvalidContractException;
 
-@WebMvcTest
+@WebMvcTest(controllers = GlobalExceptionHandlerTest.TestController.class)
 @Import({ GlobalExceptionHandler.class, TraceIdFilter.class, GlobalExceptionHandlerTest.TestController.class })
 @ExtendWith(OutputCaptureExtension.class)
+@WithMockUser
 class GlobalExceptionHandlerTest {
 
 	private static final String VALID_MESSAGE = """
@@ -51,7 +56,7 @@ class GlobalExceptionHandlerTest {
 
 	@Test
 	void validRequestPassesThrough() throws Exception {
-		mockMvc.perform(post("/test/messages").contentType(MediaType.APPLICATION_JSON).content(VALID_MESSAGE))
+		mockMvc.perform(post("/test/messages").with(csrf()).contentType(MediaType.APPLICATION_JSON).content(VALID_MESSAGE))
 				.andExpect(status().isOk());
 	}
 
@@ -60,7 +65,7 @@ class GlobalExceptionHandlerTest {
 		String secret = "x".repeat(501);
 		String body = "{\"clientMessageId\":\"11111111-1111-4111-8111-111111111111\",\"text\":\"" + secret + "\"}";
 
-		MvcResult result = mockMvc.perform(post("/test/messages").contentType(MediaType.APPLICATION_JSON).content(body))
+		MvcResult result = mockMvc.perform(post("/test/messages").with(csrf()).contentType(MediaType.APPLICATION_JSON).content(body))
 				.andExpect(status().isBadRequest())
 				.andExpect(jsonPath("$.error.code").value("VALIDATION_FAILED"))
 				.andExpect(jsonPath("$.error.retryable").value(false))
@@ -72,19 +77,19 @@ class GlobalExceptionHandlerTest {
 
 	@Test
 	void blankTextAndMissingFieldsAre400() throws Exception {
-		mockMvc.perform(post("/test/messages").contentType(MediaType.APPLICATION_JSON)
+		mockMvc.perform(post("/test/messages").with(csrf()).contentType(MediaType.APPLICATION_JSON)
 				.content("{\"clientMessageId\":\"11111111-1111-4111-8111-111111111111\",\"text\":\"   \"}"))
 				.andExpect(status().isBadRequest())
 				.andExpect(jsonPath("$.error.code").value("VALIDATION_FAILED"))
 				.andExpect(jsonPath("$.error.message").value("text must not be blank"));
-		mockMvc.perform(post("/test/messages").contentType(MediaType.APPLICATION_JSON).content("{}"))
+		mockMvc.perform(post("/test/messages").with(csrf()).contentType(MediaType.APPLICATION_JSON).content("{}"))
 				.andExpect(status().isBadRequest())
 				.andExpect(jsonPath("$.error.code").value("VALIDATION_FAILED"));
 	}
 
 	@Test
 	void unknownFieldIsRejected() throws Exception {
-		mockMvc.perform(post("/test/messages").contentType(MediaType.APPLICATION_JSON).content("""
+		mockMvc.perform(post("/test/messages").with(csrf()).contentType(MediaType.APPLICATION_JSON).content("""
 				{"clientMessageId":"11111111-1111-4111-8111-111111111111","text":"hello","role":"MODERATOR"}"""))
 				.andExpect(status().isBadRequest())
 				.andExpect(jsonPath("$.error.code").value("VALIDATION_FAILED"))
@@ -93,14 +98,14 @@ class GlobalExceptionHandlerTest {
 
 	@Test
 	void agentEventToleratesUnknownTopLevelFields() throws Exception {
-		mockMvc.perform(post("/test/agent-events").contentType(MediaType.APPLICATION_JSON)
+		mockMvc.perform(post("/test/agent-events").with(csrf()).contentType(MediaType.APPLICATION_JSON)
 				.content("{\"event\":\"TOOL_START\",\"payload\":{},\"extra\":1}"))
 				.andExpect(status().isOk());
 	}
 
 	@Test
 	void malformedJsonAndMissingBodyAre400WithoutEchoingInput() throws Exception {
-		MvcResult result = mockMvc.perform(post("/test/messages").contentType(MediaType.APPLICATION_JSON)
+		MvcResult result = mockMvc.perform(post("/test/messages").with(csrf()).contentType(MediaType.APPLICATION_JSON)
 				.content("{\"text\": SECRET-TEXT"))
 				.andExpect(status().isBadRequest())
 				.andExpect(jsonPath("$.error.code").value("VALIDATION_FAILED"))
@@ -108,14 +113,14 @@ class GlobalExceptionHandlerTest {
 				.andReturn();
 		assertFalse(result.getResponse().getContentAsString().contains("SECRET-TEXT"));
 
-		mockMvc.perform(post("/test/messages").contentType(MediaType.APPLICATION_JSON))
+		mockMvc.perform(post("/test/messages").with(csrf()).contentType(MediaType.APPLICATION_JSON))
 				.andExpect(status().isBadRequest())
 				.andExpect(jsonPath("$.error.code").value("VALIDATION_FAILED"));
 	}
 
 	@Test
 	void invalidEnumValueIs400WithoutEchoingInput() throws Exception {
-		MvcResult result = mockMvc.perform(post("/test/agent-events").contentType(MediaType.APPLICATION_JSON)
+		MvcResult result = mockMvc.perform(post("/test/agent-events").with(csrf()).contentType(MediaType.APPLICATION_JSON)
 				.content("{\"event\":\"SECRET-EVENT\",\"payload\":{}}"))
 				.andExpect(status().isBadRequest())
 				.andExpect(jsonPath("$.error.code").value("VALIDATION_FAILED"))
@@ -150,7 +155,7 @@ class GlobalExceptionHandlerTest {
 		mockMvc.perform(get("/test/messages"))
 				.andExpect(status().isBadRequest())
 				.andExpect(jsonPath("$.error.code").value("VALIDATION_FAILED"));
-		mockMvc.perform(post("/test/messages").contentType(MediaType.TEXT_PLAIN).content("hello"))
+		mockMvc.perform(post("/test/messages").with(csrf()).contentType(MediaType.TEXT_PLAIN).content("hello"))
 				.andExpect(status().isBadRequest())
 				.andExpect(jsonPath("$.error.code").value("VALIDATION_FAILED"));
 	}
@@ -224,6 +229,14 @@ class GlobalExceptionHandlerTest {
 	}
 
 	@Test
+	void securityExceptionsAreNotSwallowedAs500() throws Exception {
+		mockMvc.perform(get("/test/access-denied"))
+				.andExpect(status().isForbidden());
+		mockMvc.perform(get("/test/bad-credentials"))
+				.andExpect(status().isUnauthorized());
+	}
+
+	@Test
 	void bodyTraceIdMatchesResponseHeader() throws Exception {
 		String inbound = UUID.randomUUID().toString();
 
@@ -274,6 +287,16 @@ class GlobalExceptionHandlerTest {
 		@GetMapping("/invalid-contract")
 		void invalidContract() {
 			throw new InvalidContractException("thing is required");
+		}
+
+		@GetMapping("/access-denied")
+		void accessDenied() {
+			throw new AccessDeniedException("denied");
+		}
+
+		@GetMapping("/bad-credentials")
+		void badCredentials() {
+			throw new BadCredentialsException("bad");
 		}
 
 		@GetMapping("/boom")
