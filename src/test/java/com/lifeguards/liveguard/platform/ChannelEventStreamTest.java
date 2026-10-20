@@ -41,7 +41,6 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter.SseEvent
 import com.lifeguards.liveguard.TestcontainersConfiguration;
 import com.lifeguards.liveguard.contracts.dto.event.ChatEvent;
 import com.lifeguards.liveguard.contracts.enums.Visibility;
-import com.lifeguards.liveguard.platform.ChannelEventHub.Subscriber;
 
 /** 실제 서버를 띄워 HTTP로 SSE를 구독한다 (브라우저 두 개로 CHAT을 받는 확인의 자동화). */
 @SpringBootTest(webEnvironment = WebEnvironment.RANDOM_PORT, properties = "liveguard.sse.heartbeat-interval=200ms")
@@ -159,7 +158,7 @@ class ChannelEventStreamTest {
 	void stalledSubscriberDoesNotDelayPostResponse() throws Exception {
 		CountDownLatch release = new CountDownLatch(1);
 		BlockingQueue<String> received = new LinkedBlockingQueue<>();
-		Subscriber stalled = new Subscriber(UUID.randomUUID(), true, "stalled", new SseEmitter(0L) {
+		SseSubscriber stalled = new SseSubscriber(UUID.randomUUID(), true, "stalled", new SseEmitter(0L) {
 			@Override
 			public void send(SseEventBuilder builder) throws IOException {
 				try {
@@ -281,7 +280,7 @@ class ChannelEventStreamTest {
 
 		private final int port;
 		private final CookieManager cookies = new CookieManager();
-		private final HttpClient http;
+		final HttpClient http;
 
 		Client(int port) {
 			this.port = port;

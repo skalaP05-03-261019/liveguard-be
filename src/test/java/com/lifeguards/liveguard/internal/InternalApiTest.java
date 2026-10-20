@@ -3,9 +3,12 @@ package com.lifeguards.liveguard.internal;
 import static com.lifeguards.liveguard.support.LoginSupport.login;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -20,6 +23,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.system.CapturedOutput;
@@ -29,6 +33,7 @@ import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.ResultActions;
@@ -39,8 +44,6 @@ import com.lifeguards.liveguard.TestcontainersConfiguration;
 import com.lifeguards.liveguard.contracts.dto.event.TaskFailedEvent;
 import com.lifeguards.liveguard.contracts.dto.event.ToolEvent;
 import com.lifeguards.liveguard.platform.port.GuardEventPublisher;
-import com.lifeguards.liveguard.platform.port.InMemoryGuardEventPublisher;
-import com.lifeguards.liveguard.platform.port.InMemoryGuardEventPublisher.Published;
 
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -59,16 +62,13 @@ class InternalApiTest {
 	private MockMvc mockMvc;
 	@Autowired
 	private JdbcTemplate jdbc;
-	@Autowired
-	private GuardEventPublisher guardEventPublisher;
+	@MockitoSpyBean
+	private GuardEventPublisher guardEvents;
 
-	private InMemoryGuardEventPublisher guardEvents;
 	private UUID caseId;
 
 	@BeforeEach
 	void setUp() {
-		guardEvents = assertInstanceOf(InMemoryGuardEventPublisher.class, guardEventPublisher);
-		guardEvents.clear();
 		caseId = UUID.randomUUID();
 	}
 
@@ -275,14 +275,16 @@ class InternalApiTest {
 		postEvent("{\"event\":\"TASK_FAILED\",\"payload\":{\"stage\":\"judge\",\"errorCode\":\"TIMEOUT\"}}")
 				.andExpect(status().isAccepted());
 
-		List<Published> published = guardEvents.recentEvents();
-		assertEquals(List.of("TOOL_START", "TOOL_END", "TASK_FAILED"),
-				published.stream().map(Published::event).toList());
-		assertTrue(published.stream().allMatch(event -> event.channelId().equals(CHANNEL_A)));
-		assertEquals(new ToolEvent(caseId, "get_chat_context", "c1", null, null), published.get(0).data());
-		assertEquals(new ToolEvent(caseId, "get_chat_context", "c1", "OK", 120), published.get(1).data());
-		assertEquals(new TaskFailedEvent(caseId, "judge", "TIMEOUT", null), published.get(2).data());
-		assertFalse(published.toString().contains("RAW-"), "도구 인자·결과는 넘기지 않는다");
+		ArgumentCaptor<UUID> channels = ArgumentCaptor.forClass(UUID.class);
+		ArgumentCaptor<String> names = ArgumentCaptor.forClass(String.class);
+		ArgumentCaptor<Object> data = ArgumentCaptor.forClass(Object.class);
+		verify(guardEvents, times(3)).publish(channels.capture(), names.capture(), data.capture());
+		assertEquals(List.of("TOOL_START", "TOOL_END", "TASK_FAILED"), names.getAllValues());
+		assertTrue(channels.getAllValues().stream().allMatch(CHANNEL_A::equals));
+		assertEquals(new ToolEvent(caseId, "get_chat_context", "c1", null, null), data.getAllValues().get(0));
+		assertEquals(new ToolEvent(caseId, "get_chat_context", "c1", "OK", 120), data.getAllValues().get(1));
+		assertEquals(new TaskFailedEvent(caseId, "judge", "TIMEOUT", null), data.getAllValues().get(2));
+		assertFalse(data.getAllValues().toString().contains("RAW-"), "도구 인자·결과는 넘기지 않는다");
 	}
 
 	@Test
@@ -300,7 +302,7 @@ class InternalApiTest {
 					.andExpect(status().isBadRequest())
 					.andExpect(jsonPath("$.error.code").value("VALIDATION_FAILED"));
 		}
-		assertEquals(0, guardEvents.recentEvents().size());
+		verify(guardEvents, never()).publish(any(), any(), any());
 	}
 
 	private ResultActions postEvent(String json) throws Exception {

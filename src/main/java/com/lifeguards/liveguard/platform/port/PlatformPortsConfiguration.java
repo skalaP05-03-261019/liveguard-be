@@ -25,10 +25,4 @@ class PlatformPortsConfiguration {
 		return new InMemoryKickStatus(clock);
 	}
 
-	@Bean
-	@ConditionalOnMissingBean(GuardEventPublisher.class)
-	InMemoryGuardEventPublisher inMemoryGuardEventPublisher() {
-		return new InMemoryGuardEventPublisher();
-	}
-
 }
