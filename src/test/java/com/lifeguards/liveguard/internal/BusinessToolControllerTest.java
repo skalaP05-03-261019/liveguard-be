@@ -40,7 +40,8 @@ class BusinessToolControllerTest {
 	}
 
 	@ParameterizedTest
-	@ValueSource(strings = {"/internal/cases/" + ID + "/history", "/internal/actions/" + ID})
+	@ValueSource(strings = {"/internal/cases/" + ID + "/history",
+			"/internal/cases/" + ID + "/kick-eligibility", "/internal/actions/" + ID})
 	void remainingReadsReturnStubWithGeneratedTrace(String path) throws Exception {
 		mockMvc.perform(get(path))
 				.andExpect(status().isNotImplemented())
@@ -80,7 +81,11 @@ class BusinessToolControllerTest {
 		mockMvc.perform(get("/internal/cases/{id}/context", ID)
 						.param("view", "chatContext").param("before", "11"))
 				.andExpect(status().isBadRequest());
+		mockMvc.perform(get("/internal/cases/{id}/history", ID).param("days", "0"))
+				.andExpect(status().isBadRequest());
 		mockMvc.perform(get("/internal/cases/{id}/history", ID).param("days", "31"))
+				.andExpect(status().isNotImplemented());
+		mockMvc.perform(get("/internal/cases/{id}/kick-eligibility", ID).param("days", "30"))
 				.andExpect(status().isBadRequest());
 	}
 
@@ -108,6 +113,7 @@ class BusinessToolControllerTest {
 				.andExpect(status().isOk())
 				.andExpect(jsonPath("$.paths['/internal/cases/{caseId}/context'].get").exists())
 				.andExpect(jsonPath("$.paths['/internal/cases/{caseId}/history'].get").exists())
+				.andExpect(jsonPath("$.paths['/internal/cases/{caseId}/kick-eligibility'].get").exists())
 				.andExpect(jsonPath("$.paths['/internal/actions/{actionId}'].get").exists())
 				.andExpect(jsonPath("$.paths['/internal/actions/{actionId}/execute'].post").exists())
 				.andExpect(jsonPath("$.paths['/internal/cases/{caseId}/reviews/{decisionId}/reconcile'].post").exists())
@@ -122,7 +128,7 @@ class BusinessToolControllerTest {
 		return """
 				{"actionId":"%1$s","planId":"%1$s","caseId":"%1$s","type":"%2$s","targetId":"%1$s",
 				"expectedEvidenceVersion":1,"expectedTargetVersion":1,
-				"policyVersion":"v0.3","idempotencyKey":"test-command"%3$s}
+				"policyVersion":"v3.1","idempotencyKey":"test-command"%3$s}
 				""".formatted(ID, type, extras);
 	}
 }

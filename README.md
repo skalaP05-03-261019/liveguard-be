@@ -64,7 +64,8 @@ Spring Boot 4.1에 맞는 `springdoc-openapi-starter-webmvc-ui` 3.1.1을 사용�
 | `get_stream_info` | `GET /internal/cases/{caseId}/context?view=streamInfo` |
 | `get_official_links` | `GET /internal/cases/{caseId}/context?view=officialLinks` |
 | `get_security_facts` | `GET /internal/cases/{caseId}/context?view=securityFacts` |
-| `get_user_history` | `GET /internal/cases/{caseId}/history?days=30` |
+| `get_user_history` | `GET /internal/cases/{caseId}/history` (TIMEOUT 유형별 이력, 현재 사건 제외) |
+| `get_kick_eligibility` (Agent에 추가 필요) | `GET /internal/cases/{caseId}/kick-eligibility` (강퇴 후보, 최근 24시간 고정) |
 | `get_action_status` | `GET /internal/actions/{actionId}` |
 | `hide_message`, `timeout_user`, `release_message`, `kick_user` | `POST /internal/actions/{actionId}/execute` |
 | `reconcile_review` | `POST /internal/cases/{caseId}/reviews/{decisionId}/reconcile` |
@@ -75,8 +76,20 @@ Spring Boot 4.1에 맞는 `springdoc-openapi-starter-webmvc-ui` 3.1.1을 사용�
 재심 요청 본문은 `{caseId,decisionId}`이며 경로의 값과 같아야 합니다.
 
 기획서 v0.3과 달리 Agent는 조회를 `context?view=...`로 통합하고 `/history`를 사용합니다.
-조회 범위는 기존 Backend 정책을 유지합니다. `before/after`는 각각 0~10,
-`days`는 1~30이며 Agent에서 더 큰 값을 허용하더라도 Backend는 거부합니다.
+문맥 조회의 `before/after`는 각각 0~10입니다.
+TIMEOUT 이력의 `days`는 호환성을 위한 선택적 양수 입력이며 기본값이나 30일 상한을
+확정 정책으로 두지 않습니다. 조회 기간은 정책 합의 후 Service에서 결정해야 하고,
+`UserHistory.windowHours`는 실제 조회 기간을 표현합니다. 강퇴 심사 소진은 이 이력을 삭제하지 않습니다.
+
+강퇴 후보는 같은 사용자·채널·방송의 Backend 확정 사건을 최근 24시간 내에서 조회하며,
+이번 사건을 포함하고 5개 위험 유형을 합쳐 `caseId`당 1건으로 집계합니다.
+판정 취소·심사 소진 사건은 제외하지만 TIMEOUT 만료만으로는 제외하지 않습니다.
+`KickEligibility`의 사건 ID는 중복될 수 없고 `violationCount`와 일치해야 합니다.
+3건 이상이면 운영자 승인 요청 대상이지 자동 강퇴가 아닙니다.
+대기 중에는 기준 사건을 예약하고 승인·거절 결정 시 사용한 사건을 기록해 반복 요청을 막아야 합니다.
+거절 시 기존 가림을 유지하며, 승인 후 원 기준을 재검증해 현재 방송 종료까지 퇴장·재입장·채팅 금지를 적용합니다.
+새 방송으로 강퇴 효력을 승계하지 않습니다. 이 처리는 아직 구현되지 않았습니다.
+강퇴 후보 API의 `days` 입력은 거부합니다. Agent의 기존 이력 도구와 별도 도구로 연결해야 합니다.
 내부 API 인증·권한 검사도 아직 미구현이므로 `/internal/**`를 외부에 공개하지 마세요.
 실제 업무 구현 전에 서비스 토큰 검증과 권한·버전·멱등성 검증을 연결해야 합니다.
 

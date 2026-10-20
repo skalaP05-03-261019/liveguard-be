@@ -6,6 +6,7 @@ import com.lifeguards.liveguard.contracts.dto.response.ApiResponse;
 import com.lifeguards.liveguard.contracts.dto.response.ChannelInfo;
 import com.lifeguards.liveguard.contracts.dto.response.ContextData;
 import com.lifeguards.liveguard.contracts.dto.response.InternalCase;
+import com.lifeguards.liveguard.contracts.dto.response.KickEligibility;
 import com.lifeguards.liveguard.contracts.dto.response.UserHistory;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
@@ -67,7 +68,13 @@ public class BusinessToolController {
 
 	@GetMapping("/cases/{caseId}/history")
 	@Operation(summary = "get_user_history: get confirmed user history",
-			description = "Returns UserHistory. days defaults to 30 and must be 1..30 under Backend policy.")
+			description = """
+					TIMEOUT history by category, excluding the current case.
+					Consumed kick-review cases remain in this history. This is not kick eligibility.
+					days is an optional positive requested range, not an approved policy window.
+					The default TIMEOUT lookback remains undecided; no 30-day default is applied.
+					windowHours describes the actual resolved query range.
+					""")
 	@io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "200",
 			description = "Future implementation: confirmed user history",
 			content = @Content(schemaProperties = {
@@ -76,10 +83,31 @@ public class BusinessToolController {
 			}))
 	public ApiResponse<UserHistory> getUserHistory(
 			@PathVariable UUID caseId,
-			@RequestParam(defaultValue = "30") Integer days,
+			@RequestParam(required = false) Integer days,
 			@RequestHeader(value = "X-Trace-Id", required = false) UUID traceId) {
-		if (days == null || days < 1 || days > 30) {
-			throw new IllegalArgumentException("days must be 1..30");
+		if (days != null && days < 1) {
+			throw new IllegalArgumentException("days must be positive when provided");
+		}
+		throw new BusinessToolNotImplementedException(traceId);
+	}
+
+	@GetMapping("/cases/{caseId}/kick-eligibility")
+	@Operation(summary = "get_kick_eligibility: get distinct confirmed cases for kick review",
+			description = """
+					Fixed 24-hour window, including the current confirmed case.
+					Resolve user/channel/live from the case on the Backend; combine all five categories
+					and count each caseId once. Exclude revoked and already consumed cases, not cases
+					whose TIMEOUT has merely expired. Three or more cases qualify for an operator review,
+					not automatic execution. Reserve basis cases while pending; record consumption on
+					approval or rejection. Rejection preserves existing hiding. Only approval permits
+					KICK after revalidation, blocking re-entry/chat until the current live ends.
+					""")
+	public ApiResponse<KickEligibility> getKickEligibility(
+			@PathVariable UUID caseId,
+			@RequestParam(required = false) Integer days,
+			@RequestHeader(value = "X-Trace-Id", required = false) UUID traceId) {
+		if (days != null) {
+			throw new IllegalArgumentException("Kick eligibility has a fixed 24-hour window; days is not supported");
 		}
 		throw new BusinessToolNotImplementedException(traceId);
 	}
