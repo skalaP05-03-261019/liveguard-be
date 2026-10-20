@@ -12,6 +12,22 @@ JDK 21이 필요합니다.
 
 기본 포트는 `8080`입니다.
 
+### 로컬 DB (PostgreSQL + pgvector)
+
+Docker가 필요합니다. `.env`는 저장소에 올리지 않으므로 예시 파일을 복사해 비밀번호를 바꿉니다.
+
+```bash
+cp .env.example .env        # POSTGRES_PASSWORD 수정
+docker compose up -d db     # 호스트 포트 5433 (POSTGRES_PORT로 변경 가능)
+SPRING_PROFILES_ACTIVE=local ./gradlew bootRun
+```
+
+`local` 프로파일(`application-local.yml`)이 `.env`의 `POSTGRES_*` 값으로 DB에 접속합니다.
+DB 데이터를 비우려면 `docker compose down -v`를 실행합니다.
+
+테스트(`./gradlew test`)는 Testcontainers가 `pgvector/pgvector:pg16` 컨테이너를 직접 띄우므로
+compose 없이 Docker만 실행 중이면 됩니다.
+
 ## API 문서 (Swagger)
 
 Spring Boot 4.1에 맞는 `springdoc-openapi-starter-webmvc-ui` 3.1.1을 사용합니다.
