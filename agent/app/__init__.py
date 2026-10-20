@@ -1,1 +1,0 @@
-"""LIVE:GUARD Python Agent."""
