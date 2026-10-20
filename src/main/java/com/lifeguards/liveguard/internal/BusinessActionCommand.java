@@ -31,8 +31,12 @@ public record BusinessActionCommand(
 		Objects.requireNonNull(caseId, "caseId");
 		Objects.requireNonNull(type, "type");
 		Objects.requireNonNull(targetId, "targetId");
-		DtoValidation.requirePositive(expectedEvidenceVersion, "expectedEvidenceVersion");
-		DtoValidation.requirePositive(expectedTargetVersion, "expectedTargetVersion");
+		if (expectedEvidenceVersion <= 0) {
+			throw new IllegalArgumentException("expectedEvidenceVersion must be positive");
+		}
+		if (expectedTargetVersion <= 0) {
+			throw new IllegalArgumentException("expectedTargetVersion must be positive");
+		}
 		policyVersion = DtoValidation.requireText(policyVersion, "policyVersion");
 		idempotencyKey = DtoValidation.requireText(idempotencyKey, "idempotencyKey");
 		if (idempotencyKey.length() > 200) {

@@ -1,0 +1,1164 @@
+openapi: 3.1.0
+info:
+  title: LIVE:GUARD API
+  version: 0.5.0
+  description: |
+    v0.5 구현 기준. 메시지 가림은 Backend 업무 규칙, Agent의 변경 도구는 interrupt가 걸린 `kick_user` 하나.
+
+    공통 규칙
+    - ID는 UUID 문자열, 시각은 UTC ISO 8601. JSON은 camelCase.
+    - 성공 응답 `{data, traceId}`, 오류 응답 `{error, traceId}`.
+    - 브라우저 인증은 같은 출처 세션 쿠키. CSRF는 Spring `CookieCsrfTokenRepository` 기본값을 사용한다
+      (`XSRF-TOKEN` 쿠키를 읽어 변경 요청에 `X-XSRF-TOKEN` 헤더로 보냄. axios는 자동 처리).
+    - 내부 API(`/internal/**`)는 브라우저에 공개하지 않고 서비스 토큰을 검사한다.
+
+    MCP 도구 (내부 API를 감싼 어댑터)
+    | 서버 | 도구 | 구분 | 내부 API |
+    | --- | --- | --- | --- |
+    | business-mcp | get_moderation_case | 조회 | GET /internal/cases/{caseId} |
+    | business-mcp | get_chat_context | 조회 | GET /internal/cases/{caseId}/context |
+    | business-mcp | get_user_history | 조회 | GET /internal/cases/{caseId}/user-history |
+    | business-mcp | get_channel_info | 조회 | GET /internal/cases/{caseId}/channel-info |
+    | business-mcp | kick_user | 변경, destructiveHint, interrupt 필수 | POST /internal/kick-reviews/{reviewId}/execute |
+    | rag-mcp | search_policy | 조회 | (pgvector) |
+    | rag-mcp | policy://{version}/{documentId}/{sectionId} | Resource | 정책 원문 |
+
+    판정 제출(`POST /internal/cases/{caseId}/judgment`)은 MCP 도구가 아니라 Agent 서버가 결과를 보고하는 호출이다.
+    Agent 서버 엔드포인트: `POST /agent/cases/{caseId}/run`, `POST /agent/kick-reviews/{reviewId}/resume`.
+
+    `x-owner`: B1 = 인증·채팅·채팅 SSE·내부 조회 API, B2 = 사건·판정 처리·강퇴·관제 SSE 발행.
+servers:
+  - url: /
+tags:
+  - name: Auth
+  - name: Messages
+  - name: Streams
+  - name: Cases
+  - name: KickReviews
+  - name: Internal
+    description: Agent·MCP 전용. 브라우저 비공개, 서비스 토큰 필요
+security:
+  - sessionCookie: []
+
+paths:
+  /api/auth/login:
+    post:
+      tags: [Auth]
+      operationId: login
+      summary: 로그인 (세션 생성, 세션 ID 회전)
+      x-owner: B1
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: 로그인 성공
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MeResponse'
+        '401':
+          $ref: '#/components/responses/Error'
+
+  /api/auth/logout:
+    post:
+      tags: [Auth]
+      operationId: logout
+      summary: 로그아웃 (세션 종료, 열린 SSE 종료)
+      x-owner: B1
+      responses:
+        '204':
+          description: 완료
+
+  /api/auth/me:
+    get:
+      tags: [Auth]
+      operationId: getMe
+      summary: 현재 로그인 사용자 (새로고침 시 세션 복원)
+      x-owner: B1
+      responses:
+        '200':
+          description: 로그인 상태
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MeResponse'
+        '401':
+          $ref: '#/components/responses/Error'
+
+  /api/channels/{channelId}/messages:
+    parameters:
+      - $ref: '#/components/parameters/ChannelId'
+    post:
+      tags: [Messages]
+      operationId: sendMessage
+      summary: 채팅 전송
+      description: |
+        저장 → 1차 필터 → 공개 범위 결정 → SSE 발행. HOLD·FLOOD는 즉시 HELD(작성자·운영자에게만 보임).
+        같은 clientMessageId·같은 text는 최초 응답 반환, 다른 text는 409. 강퇴 중이면 403 KICKED + until.
+      x-owner: B1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SendMessageRequest'
+      responses:
+        '201':
+          description: 저장 완료
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SendMessageResponse'
+        '400':
+          $ref: '#/components/responses/Error'
+        '403':
+          $ref: '#/components/responses/Error'
+        '409':
+          $ref: '#/components/responses/Error'
+    get:
+      tags: [Messages]
+      operationId: listMessages
+      summary: 채팅 이력
+      description: 일반 시청자에게는 PUBLIC과 본인의 HELD·HIDDEN만, 담당 운영자에게는 전부 반환한다.
+      x-owner: B1
+      parameters:
+        - name: cursor
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+      responses:
+        '200':
+          description: 조회 성공
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessagePageResponse'
+        '403':
+          $ref: '#/components/responses/Error'
+
+  /api/channels/{channelId}/events:
+    parameters:
+      - $ref: '#/components/parameters/ChannelId'
+    get:
+      tags: [Streams]
+      operationId: subscribeChannel
+      summary: 채팅 SSE
+      description: |
+        이벤트: CHAT, MESSAGE_VISIBILITY_CHANGED, USER_KICKED(대상 본인에게만).
+        HELD·HIDDEN 메시지의 CHAT은 작성자·담당 운영자에게만 보낸다. 15초 heartbeat. 강퇴되면 서버가 연결을 닫는다.
+      x-owner: B1
+      x-sse-events:
+        CHAT: '#/components/schemas/ChatEvent'
+        MESSAGE_VISIBILITY_CHANGED: '#/components/schemas/VisibilityChangedEvent'
+        USER_KICKED: '#/components/schemas/UserKickedEvent'
+      responses:
+        '200':
+          $ref: '#/components/responses/EventStream'
+        '403':
+          $ref: '#/components/responses/Error'
+
+  /api/guard/events:
+    get:
+      tags: [Streams]
+      operationId: subscribeGuard
+      summary: 관제 SSE (담당 운영자)
+      description: |
+        이벤트: CASE_CREATED, CASE_UPDATED, TOOL_START, TOOL_END, KICK_REVIEW_REQUIRED, KICK_APPLIED, TASK_FAILED.
+        TOOL_START·TOOL_END는 Agent 진행 이벤트(평가 항목 "진행 이벤트")로, 원문 인자는 넣지 않는다.
+      x-owner: B1 (연결), B2 (발행)
+      x-sse-events:
+        CASE_CREATED: '#/components/schemas/CaseEvent'
+        CASE_UPDATED: '#/components/schemas/CaseEvent'
+        TOOL_START: '#/components/schemas/ToolEvent'
+        TOOL_END: '#/components/schemas/ToolEvent'
+        KICK_REVIEW_REQUIRED: '#/components/schemas/KickReviewEvent'
+        KICK_APPLIED: '#/components/schemas/KickReviewEvent'
+        TASK_FAILED: '#/components/schemas/TaskFailedEvent'
+      parameters:
+        - name: channelId
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/Uuid'
+      responses:
+        '200':
+          $ref: '#/components/responses/EventStream'
+        '403':
+          $ref: '#/components/responses/Error'
+
+  /api/cases:
+    get:
+      tags: [Cases]
+      operationId: listCases
+      summary: 사건 목록 (담당 운영자)
+      x-owner: B2
+      parameters:
+        - name: channelId
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/Uuid'
+        - name: status
+          in: query
+          schema:
+            $ref: '#/components/schemas/CaseStatus'
+      responses:
+        '200':
+          description: 조회 성공
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CaseListResponse'
+        '403':
+          $ref: '#/components/responses/Error'
+
+  /api/cases/{caseId}:
+    parameters:
+      - $ref: '#/components/parameters/CaseId'
+    get:
+      tags: [Cases]
+      operationId: getCase
+      summary: 사건 상세 (메시지, 판정, 근거, 정책 원문, 강퇴 검토)
+      x-owner: B2
+      responses:
+        '200':
+          description: 조회 성공
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CaseDetailResponse'
+        '403':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+
+  /api/cases/{caseId}/release:
+    parameters:
+      - $ref: '#/components/parameters/CaseId'
+    post:
+      tags: [Cases]
+      operationId: releaseCase
+      summary: 오탐 해제 (운영자)
+      description: 사건 메시지를 PUBLIC으로 복원하고 누적 횟수에서 제외한다. 사람이 직접 하는 Backend 기능이며 Agent 도구가 아니다.
+      x-owner: B2
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReleaseRequest'
+      responses:
+        '200':
+          description: 해제 완료
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CaseSummaryResponse'
+        '403':
+          $ref: '#/components/responses/Error'
+        '409':
+          $ref: '#/components/responses/Error'
+
+  /api/kick-reviews/{reviewId}/decision:
+    parameters:
+      - $ref: '#/components/parameters/ReviewId'
+    post:
+      tags: [KickReviews]
+      operationId: decideKickReview
+      summary: 강퇴 검토 결정 (운영자)
+      description: |
+        결정을 저장하고 Agent의 같은 thread를 재개하는 작업을 보낸다.
+        APPROVE면 Agent가 kick_user를 실행하고 KICK_APPLIED를 보낸다. REJECT면 강퇴 없이 종료하고 가림은 유지한다.
+      x-owner: B2
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/KickDecisionRequest'
+      responses:
+        '202':
+          description: 결정 접수
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KickReviewResponse'
+        '403':
+          $ref: '#/components/responses/Error'
+        '409':
+          $ref: '#/components/responses/Error'
+
+  /internal/cases/{caseId}:
+    parameters:
+      - $ref: '#/components/parameters/CaseId'
+    get:
+      tags: [Internal]
+      operationId: internalGetCase
+      summary: get_moderation_case
+      x-owner: B2
+      security:
+        - serviceToken: []
+      responses:
+        '200':
+          description: 사건과 메시지 (마스킹)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InternalCaseResponse'
+
+  /internal/cases/{caseId}/context:
+    parameters:
+      - $ref: '#/components/parameters/CaseId'
+    get:
+      tags: [Internal]
+      operationId: internalGetContext
+      summary: get_chat_context
+      x-owner: B1
+      security:
+        - serviceToken: []
+      parameters:
+        - name: before
+          in: query
+          schema:
+            type: integer
+            default: 10
+            maximum: 10
+        - name: after
+          in: query
+          schema:
+            type: integer
+            default: 10
+            maximum: 10
+      responses:
+        '200':
+          description: 전후 채팅 최대 20건 (마스킹)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContextResponse'
+
+  /internal/cases/{caseId}/user-history:
+    parameters:
+      - $ref: '#/components/parameters/CaseId'
+    get:
+      tags: [Internal]
+      operationId: internalGetUserHistory
+      summary: get_user_history
+      x-owner: B2
+      security:
+        - serviceToken: []
+      responses:
+        '200':
+          description: 최근 24시간 위반 횟수와 최근 사건
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserHistoryResponse'
+
+  /internal/cases/{caseId}/channel-info:
+    parameters:
+      - $ref: '#/components/parameters/CaseId'
+    get:
+      tags: [Internal]
+      operationId: internalGetChannelInfo
+      summary: get_channel_info
+      description: 공식 호스트·이벤트와 작성자의 실제 채널 역할. 피싱 판단용.
+      x-owner: B1
+      security:
+        - serviceToken: []
+      responses:
+        '200':
+          description: 조회 성공
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChannelInfoResponse'
+
+  /internal/cases/{caseId}/judgment:
+    parameters:
+      - $ref: '#/components/parameters/CaseId'
+    post:
+      tags: [Internal]
+      operationId: internalSubmitJudgment
+      summary: 판정 제출 (Agent 서버 → Backend)
+      description: |
+        Backend가 업무 규칙으로 가림·복원과 누적 횟수 계산을 수행한다. 누적 3회면 kick_reviews(PENDING)를 만들고 ID를 돌려준다.
+        Agent는 kickReviewId를 받으면 kick_user 앞의 interrupt 노드로 이동한다.
+      x-owner: B2
+      security:
+        - serviceToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/JudgmentRequest'
+      responses:
+        '200':
+          description: 처리 결과
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JudgmentResultResponse'
+        '409':
+          $ref: '#/components/responses/Error'
+        '422':
+          $ref: '#/components/responses/Error'
+
+  /internal/kick-reviews/{reviewId}/execute:
+    parameters:
+      - $ref: '#/components/parameters/ReviewId'
+    post:
+      tags: [Internal]
+      operationId: internalExecuteKick
+      summary: kick_user (변경 도구)
+      description: |
+        검토가 APPROVED가 아니면 422 REVIEW_NOT_APPROVED. Idempotency-Key가 같으면 기존 결과를 반환해 재시도해도 중복 강퇴가 없다.
+      x-owner: B2
+      security:
+        - serviceToken: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            examples: ['kick:review-uuid']
+      responses:
+        '200':
+          description: 강퇴 적용 (또는 기존 결과)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KickResultResponse'
+        '409':
+          $ref: '#/components/responses/Error'
+        '422':
+          $ref: '#/components/responses/Error'
+        '503':
+          $ref: '#/components/responses/Error'
+
+  /internal/cases/{caseId}/events:
+    parameters:
+      - $ref: '#/components/parameters/CaseId'
+    post:
+      tags: [Internal]
+      operationId: internalPostEvent
+      summary: Agent 진행 이벤트 수신 → 관제 SSE 중계
+      x-owner: B1
+      security:
+        - serviceToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentEventRequest'
+      responses:
+        '202':
+          description: 중계 완료
+
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: JSESSIONID
+    serviceToken:
+      type: apiKey
+      in: header
+      name: X-Service-Token
+
+  parameters:
+    ChannelId:
+      name: channelId
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/Uuid'
+    CaseId:
+      name: caseId
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/Uuid'
+    ReviewId:
+      name: reviewId
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/Uuid'
+
+  responses:
+    Error:
+      description: 오류
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    EventStream:
+      description: SSE. 각 이벤트는 `id`, `event`, `data`(JSON)로 구성된다.
+      content:
+        text/event-stream:
+          schema:
+            type: string
+          example: |
+            id: 42
+            event: MESSAGE_VISIBILITY_CHANGED
+            data: {"messageId":"33333333-3333-4333-8333-333333333333","visibility":"HIDDEN","version":2}
+
+            : ping
+
+  schemas:
+    Uuid:
+      type: string
+      format: uuid
+    Timestamp:
+      type: string
+      format: date-time
+    Role:
+      type: string
+      enum: [VIEWER, MODERATOR, PLATFORM_ADMIN]
+    Visibility:
+      type: string
+      enum: [PUBLIC, HELD, HIDDEN]
+    FilterResult:
+      type: string
+      enum: [PASS, REVIEW, HOLD, FLOOD]
+    CaseStatus:
+      type: string
+      enum: [ANALYZING, NO_ACTION, HIDDEN, NEEDS_REVIEW, KICK_REVIEW_PENDING, CLOSED, FAILED]
+    Verdict:
+      type: string
+      enum: [VIOLATION, NO_VIOLATION, NEEDS_REVIEW]
+    Category:
+      type: string
+      enum: [PROFANITY, HARASSMENT, FLOOD, PHISHING]
+    KickReviewStatus:
+      type: string
+      enum: [PENDING, APPROVED, REJECTED, EXECUTED, FAILED]
+    ErrorCode:
+      type: string
+      description: |
+        INTERNAL_ERROR: 처리되지 않은 서버 오류. HTTP 500, retryable=false. 응답에 내부 정보는 담지 않는다.
+        NOT_IMPLEMENTED: 계약 스텁이며 업무 로직을 실행하지 않는다. HTTP 501, retryable=false.
+      enum:
+        - VALIDATION_FAILED
+        - UNAUTHENTICATED
+        - FORBIDDEN
+        - KICKED
+        - NOT_FOUND
+        - STALE_VERSION
+        - IDEMPOTENCY_CONFLICT
+        - REVIEW_NOT_APPROVED
+        - NOT_IMPLEMENTED
+        - TEMPORARY_UNAVAILABLE
+        - INTERNAL_ERROR
+
+    ErrorResponse:
+      type: object
+      required: [error, traceId]
+      properties:
+        error:
+          type: object
+          required: [code, message, retryable]
+          properties:
+            code:
+              $ref: '#/components/schemas/ErrorCode'
+            message:
+              type: string
+            retryable:
+              type: boolean
+            until:
+              $ref: '#/components/schemas/Timestamp'
+            currentVersion:
+              type: integer
+        traceId:
+          type: string
+
+    LoginRequest:
+      type: object
+      required: [username, password]
+      additionalProperties: false
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+          format: password
+    Me:
+      type: object
+      required: [userId, nickname, role, channelIds]
+      properties:
+        userId:
+          $ref: '#/components/schemas/Uuid'
+        nickname:
+          type: string
+        role:
+          $ref: '#/components/schemas/Role'
+        channelIds:
+          type: array
+          items:
+            $ref: '#/components/schemas/Uuid'
+    MeResponse:
+      type: object
+      required: [data, traceId]
+      properties:
+        data:
+          $ref: '#/components/schemas/Me'
+        traceId:
+          type: string
+
+    SendMessageRequest:
+      type: object
+      required: [clientMessageId, text]
+      additionalProperties: false
+      properties:
+        clientMessageId:
+          $ref: '#/components/schemas/Uuid'
+        text:
+          type: string
+          minLength: 1
+          maxLength: 500
+    Message:
+      type: object
+      required: [messageId, channelId, authorAlias, text, visibility, version, sentAt, isMine]
+      properties:
+        messageId:
+          $ref: '#/components/schemas/Uuid'
+        channelId:
+          $ref: '#/components/schemas/Uuid'
+        authorAlias:
+          type: string
+        text:
+          type: string
+          description: HELD·HIDDEN 원문은 작성자·담당 운영자 응답에만 포함
+        visibility:
+          $ref: '#/components/schemas/Visibility'
+        version:
+          type: integer
+        sentAt:
+          $ref: '#/components/schemas/Timestamp'
+        isMine:
+          type: boolean
+    SendMessageResponse:
+      type: object
+      required: [data, traceId]
+      properties:
+        data:
+          $ref: '#/components/schemas/Message'
+        traceId:
+          type: string
+    MessagePageResponse:
+      type: object
+      required: [data, traceId]
+      properties:
+        data:
+          type: object
+          required: [items, nextCursor]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/Message'
+            nextCursor:
+              type: [string, 'null']
+        traceId:
+          type: string
+
+    PolicySnapshot:
+      type: object
+      required: [policyId, version, title, text, resourceUri]
+      properties:
+        policyId:
+          type: string
+          examples: [CP-2.1]
+        version:
+          type: string
+        title:
+          type: string
+        text:
+          type: string
+        resourceUri:
+          type: string
+          examples: ['policy://0.5/community_policy/CP-2.1']
+    CaseSummary:
+      type: object
+      required: [caseId, channelId, userAlias, filterResult, status, version, createdAt]
+      properties:
+        caseId:
+          $ref: '#/components/schemas/Uuid'
+        channelId:
+          $ref: '#/components/schemas/Uuid'
+        userAlias:
+          type: string
+        filterResult:
+          $ref: '#/components/schemas/FilterResult'
+        status:
+          $ref: '#/components/schemas/CaseStatus'
+        verdict:
+          oneOf:
+            - $ref: '#/components/schemas/Verdict'
+            - type: 'null'
+        category:
+          oneOf:
+            - $ref: '#/components/schemas/Category'
+            - type: 'null'
+        version:
+          type: integer
+        createdAt:
+          $ref: '#/components/schemas/Timestamp'
+    KickReview:
+      type: object
+      required: [reviewId, channelId, userAlias, status, summary, caseIds, version, createdAt]
+      properties:
+        reviewId:
+          $ref: '#/components/schemas/Uuid'
+        channelId:
+          $ref: '#/components/schemas/Uuid'
+        userAlias:
+          type: string
+        status:
+          $ref: '#/components/schemas/KickReviewStatus'
+        summary:
+          type: string
+          description: Agent가 작성한 검토 요약 (위반 3건의 근거)
+        caseIds:
+          type: array
+          items:
+            $ref: '#/components/schemas/Uuid'
+        decisionReason:
+          type: [string, 'null']
+        kickExpiresAt:
+          oneOf:
+            - $ref: '#/components/schemas/Timestamp'
+            - type: 'null'
+        version:
+          type: integer
+        createdAt:
+          $ref: '#/components/schemas/Timestamp'
+    CaseDetail:
+      allOf:
+        - $ref: '#/components/schemas/CaseSummary'
+        - type: object
+          required: [messages, reason, evidenceMessageIds, policySnapshots, violationCount]
+          properties:
+            messages:
+              type: array
+              items:
+                $ref: '#/components/schemas/Message'
+            reason:
+              type: [string, 'null']
+            evidenceMessageIds:
+              type: array
+              items:
+                $ref: '#/components/schemas/Uuid'
+            policySnapshots:
+              type: array
+              items:
+                $ref: '#/components/schemas/PolicySnapshot'
+            violationCount:
+              type: integer
+              description: 판정 시점의 최근 24시간 누적 위반 사건 수
+            kickReview:
+              oneOf:
+                - $ref: '#/components/schemas/KickReview'
+                - type: 'null'
+            traceUrl:
+              type: [string, 'null']
+    CaseListResponse:
+      type: object
+      required: [data, traceId]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/CaseSummary'
+        traceId:
+          type: string
+    CaseSummaryResponse:
+      type: object
+      required: [data, traceId]
+      properties:
+        data:
+          $ref: '#/components/schemas/CaseSummary'
+        traceId:
+          type: string
+    CaseDetailResponse:
+      type: object
+      required: [data, traceId]
+      properties:
+        data:
+          $ref: '#/components/schemas/CaseDetail'
+        traceId:
+          type: string
+    ReleaseRequest:
+      type: object
+      required: [expectedVersion, reason]
+      additionalProperties: false
+      properties:
+        expectedVersion:
+          type: integer
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 500
+    KickDecisionRequest:
+      type: object
+      required: [decision, reason, expectedVersion, clientRequestId]
+      additionalProperties: false
+      properties:
+        decision:
+          type: string
+          enum: [APPROVE, REJECT]
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 500
+        expectedVersion:
+          type: integer
+        clientRequestId:
+          $ref: '#/components/schemas/Uuid'
+    KickReviewResponse:
+      type: object
+      required: [data, traceId]
+      properties:
+        data:
+          $ref: '#/components/schemas/KickReview'
+        traceId:
+          type: string
+
+    # ----- SSE payload -----
+    ChatEvent:
+      type: object
+      required: [messageId, authorAlias, text, visibility, version, sentAt]
+      properties:
+        messageId:
+          $ref: '#/components/schemas/Uuid'
+        authorAlias:
+          type: string
+        text:
+          type: string
+        visibility:
+          $ref: '#/components/schemas/Visibility'
+        version:
+          type: integer
+        sentAt:
+          $ref: '#/components/schemas/Timestamp'
+    VisibilityChangedEvent:
+      type: object
+      description: 이미 공개됐던 메시지를 가릴 때는 ID만, PUBLIC으로 복원할 때는 text 포함
+      required: [messageId, visibility, version]
+      properties:
+        messageId:
+          $ref: '#/components/schemas/Uuid'
+        visibility:
+          $ref: '#/components/schemas/Visibility'
+        version:
+          type: integer
+        text:
+          type: string
+        authorAlias:
+          type: string
+    UserKickedEvent:
+      type: object
+      required: [until]
+      properties:
+        until:
+          $ref: '#/components/schemas/Timestamp'
+    CaseEvent:
+      type: object
+      required: [caseId, status, version]
+      properties:
+        caseId:
+          $ref: '#/components/schemas/Uuid'
+        status:
+          $ref: '#/components/schemas/CaseStatus'
+        filterResult:
+          $ref: '#/components/schemas/FilterResult'
+        version:
+          type: integer
+    ToolEvent:
+      type: object
+      required: [caseId, tool, callId]
+      properties:
+        caseId:
+          $ref: '#/components/schemas/Uuid'
+        tool:
+          type: string
+          examples: [get_chat_context]
+        callId:
+          type: string
+        status:
+          type: string
+          description: TOOL_END에만
+        elapsedMs:
+          type: integer
+          description: TOOL_END에만
+    KickReviewEvent:
+      type: object
+      required: [reviewId, caseId, status]
+      properties:
+        reviewId:
+          $ref: '#/components/schemas/Uuid'
+        caseId:
+          $ref: '#/components/schemas/Uuid'
+        status:
+          $ref: '#/components/schemas/KickReviewStatus'
+        kickExpiresAt:
+          $ref: '#/components/schemas/Timestamp'
+    TaskFailedEvent:
+      type: object
+      required: [caseId, stage, errorCode]
+      properties:
+        caseId:
+          $ref: '#/components/schemas/Uuid'
+        stage:
+          type: string
+        errorCode:
+          type: string
+        traceUrl:
+          type: string
+
+    # ----- Internal -----
+    MaskedMessage:
+      type: object
+      required: [messageId, authorAlias, text, sentAt]
+      properties:
+        messageId:
+          $ref: '#/components/schemas/Uuid'
+        authorAlias:
+          type: string
+          examples: [U1]
+        text:
+          type: string
+          description: '[PHONE] [EMAIL] [ACCOUNT] [URL:host] 등으로 마스킹된 본문'
+        sentAt:
+          $ref: '#/components/schemas/Timestamp'
+    InternalCase:
+      type: object
+      required: [caseId, channelId, filterResult, matchingTags, version, messages]
+      properties:
+        caseId:
+          $ref: '#/components/schemas/Uuid'
+        channelId:
+          $ref: '#/components/schemas/Uuid'
+        filterResult:
+          $ref: '#/components/schemas/FilterResult'
+        matchingTags:
+          type: array
+          items:
+            type: string
+        version:
+          type: integer
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/MaskedMessage'
+    InternalCaseResponse:
+      type: object
+      required: [data, traceId]
+      properties:
+        data:
+          $ref: '#/components/schemas/InternalCase'
+        traceId:
+          type: string
+    ContextResponse:
+      type: object
+      required: [data, traceId]
+      properties:
+        data:
+          type: object
+          required: [messages, truncated]
+          properties:
+            messages:
+              type: array
+              maxItems: 20
+              items:
+                $ref: '#/components/schemas/MaskedMessage'
+            truncated:
+              type: boolean
+        traceId:
+          type: string
+    UserHistoryResponse:
+      type: object
+      required: [data, traceId]
+      properties:
+        data:
+          type: object
+          required: [violationCount, windowHours, recentCases]
+          properties:
+            violationCount:
+              type: integer
+            windowHours:
+              type: integer
+              const: 24
+            recentCases:
+              type: array
+              items:
+                type: object
+                required: [caseId, category, judgedAt]
+                properties:
+                  caseId:
+                    $ref: '#/components/schemas/Uuid'
+                  category:
+                    $ref: '#/components/schemas/Category'
+                  judgedAt:
+                    $ref: '#/components/schemas/Timestamp'
+        traceId:
+          type: string
+    ChannelInfoResponse:
+      type: object
+      required: [data, traceId]
+      properties:
+        data:
+          type: object
+          required: [officialHosts, events, authorRole, isOfficialOperator, observedLinks]
+          properties:
+            officialHosts:
+              type: array
+              items:
+                type: string
+            events:
+              type: array
+              items:
+                type: object
+                properties:
+                  title:
+                    type: string
+                  summary:
+                    type: string
+            authorRole:
+              type: string
+              enum: [VIEWER, STREAMER, OFFICIAL_STAFF, MODERATOR]
+            isOfficialOperator:
+              type: boolean
+            observedLinks:
+              type: array
+              items:
+                type: object
+                required: [messageId, host, isOfficial]
+                properties:
+                  messageId:
+                    $ref: '#/components/schemas/Uuid'
+                  host:
+                    type: string
+                  isOfficial:
+                    type: boolean
+        traceId:
+          type: string
+    JudgmentRequest:
+      type: object
+      description: |
+        verdict별 검증 (위반 시 400 VALIDATION_FAILED):
+        - VIOLATION: category 필수, evidenceMessageIds 1개 이상, policyIds 1개 이상
+        - NEEDS_REVIEW: missingFacts 1개 이상
+        - NO_VIOLATION: 추가 필수 항목 없음
+      required: [expectedVersion, verdict, evidenceMessageIds, policyIds, reason, traceId]
+      additionalProperties: false
+      allOf:
+        - if:
+            properties: { verdict: { const: VIOLATION } }
+          then:
+            required: [category]
+            properties:
+              category: { $ref: '#/components/schemas/Category' }
+              evidenceMessageIds: { minItems: 1 }
+              policyIds: { minItems: 1 }
+        - if:
+            properties: { verdict: { const: NEEDS_REVIEW } }
+          then:
+            required: [missingFacts]
+            properties:
+              missingFacts: { minItems: 1 }
+      properties:
+        expectedVersion:
+          type: integer
+        verdict:
+          $ref: '#/components/schemas/Verdict'
+        category:
+          description: VIOLATION이면 필수
+          oneOf:
+            - $ref: '#/components/schemas/Category'
+            - type: 'null'
+        evidenceMessageIds:
+          type: array
+          items:
+            $ref: '#/components/schemas/Uuid'
+        policyIds:
+          type: array
+          description: VIOLATION이면 1개 이상. 서버가 존재·버전을 검증
+          items:
+            type: string
+        policySnapshots:
+          type: array
+          items:
+            $ref: '#/components/schemas/PolicySnapshot'
+        reason:
+          type: string
+        missingFacts:
+          type: array
+          items:
+            type: string
+        traceId:
+          type: string
+    JudgmentResultResponse:
+      type: object
+      required: [data, traceId]
+      properties:
+        data:
+          type: object
+          required: [caseStatus, violationCount, kickReviewId]
+          properties:
+            caseStatus:
+              $ref: '#/components/schemas/CaseStatus'
+            violationCount:
+              type: integer
+            kickReviewId:
+              type: [string, 'null']
+              format: uuid
+              description: 누적 3회 도달 시 생성된 강퇴 검토 ID. Agent는 이 값이 있으면 interrupt 노드로 간다
+        traceId:
+          type: string
+    KickResultResponse:
+      type: object
+      required: [data, traceId]
+      properties:
+        data:
+          type: object
+          required: [reviewId, status, startsAt, expiresAt, replayed]
+          properties:
+            reviewId:
+              $ref: '#/components/schemas/Uuid'
+            status:
+              $ref: '#/components/schemas/KickReviewStatus'
+            startsAt:
+              $ref: '#/components/schemas/Timestamp'
+            expiresAt:
+              $ref: '#/components/schemas/Timestamp'
+            replayed:
+              type: boolean
+              description: 같은 Idempotency-Key 재요청이면 true
+        traceId:
+          type: string
+    AgentEventRequest:
+      type: object
+      required: [event, payload]
+      properties:
+        event:
+          type: string
+          enum: [TOOL_START, TOOL_END, TASK_FAILED]
+        payload:
+          type: object

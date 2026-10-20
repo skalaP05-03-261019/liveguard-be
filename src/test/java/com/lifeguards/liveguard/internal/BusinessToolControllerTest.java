@@ -2,12 +2,14 @@ package com.lifeguards.liveguard.internal;
 
 import java.util.UUID;
 
+import com.lifeguards.liveguard.TestcontainersConfiguration;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 
@@ -18,6 +20,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 @SpringBootTest
 @AutoConfigureMockMvc
+@Import(TestcontainersConfiguration.class)
 class BusinessToolControllerTest {
 	private static final String ID = "11111111-1111-4111-8111-111111111111";
 
@@ -109,7 +112,10 @@ class BusinessToolControllerTest {
 				.andExpect(jsonPath("$.paths['/internal/actions/{actionId}/execute'].post").exists())
 				.andExpect(jsonPath("$.paths['/internal/cases/{caseId}/reviews/{decisionId}/reconcile'].post").exists())
 				.andExpect(jsonPath("$.components.schemas.BusinessActionCommand.properties.violationIds").exists())
-				.andExpect(jsonPath("$.components.schemas.ChatContextResponse").exists());
+				.andExpect(jsonPath("$.components.schemas.InternalCase").exists())
+				.andExpect(jsonPath("$.components.schemas.ContextData").exists())
+				.andExpect(jsonPath("$.components.schemas.ChannelInfo").exists())
+				.andExpect(jsonPath("$.components.schemas.UserHistory").exists());
 	}
 
 	private String command(String type, String extras) {
