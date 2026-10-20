@@ -1,7 +1,6 @@
 package com.lifeguards.liveguard.common;
 
 import java.util.Arrays;
-import java.util.UUID;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -11,6 +10,8 @@ import org.springframework.http.HttpStatusCode;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.core.AuthenticationException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -45,6 +46,12 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
 	@ExceptionHandler(InvalidContractException.class)
 	ResponseEntity<Object> handleInvalidContract(InvalidContractException ex) {
 		return respond(HttpStatus.BAD_REQUEST, error(ErrorCode.VALIDATION_FAILED, ex.getMessage()));
+	}
+
+	// Security 예외는 ExceptionTranslationFilter가 401/403으로 바꾸도록 그대로 던진다 (아래 catch-all이 500으로 삼키지 않게)
+	@ExceptionHandler({ AccessDeniedException.class, AuthenticationException.class })
+	void rethrowSecurityException(RuntimeException ex) {
+		throw ex;
 	}
 
 	@ExceptionHandler(Exception.class)
@@ -100,13 +107,9 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
 	}
 
 	private static ResponseEntity<Object> respond(HttpStatus status, ErrorBody error) {
-		String traceId = TraceIdFilter.current();
-		if (traceId == null) {
-			traceId = UUID.randomUUID().toString();
-		}
 		return ResponseEntity.status(status)
 				.contentType(MediaType.APPLICATION_JSON)
-				.body(new ErrorResponse(error, traceId));
+				.body(ErrorResponses.of(error));
 	}
 
 	private static String abbreviate(String name) {
