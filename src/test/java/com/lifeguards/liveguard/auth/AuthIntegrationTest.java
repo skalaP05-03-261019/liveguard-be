@@ -177,10 +177,11 @@ class AuthIntegrationTest {
 				.andExpect(jsonPath("$.error.code").value("FORBIDDEN"));
 	}
 
+	// /api·인증·Swagger 밖의 경로는 denyAll. 예전 Spring AI MCP 서버 경로(/sse, /mcp)로 확인한다
 	@Test
-	void mcpServerEndpointsAreBlocked() throws Exception {
+	void pathsOutsideApiAreDenied() throws Exception {
 		MockHttpSession session = loggedIn("moderator");
-		for (String path : new String[] { "/sse", "/mcp" }) {
+		for (String path : new String[] { "/sse", "/mcp", "/anything" }) {
 			mockMvc.perform(get(path).accept(MediaType.TEXT_EVENT_STREAM))
 					.andExpect(status().isUnauthorized());
 			mockMvc.perform(get(path).accept(MediaType.TEXT_EVENT_STREAM).session(session))
