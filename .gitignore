@@ -5,6 +5,13 @@ build/
 !**/src/main/**/build/
 !**/src/test/**/build/
 .DS_Store
+
+### Local environment ###
+.env
+.env.*
+!.env.example
+*.log
+
 ### STS ###
 .apt_generated
 .classpath
