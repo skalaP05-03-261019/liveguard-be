@@ -72,7 +72,7 @@ class InternalCaseController {
 
 	@GetMapping("/role")
 	@Operation(summary = "get_channel_user_role: get the current case author's channel role",
-			description = "Reuses BE1 channel info. A former member is returned as VIEWER by the current BE1 query; this is not a historical or verified identity claim.")
+			description = "Reuses BE1 channel info. Current role, not the role at the time of the case. An author whose membership cannot be confirmed (e.g. a former member) is UNKNOWN with isOfficialOperator=false; this is not a historical or verified identity claim.")
 	ApiResponse<ChannelUserRole> role(@PathVariable UUID caseId) {
 		ChannelInfo info = cases.channelInfo(caseId);
 		return new ApiResponse<>(new ChannelUserRole(info.authorRole(), info.isOfficialOperator()),

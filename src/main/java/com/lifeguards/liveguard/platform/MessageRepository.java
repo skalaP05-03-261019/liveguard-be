@@ -14,6 +14,7 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 
 import com.lifeguards.liveguard.contracts.enums.FilterResult;
+import com.lifeguards.liveguard.contracts.enums.HandlingRoute;
 import com.lifeguards.liveguard.contracts.enums.ModerationReasonCode;
 import com.lifeguards.liveguard.contracts.enums.Visibility;
 
@@ -130,6 +131,20 @@ class MessageRepository {
 				.param("ids", messageIds)
 				.param("channelId", channelId)
 				.param("authorId", authorId)
+				.update();
+	}
+
+	/**
+	 * 사건이 메시지를 가린 원인을 남긴다(E-2). 해제는 자기 사건의 원인만 풀 수 있다. 같은 (메시지, 사건)이 이미 있으면
+	 * 건드리지 않는다. PASS는 가리지 않으므로 원인이 될 수 없다.
+	 */
+	void recordHoldReason(UUID messageId, UUID caseId, HandlingRoute route, Instant createdAt) {
+		if (route == HandlingRoute.PASS) {
+			throw new IllegalArgumentException("PASS cannot be a hold reason");
+		}
+		jdbc.sql("INSERT INTO platform.message_hold_reasons (message_id, case_id, reason, created_at) "
+				+ "VALUES (?, ?, ?, ?) ON CONFLICT (message_id, case_id) DO NOTHING")
+				.params(messageId, caseId, route.name(), Timestamp.from(createdAt))
 				.update();
 	}
 

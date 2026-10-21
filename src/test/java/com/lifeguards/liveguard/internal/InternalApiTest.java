@@ -16,6 +16,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
@@ -67,20 +68,28 @@ class InternalApiTest {
 	private com.lifeguards.liveguard.platform.port.CandidateSink candidates;
 	@Autowired
 	private com.lifeguards.liveguard.guard.LiveModerationService moderation;
+	@Autowired
+	private com.lifeguards.liveguard.platform.CaseContextQuery contexts;
 	@MockitoSpyBean
 	private GuardEventPublisher guardEvents;
 
 	private UUID caseId;
+	private final List<UUID> lives = new ArrayList<>();
+	private final List<UUID> users = new ArrayList<>();
 
 	@BeforeEach
 	void setUp() {
 		caseId = UUID.randomUUID();
+		lives.clear();
+		users.clear();
 	}
 
 	@AfterEach
 	void cleanUp() {
 		CaseFixtures.deleteCases(jdbc);
 		jdbc.update("DELETE FROM platform.messages");
+		lives.forEach(id -> jdbc.update("DELETE FROM platform.lives WHERE id = ?", id));
+		users.forEach(id -> jdbc.update("DELETE FROM platform.users WHERE id = ?", id));
 	}
 
 	// ----- 서비스 토큰 -----
@@ -224,6 +233,52 @@ class InternalApiTest {
 	}
 
 	@Test
+	void contextStaysWithinTheLiveOfTheEvidence() throws Exception {
+		UUID oldLive = insertEndedLive(0, 9);
+		UUID newLive = insertEndedLive(10, 40);
+		insertIn(oldLive, MODERATOR, "지난 방송 1", 1, null, "PUBLIC");
+		insertIn(oldLive, MODERATOR, "지난 방송 2", 2, null, "PUBLIC");
+		insertIn(null, MODERATOR, "방송 도입 전", 5, null, "PUBLIC");
+		insertIn(newLive, MODERATOR, "새 방송 앞", 12, null, "PUBLIC");
+		insertIn(newLive, VIEWER, "증거", 20, caseId, "HELD");
+		insertIn(newLive, MODERATOR, "새 방송 뒤", 22, null, "PUBLIC");
+
+		var context = contexts.context(caseId, 5, 5);
+
+		assertEquals(List.of("새 방송 앞", "증거", "새 방송 뒤"),
+				context.messages().stream().map(message -> message.text()).toList());
+	}
+
+	@Test
+	void contextOfEvidenceWithoutALiveSkipsMessagesOfLives() throws Exception {
+		UUID live = insertEndedLive(10, 40);
+		insertIn(null, MODERATOR, "도입 전 앞", 5, null, "PUBLIC");
+		insertIn(live, MODERATOR, "방송 중", 12, null, "PUBLIC");
+		insertIn(null, VIEWER, "도입 전 증거", 20, caseId, "PUBLIC");
+		insertIn(null, MODERATOR, "도입 전 뒤", 25, null, "PUBLIC");
+
+		var context = contexts.context(caseId, 5, 5);
+
+		assertEquals(List.of("도입 전 앞", "도입 전 증거", "도입 전 뒤"),
+				context.messages().stream().map(message -> message.text()).toList());
+	}
+
+	@Test
+	void contextCarriesTheVisibilityOfEveryMessage() throws Exception {
+		UUID live = insertEndedLive(0, 60);
+		insertIn(live, MODERATOR, "공개 앞", 10, null, "PUBLIC");
+		insertIn(live, VIEWER, "가려진 증거", 20, caseId, "HELD");
+		insertIn(live, MODERATOR, "숨김 뒤", 30, null, "HIDDEN");
+
+		var context = contexts.context(caseId, 5, 5);
+
+		assertEquals(List.of("공개 앞", "가려진 증거", "숨김 뒤"),
+				context.messages().stream().map(message -> message.text()).toList());
+		assertEquals(List.of("PUBLIC", "HELD", "HIDDEN"),
+				context.messages().stream().map(message -> message.visibility()).toList());
+	}
+
+	@Test
 	void contextValidatesBeforeAndAfter() throws Exception {
 		insert(VIEWER, "증거", 0, caseId);
 		for (String query : new String[] { "?before=11", "?after=11", "?before=-1", "?after=abc" }) {
@@ -277,6 +332,22 @@ class InternalApiTest {
 		mockMvc.perform(internal(get("/internal/cases/" + caseId + "/channel-info")))
 				.andExpect(jsonPath("$.data.authorRole").value("MODERATOR"))
 				.andExpect(jsonPath("$.data.isOfficialOperator").value(true));
+	}
+
+	@Test
+	void authorWithoutMembershipIsUnknownNotViewer() throws Exception {
+		// 채널을 떠났거나 멤버십을 확인할 수 없는 작성자
+		UUID stranger = insertUser();
+		insert(stranger, "증거", 0, caseId);
+
+		mockMvc.perform(internal(get("/internal/cases/" + caseId + "/channel-info")))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.data.authorRole").value("UNKNOWN"))
+				.andExpect(jsonPath("$.data.isOfficialOperator").value(false));
+		mockMvc.perform(internal(get("/internal/cases/{id}/role", caseId)))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.data.authorRole").value("UNKNOWN"))
+				.andExpect(jsonPath("$.data.isOfficialOperator").value(false));
 	}
 
 	// ----- events -----
@@ -347,6 +418,34 @@ class InternalApiTest {
 			}
 		}
 		return "/internal/cases/" + requested + "/context";
+	}
+
+	/** 어느 채널에도 속하지 않은 사용자. */
+	private UUID insertUser() {
+		UUID id = UUID.randomUUID();
+		jdbc.update("INSERT INTO platform.users (id, username, password_hash, nickname, role) "
+				+ "VALUES (?, ?, 'h', '외부인', 'VIEWER')", id, "stranger-" + id);
+		users.add(id);
+		return id;
+	}
+
+	/** 방송 도입 전 시험과 섞이지 않도록 이미 끝난 방송만 만든다(채널당 진행 중 방송은 하나뿐이다). */
+	private UUID insertEndedLive(int startSecondsAfterT0, int endSecondsAfterT0) {
+		UUID id = UUID.randomUUID();
+		jdbc.update("INSERT INTO platform.lives (id, channel_id, started_at, ended_at) VALUES (?, ?, ?, ?)",
+				id, CHANNEL_A, Timestamp.from(T0.plusSeconds(startSecondsAfterT0)),
+				Timestamp.from(T0.plusSeconds(endSecondsAfterT0)));
+		lives.add(id);
+		return id;
+	}
+
+	private void insertIn(UUID liveId, UUID author, String text, int secondsAfterT0, UUID caseId, String visibility) {
+		CaseFixtures.insertCase(jdbc, caseId, CHANNEL_A, author);
+		jdbc.update("INSERT INTO platform.messages (channel_id, live_id, author_id, client_message_id, text, "
+				+ "normalized_text, filter_result, visibility, case_id, sent_at) "
+				+ "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				CHANNEL_A, liveId, author, UUID.randomUUID(), text, text, "PUBLIC".equals(visibility) ? "PASS" : "HOLD",
+				visibility, caseId, Timestamp.from(T0.plusSeconds(secondsAfterT0)));
 	}
 
 	private UUID insert(UUID author, String text, int secondsAfterT0, UUID caseId) {

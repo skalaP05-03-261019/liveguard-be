@@ -394,9 +394,17 @@ public class LiveService implements LivePlatformPort {
                   + " released_at IS NULL AND (reason<>'RULE_CONFIRMED' OR ?)")
           .params(now(), caseId, revoked)
           .update();
+    // 해제할 때는 소유 사건(case_id)이 아니어도 이 사건의 원인이 걸려 있던 메시지를 본다. 소유 사건이 먼저 풀리고
+    // 다른 사건의 원인이 마지막으로 남았다가 풀리는 경우, case_id만 보면 그 메시지가 복구되지 않는다
     var ids =
-        db.sql("SELECT id FROM platform.messages WHERE case_id=? OR id IN (SELECT message_id FROM platform.message_hold_reasons WHERE case_id=?) FOR UPDATE")
-            .params(caseId,caseId)
+        (visibility.equals("PUBLIC")
+                ? db.sql(
+                        "SELECT id FROM platform.messages WHERE case_id=? OR id IN (SELECT"
+                            + " message_id FROM platform.message_hold_reasons WHERE case_id=?)"
+                            + " ORDER BY id FOR UPDATE")
+                    .params(caseId, caseId)
+                : db.sql("SELECT id FROM platform.messages WHERE case_id=? FOR UPDATE")
+                    .param(caseId))
             .query(UUID.class)
             .list();
     for (UUID id : ids) {

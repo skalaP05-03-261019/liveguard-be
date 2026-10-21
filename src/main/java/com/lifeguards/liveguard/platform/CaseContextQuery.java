@@ -44,10 +44,11 @@ public class CaseContextQuery {
 	private static final Set<AuthorRole> OFFICIAL_ROLES = Set.of(AuthorRole.STREAMER, AuthorRole.OFFICIAL_STAFF,
 			AuthorRole.MODERATOR);
 
-	private record Row(UUID id, UUID channelId, UUID authorId, String text, Instant sentAt, UUID caseId) {
+	private record Row(UUID id, UUID channelId, UUID liveId, UUID authorId, String text, String visibility,
+			Instant sentAt, UUID caseId) {
 	}
 
-	private static final String COLUMNS = "id, channel_id, author_id, text, sent_at, case_id";
+	private static final String COLUMNS = "id, channel_id, live_id, author_id, text, visibility, sent_at, case_id";
 
 	private final JdbcClient jdbc;
 	private final JdbcChannelMembershipQuery memberships;
@@ -76,21 +77,27 @@ public class CaseContextQuery {
 		Row first = evidence.getFirst();
 		Row last = evidence.getLast();
 
+		// 문맥은 증거와 같은 방송 안에서만 모은다(사건은 한 방송에 속한다). 방송 도입 전 메시지(live_id NULL)가 증거면
+		// 같은 채널의 도입 전 메시지끼리만 본다. 다른 방송의 메시지가 앞뒤 문맥에 섞이지 않게 한다
+		boolean legacy = first.liveId() == null;
+		String scope = legacy ? "channel_id = ? AND live_id IS NULL" : "live_id = ?";
+		UUID scopeId = legacy ? first.channelId() : first.liveId();
+
 		List<Row> window = new ArrayList<>();
 		List<Row> earlier = new ArrayList<>(jdbc.sql("SELECT " + COLUMNS + " FROM platform.messages "
-				+ "WHERE channel_id = ? AND (sent_at, id) < (?, ?) ORDER BY sent_at DESC, id DESC LIMIT ?")
-				.params(first.channelId(), Timestamp.from(first.sentAt()), first.id(), before)
+				+ "WHERE " + scope + " AND (sent_at, id) < (?, ?) ORDER BY sent_at DESC, id DESC LIMIT ?")
+				.params(scopeId, Timestamp.from(first.sentAt()), first.id(), before)
 				.query((rs, n) -> row(rs)).list());
 		Collections.reverse(earlier);
 		window.addAll(earlier);
 		window.addAll(jdbc.sql("SELECT " + COLUMNS + " FROM platform.messages "
-				+ "WHERE channel_id = ? AND (sent_at, id) >= (?, ?) AND (sent_at, id) <= (?, ?) ORDER BY sent_at, id")
-				.params(first.channelId(), Timestamp.from(first.sentAt()), first.id(), Timestamp.from(last.sentAt()),
+				+ "WHERE " + scope + " AND (sent_at, id) >= (?, ?) AND (sent_at, id) <= (?, ?) ORDER BY sent_at, id")
+				.params(scopeId, Timestamp.from(first.sentAt()), first.id(), Timestamp.from(last.sentAt()),
 						last.id())
 				.query((rs, n) -> row(rs)).list());
 		window.addAll(jdbc.sql("SELECT " + COLUMNS + " FROM platform.messages "
-				+ "WHERE channel_id = ? AND (sent_at, id) > (?, ?) ORDER BY sent_at, id LIMIT ?")
-				.params(first.channelId(), Timestamp.from(last.sentAt()), last.id(), after)
+				+ "WHERE " + scope + " AND (sent_at, id) > (?, ?) ORDER BY sent_at, id LIMIT ?")
+				.params(scopeId, Timestamp.from(last.sentAt()), last.id(), after)
 				.query((rs, n) -> row(rs)).list());
 
 		List<Row> selected = window.size() <= MAX_MESSAGES ? window : capKeepingEvidence(window, caseId);
@@ -104,7 +111,7 @@ public class CaseContextQuery {
 		}
 		List<MaskedMessage> messages = selected.stream()
 				.map(row -> new MaskedMessage(row.id(), aliases.get(row.authorId()), PiiMasker.mask(row.text()),
-						row.sentAt()))
+						row.sentAt(), row.visibility()))
 				.toList();
 		return new ContextData(messages, truncated);
 	}
@@ -120,8 +127,9 @@ public class CaseContextQuery {
 				+ "FROM platform.channels c, jsonb_array_elements(c.official_events) e WHERE c.id = ?")
 				.param(first.channelId())
 				.query((rs, n) -> new EventInfo(rs.getString("title"), rs.getString("summary"))).list();
-		// 채널을 떠난 작성자는 일반 시청자로 본다
-		AuthorRole authorRole = memberships.memberRole(first.channelId(), first.authorId()).orElse(AuthorRole.VIEWER);
+		// 현재 역할이다(사건 당시 역할이 아니다). 멤버십을 확인할 수 없으면 VIEWER로 추정하지 않고 UNKNOWN이며,
+		// isOfficialOperator=false는 공식 운영자로 확인되지 않았다는 뜻일 뿐 시청자로 확인됐다는 뜻이 아니다
+		AuthorRole authorRole = memberships.memberRole(first.channelId(), first.authorId()).orElse(AuthorRole.UNKNOWN);
 
 		Set<String> official = officialHosts.stream().map(UrlHosts::normalizeHost).collect(Collectors.toSet());
 		List<ObservedLink> observedLinks = new ArrayList<>();
@@ -179,8 +187,9 @@ public class CaseContextQuery {
 
 	private static Row row(ResultSet rs) throws SQLException {
 		return new Row(rs.getObject("id", UUID.class), rs.getObject("channel_id", UUID.class),
-				rs.getObject("author_id", UUID.class), rs.getString("text"),
-				rs.getObject("sent_at", OffsetDateTime.class).toInstant(), rs.getObject("case_id", UUID.class));
+				rs.getObject("live_id", UUID.class), rs.getObject("author_id", UUID.class), rs.getString("text"),
+				rs.getString("visibility"), rs.getObject("sent_at", OffsetDateTime.class).toInstant(),
+				rs.getObject("case_id", UUID.class));
 	}
 
 }
