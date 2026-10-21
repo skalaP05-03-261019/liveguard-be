@@ -43,8 +43,9 @@ compose 없이 Docker만 실행 중이면 됩니다.
 
 ## Agent 작업 발송 Outbox
 
-현재 단계는 **DB Outbox → HTTP Gateway → Agent 영속 Inbox**입니다.
-RabbitMQ publisher/consumer, 실제 채팅·후보·승인 흐름의 자동 enqueue는 포함하지 않습니다.
+기본 경로는 **DB Outbox → HTTP Gateway → Agent 영속 Inbox**입니다.
+선택적으로 **DB Outbox → RabbitMQ 알림 → BE HTTP Worker → Agent 영속 Inbox**로 분산합니다.
+실제 채팅·후보·승인 흐름의 자동 enqueue나 Agent의 직접 broker 소비는 포함하지 않습니다.
 BE1 정보·사건/문맥 조회가 준비되기 전에는 발송을 켜도 조사 E2E가 완성되지 않습니다.
 V201은 발송 메타데이터와 불변 envelope만 저장하고 채팅 원문·서비스 토큰은 저장하지 않습니다.
 
@@ -75,6 +76,7 @@ Compose에서는 `localhost` 대신 해당 네트워크의 Agent 서비스 주�
 | 설정 (`liveguard.agent.delivery.*`) | 기본값 | 의미 |
 | --- | --- | --- |
 | `enabled` / `AGENT_DELIVERY_ENABLED` | `false` | 자동 발송 활성화 |
+| `transport` / `AGENT_DELIVERY_TRANSPORT` | `db` | `db` polling 또는 `rabbit` 알림 분산 (동시 활성화 불가) |
 | `base-url` / `AGENT_BASE_URL` | 미설정 | Agent HTTP origin |
 | `service-token` / `AGENT_SERVICE_TOKEN` | 미설정 | Bearer 인증 |
 | `connect-timeout` | `3s` | 연결 제한 |
@@ -105,7 +107,7 @@ Compose에서는 `localhost` 대신 해당 네트워크의 Agent 서비스 주�
 
 `FOR UPDATE SKIP LOCKED`로 선점하고 lease token으로 완료 기록을 보호합니다.
 네트워크 대기 중 DB 트랜잭션을 유지하지 않습니다.
-재시도·만료 lease 복구에서는 같은 taskId 상태를 먼저 조회하며
+`delivery_uncertain=true`인 재시도·만료 HTTP lease 복구에서만 같은 taskId 상태를 먼저 조회하며
 taskId·threadId·operationId·상태가 일치하면 접수 완료로 처리합니다.
 resume 상태 조회가 이전 run/resume을 가리키면 현재 결정의 접수로 간주하지 않습니다.
 재전달 `200`은 `duplicate=true`, 신규 `202`는 `duplicate=false`와 식별자를 검증합니다.
@@ -117,11 +119,68 @@ resume 상태 조회가 이전 run/resume을 가리키면 현재 결정의 접�
 따라서 장애 복구 조회 때문에 `attempt_count`가 `max-attempts`를 넘을 수 있지만 발송 예산은 초기화하지 않습니다.
 로그에는 outbox ID·안전한 오류 코드·횟수만 남기고 토큰·전체 payload·예외 본문을 남기지 않습니다.
 
+### RabbitMQ 선택 모드
+
+로컬 `.env`의 Rabbit 비밀번호를 변경하고 `AGENT_DELIVERY_ENABLED=true`,
+`AGENT_DELIVERY_TRANSPORT=rabbit`, Agent URL/토큰을 설정합니다.
+
+```bash
+docker compose --profile rabbit up -d db rabbitmq
+SPRING_PROFILES_ACTIVE=local ./gradlew bootRun
+```
+
+호스트 Rabbit 포트는 기본 `5673`입니다. 컨테이너 배포에서는 같은 네트워크의
+`RABBITMQ_HOST=rabbitmq`, `RABBITMQ_PORT=5672`를 사용합니다.
+연결은 `RABBITMQ_HOST/PORT/USER/PASSWORD` 또는 표준 `spring.rabbitmq.*`
+(TLS/vhost 포함) 설정을 사용합니다. `enabled=false` 또는 기본 `db` 모드는 broker 없이 실행됩니다.
+Rabbit 장애 시 HTTP DB polling으로 조용히 전환하지 않습니다.
+
+`liveguard.agent.delivery.rabbit.*` 설정:
+
+| 설정 | 기본값 | 의미 |
+| --- | --- | --- |
+| `exchange` / `queue` / `routing-key` | `liveguard.agent.outbox` / `liveguard.agent.outbox` / `outbox` | durable direct topology |
+| `confirm-timeout` | `5s` | correlated confirm 대기 상한 |
+| `publish-lease` | `30s` | confirm 제한보다 긴 별도 publisher lease |
+| `retry-interval` | `5s` | NACK·return·timeout·연결 실패 후 재알림 |
+| `recovery-interval` | `60s` | confirm 후에도 미완료 DB 작업을 다시 알리는 주기 |
+| `prefetch` | `1` | consumer당 상한 (1~100), consumer 수는 delivery `concurrency` |
+
+V202는 `notification_after`, `publish_token`, `publish_lease_until`만 추가합니다.
+publisher는 **HTTP 시도 가능 시각이 된 행 또는 만료 HTTP lease**만 선점합니다.
+네트워크 밖에서 DB lease를 커밋한 뒤 UUID 36바이트만 persistent 메시지로 발행하고
+mandatory return과 correlated ACK를 모두 확인합니다. broker confirm은 `ACCEPTED`가 아닙니다.
+publisher lease 만료/교체 및 HTTP 선점은 이전 publisher 완료 쓰기를 fence합니다.
+confirm 유실·NACK·unroutable·broker 재시작·publisher crash·큐 알림 유실은
+publish lease/retry/recovery 주기로 다시 발행합니다. DB가 유일한 작업 원장입니다.
+
+consumer는 UUID로 DB 행 하나만 선점하고 기존 HTTP Worker를 사용합니다.
+중복·선점 경합·미도래·종료 행은 HTTP 시도 횟수를 쓰지 않고 ACK합니다.
+실제 처리 결과는 DB 커밋 후 ACK합니다. DB 저장/lease 소유권 오류는 ACK하지 않고
+알림만 reject(no requeue)하며 DB 스캔이 복구합니다.
+잘못된 UUID도 reject(no requeue, 기본적으로 폐기)하여 poison 무한 루프를 막습니다.
+네트워크 중 DB 트랜잭션은 유지하지 않습니다. 전송은 at-least-once이므로
+동일 envelope와 Agent Inbox 멱등성 계약은 계속 필수입니다.
+
+broker 알림의 불확실성은 `delivery_uncertain`이나 HTTP attempt 예산에 영향을 주지 않습니다.
+HTTP consumer가 죽고 lease가 만료된 경우에만 HTTP 불확실성이 생겨 상태 GET으로 복구합니다.
+확인된 HTTP 429 재시도는 GET 없이 같은 POST를 수행합니다.
+broker만 확인된 작업은 DB에 남으며 HTTP 진행/복구 상태를 `ACCEPTED/FAILED/UNKNOWN`으로 구분합니다.
+publisher는 poll당 `batch-size`개를 순차 처리하고 consumer는 고정 concurrency/prefetch를 사용합니다.
+
+Rabbit 테스트는 기존 PostgreSQL Testcontainers 외에 `rabbitmq:4.1-alpine`을 사용합니다:
+
+```bash
+./gradlew test --tests '*AgentOutboxTest' --tests '*AgentDeliveryConfigurationTest' \
+  --tests '*AgentRabbit*' --tests '*FlywayMigrationTest'
+```
+
 운영 상태는 아래처럼 원문·토큰 없는 메타데이터로 확인합니다.
 
 ```sql
 SELECT id, operation_id, task_id, status, attempt_count, next_attempt_at,
-       lease_until, delivery_uncertain, last_error_code, updated_at
+       lease_until, delivery_uncertain, last_error_code, updated_at,
+       notification_after, publish_token, publish_lease_until
 FROM guard.agent_task_outbox
 ORDER BY created_at, id;
 ```
