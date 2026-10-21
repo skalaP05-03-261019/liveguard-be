@@ -15,7 +15,7 @@
   ├ PASS              → PUBLIC, Agent 미호출
   ├ RULE_CONFIRMED    → 확실한 욕설·링크: BE가 같은 처리 안에서 위반 확정 → HIDDEN + 유형별 표
   ├ FLOOD_REVIEW      → 같은 userId·liveId 10초 안 같은 문장 3회째부터 HELD → BE 규칙으로 확정(TBD-11) → 중복 HIDE (+표)
-  ├ PII_INVESTIGATION → HELD → AI 조사 → 정상은 자기 원인 해제 / 위반은 BE 검증 후 확정 / 부족하면 HELD 유지
+  ├ PII_INVESTIGATION → HELD → AI 조사 → 정상은 자기 원인 해제 / 위반은 BE 검증 후 확정 / NEEDS_REVIEW → HELD 유지 + CONTEXT 검토 생성(A-16)
   └ CONTEXT_REVIEW    → HELD → AI 조사 → 판정과 무관하게 운영자 결정(interrupt) → 정상 확정 시 해제 / 위반 확정 시 HIDE + 표
 확정 사건 저장 → 같은 userId·liveId 최근 24시간 통합 사건 3건 이상 → 강퇴 심사(예약, interrupt)
              → 운영자 승인·거절(결정 + 소진) → 같은 thread_id 재개 → 승인이면 재검증 후 kick_user → 방송 종료까지 live ban
@@ -202,7 +202,7 @@ WHERE c.live_id = :liveId AND c.user_id = :userId AND c.id <> :currentCaseId
 | --- | --- | --- | --- |
 | RULE_CONFIRMED | BE 규칙 | `findings`(BACKEND, CONFIRMED), `actions`(HIDE, 표에 따라 TIMEOUT), `timeouts` | 같은 처리 안에서 HIDDEN |
 | FLOOD_REVIEW | BE 규칙(TBD-11) | 위와 같음 + `flood_marks` | 3번째 이후 중복 HIDE, 첫 두 메시지는 공개 유지 |
-| PII_INVESTIGATION | AI 판정 → BE 검증 | AI 제안은 `findings`(AI_PROPOSAL), 확정은 BACKEND | 정상이면 자기 원인 해제, 부족하면 HELD 유지 |
+| PII_INVESTIGATION | AI 판정 → BE 검증 | AI 제안은 `findings`(AI_PROPOSAL), 확정은 BACKEND. NEEDS_REVIEW면 `reviews`(kind=CONTEXT)·`context_reviews` | 정상이면 자기 원인 해제, NEEDS_REVIEW → HELD 유지 + CONTEXT 검토 생성(A-16), 운영자 결정은 문맥 결정과 같음 |
 | CONTEXT_REVIEW | 운영자 결정 | `reviews`, `context_reviews`, `decisions`(ContextDecision), 확정 시 `findings`(BACKEND) | 정상 확정 시 자기 원인 해제, 위반 확정 시 HIDE + 표, DEFER는 HELD 유지 |
 | 강퇴 | 운영자 승인 + 재검증 | `reviews`, `kick_reviews`, `review_basis`, `reservations`, `decisions`, `consumptions`, `actions`(KICK), `live_bans` | 기존 HIDE·TIMEOUT 유지 |
 

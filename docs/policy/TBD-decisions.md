@@ -113,7 +113,7 @@
 | 경로 | 가림·제한 실행 | interrupt |
 | --- | --- | --- |
 | RULE_CONFIRMED, 도배 확정 | BE 업무 규칙 | 없음 (Agent 미호출) |
-| PII_INVESTIGATION | Agent는 판정만 제출, BE가 검증 후 실행 | 없음 |
+| PII_INVESTIGATION | Agent는 판정만 제출, BE가 검증 후 실행 | 없음. NEEDS_REVIEW만 CONTEXT 검토 생성 + interrupt (A-16 참조) |
 | CONTEXT_REVIEW | 운영자 결정 후 재개해서 hide_message·timeout_user·release_message | 문맥 검토 interrupt |
 | 강퇴 | 운영자 승인 후 재검증하고 kick_user | 강퇴 interrupt |
 
