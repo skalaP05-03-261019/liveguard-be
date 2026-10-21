@@ -47,7 +47,7 @@ class FlywayMigrationTest {
 				"SELECT version FROM flyway_schema_history WHERE success AND version IS NOT NULL ORDER BY installed_rank",
 				String.class);
 
-		assertEquals(List.of("100", "101", "200"), versions);
+		assertEquals(List.of("100", "101", "200", "201"), versions);
 	}
 
 	@Test
@@ -64,7 +64,8 @@ class FlywayMigrationTest {
 
 	@Test
 	void createsGuardPersistenceTables() {
-		assertEquals(List.of("candidates", "case_messages", "cases", "finding_events", "findings"), jdbc.queryForList(
+		assertEquals(List.of("agent_task_outbox", "candidates", "case_messages", "cases", "finding_events", "findings"),
+				jdbc.queryForList(
 				"SELECT table_name FROM information_schema.tables WHERE table_schema = 'guard' ORDER BY table_name",
 				String.class));
 	}

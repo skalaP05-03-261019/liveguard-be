@@ -41,6 +41,100 @@ FE 연동: FE는 Vite 개발 서버 프록시(`/api` → `http://localhost:8080`
 테스트(`./gradlew test`)는 Testcontainers가 `pgvector/pgvector:pg16` 컨테이너를 직접 띄우므로
 compose 없이 Docker만 실행 중이면 됩니다.
 
+## Agent 작업 발송 Outbox
+
+현재 단계는 **DB Outbox → HTTP Gateway → Agent 영속 Inbox**입니다.
+RabbitMQ publisher/consumer, 실제 채팅·후보·승인 흐름의 자동 enqueue는 포함하지 않습니다.
+BE1 정보·사건/문맥 조회가 준비되기 전에는 발송을 켜도 조사 E2E가 완성되지 않습니다.
+V201은 발송 메타데이터와 불변 envelope만 저장하고 채팅 원문·서비스 토큰은 저장하지 않습니다.
+
+### 업무 코드 연결
+
+`AgentTaskOutbox.enqueue(AgentTaskEnvelope)`는 기존 업무 트랜잭션 안에서만 호출할 수 있습니다
+(`Propagation.MANDATORY`). 사건/결정 저장이 롤백되면 작업도 롤백됩니다.
+네트워크 호출은 커밋 이후 독립 Worker에서 수행하며 업무 트랜잭션 안에서는 실행을 거부합니다.
+호출자가 실제 사건의 준비 상태, snapshot·증거 버전, 저장된 review·decision 권한을 검증해야 합니다.
+필수 필드가 있다는 사실은 승인을 의미하지 않으며, 이 서비스는 외부 REST로 노출하지 않습니다.
+
+- `ANALYZE`/`REANALYZE`: `/agent/tasks/{taskId}/run`
+- `RESUME_REVIEW`: `/agent/tasks/{taskId}/resume`, `reviewKind`·`reviewId`·`decisionId` 필수
+- `RECONCILE`: 지원하지 않으며 enqueue 계약에서 거부
+- Agent와 동일하게 run의 논리 키는 `run:{taskId}`, resume은 `resume:{decisionId}`입니다.
+  resume은 기존 task/thread/snapshot 바인딩을 유지합니다. 독립 재조사는 Agent 계약에 맞는 새 task/thread를 사용합니다.
+- 동일 논리 키와 **동일 전체 payload**는 기존 Outbox ID를 반환합니다.
+  eventId·traceId를 포함해 payload를 바꾸거나 eventId를 다른 작업에 재사용하면 `IDEMPOTENCY_CONFLICT`입니다.
+  발송 재시도에서는 taskId·eventId·traceId·payload 모두 유지합니다.
+
+### 설정
+
+기본은 비활성화입니다. 로컬 `.env` 또는 배포 환경으로 설정하며 실제 토큰은 저장소에 넣지 않습니다.
+Agent와 `AGENT_SERVICE_TOKEN`을 맞추고, BE의 내부 조회 인증용 `INTERNAL_SERVICE_TOKEN`과 혼동하지 않습니다.
+Agent URL은 인증정보·경로·query·fragment 없는 HTTP(S) origin이어야 하며 리다이렉트는 따라가지 않습니다.
+Compose에서는 `localhost` 대신 해당 네트워크의 Agent 서비스 주소를 사용합니다.
+
+| 설정 (`liveguard.agent.delivery.*`) | 기본값 | 의미 |
+| --- | --- | --- |
+| `enabled` / `AGENT_DELIVERY_ENABLED` | `false` | 자동 발송 활성화 |
+| `base-url` / `AGENT_BASE_URL` | 미설정 | Agent HTTP origin |
+| `service-token` / `AGENT_SERVICE_TOKEN` | 미설정 | Bearer 인증 |
+| `connect-timeout` | `3s` | 연결 제한 |
+| `request-timeout` | `10s` | 응답 본문까지 포함한 요청 제한 |
+| `lease-duration` | `60s` | 선점 유효기간, 두 HTTP 요청의 제한 합계보다 길어야 함 |
+| `poll-interval` | `1s` | 선점 주기 |
+| `batch-size` | `10` | poll당 제출 상한 |
+| `concurrency` | `2` | 인스턴스별 동시 처리 상한 |
+| `max-attempts` | `5` | 발송/복구 사이클 예산 (KICK 실행 예산과 별개) |
+| `initial-backoff` / `max-backoff` | `2s` / `5m` | 지수 backoff와 상한 |
+
+나머지 설정도 Spring 환경변수 규칙으로 지정할 수 있습니다
+(예: `LIVEGUARD_AGENT_DELIVERY_CONCURRENCY=4`).
+활성화했는데 URL·인증 정보가 없거나 제한값이 잘못되면 시작을 실패시킵니다.
+응답은 최대 64 KiB로 제한합니다. Worker 종료 시 진행 중 요청을 기다리고,
+미완료 작업은 lease 만료 후 같은 작업으로 복구합니다.
+
+### 상태 및 장애 복구
+
+| 상태 | 의미 |
+| --- | --- |
+| `PENDING` | 커밋된 발송 대기 |
+| `IN_FLIGHT` | lease로 선점한 발송/상태 확인 |
+| `RETRY` | 다음 시도 시각까지 대기 |
+| `ACCEPTED` | Agent Inbox의 영속 접수 확인. 조사·조치 성공을 의미하지 않음 |
+| `FAILED` | 확인된 전달 거부 또는 확인된 거부의 예산 소진 |
+| `UNKNOWN` | 접수 여부 미확인. 확정 실패로 표시하지 않으며 자동 재시도 중지 |
+
+`FOR UPDATE SKIP LOCKED`로 선점하고 lease token으로 완료 기록을 보호합니다.
+네트워크 대기 중 DB 트랜잭션을 유지하지 않습니다.
+재시도·만료 lease 복구에서는 같은 taskId 상태를 먼저 조회하며
+taskId·threadId·operationId·상태가 일치하면 접수 완료로 처리합니다.
+resume 상태 조회가 이전 run/resume을 가리키면 현재 결정의 접수로 간주하지 않습니다.
+재전달 `200`은 `duplicate=true`, 신규 `202`는 `duplicate=false`와 식별자를 검증합니다.
+
+전달 재시도 대상은 연결/응답 오류 및 HTTP 408·429·500·502·503·504입니다.
+인증·요청·계약 충돌·리다이렉트 등은 자동 반복하지 않습니다.
+잘못된 접수 응답은 접수 미확인으로 기록합니다. 이전 시도의 불확실성은 후속 거부만으로 지우지 않습니다.
+예산 소진 뒤 만료 lease를 복구하는 추가 사이클은 **상태 조회만** 가능하며 POST를 추가하지 않습니다.
+따라서 장애 복구 조회 때문에 `attempt_count`가 `max-attempts`를 넘을 수 있지만 발송 예산은 초기화하지 않습니다.
+로그에는 outbox ID·안전한 오류 코드·횟수만 남기고 토큰·전체 payload·예외 본문을 남기지 않습니다.
+
+운영 상태는 아래처럼 원문·토큰 없는 메타데이터로 확인합니다.
+
+```sql
+SELECT id, operation_id, task_id, status, attempt_count, next_attempt_at,
+       lease_until, delivery_uncertain, last_error_code, updated_at
+FROM guard.agent_task_outbox
+ORDER BY created_at, id;
+```
+
+- 일시 중단은 `enabled=false` 후 재시작합니다. DB 작업·시도 횟수는 유지됩니다.
+- 장애가 난 `IN_FLIGHT`는 lease 만료 후 자동 복구합니다. 식별자·payload를 새로 만들지 않습니다.
+- `FAILED`는 오류 코드에 맞춰 인증·주소·계약 등을 먼저 수정합니다.
+- `UNKNOWN`은 Agent 상태 API의 동일 operationId와 Agent 영속 Inbox를 확인합니다.
+  taskId 조회는 해당 thread의 최신 작업만 반환하므로 이전 작업이 가려졌다면 Inbox 확인이 필요합니다.
+  taskId/threadId만 같은 다른 operation을 접수 증거로 사용하지 않습니다.
+- 이번 단계에는 수동 재발송/상태 교정 API가 없습니다. 실패·미확인 행을 삭제하거나
+  시도 횟수를 0으로 되돌리지 않습니다. 수동 복구 도구는 접수 근거와 별도 감사 기록을 검증하도록 후속 구현합니다.
+
 ## API 문서 (Swagger)
 
 Spring Boot 4.1에 맞는 `springdoc-openapi-starter-webmvc-ui` 3.1.1을 사용합니다.
