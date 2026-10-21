@@ -6,7 +6,8 @@ info:
     1.0.0 계약. 기준은 정책 원본 v3.1(`docs/policy/`), TBD-decisions(OpenAPI v1.0 구현 결정 A-1~A-15), `docs/erd.md` v1.0.
     모든 정책 범위(집계, 도배, 재적발, TIMEOUT, 강퇴)는 `liveId`다. `channelId`는 고정 채널 식별자로만 쓴다.
     활성 정책 버전은 `v3.1` 고정(TBD-08). 사건·판정·action 명령의 `policyVersion`은 이 값과 같아야 한다.
-    Java enum·DTO는 이 계약에 맞춰 후속 작업에서 바꾼다(contracts.enums PR).
+    Java contracts.enums와 로직에 연결되지 않은 DTO는 이 계약에 맞췄다. Message·ChatEvent·VisibilityChangedEvent·
+    UserKickedEvent(→ LiveAccessBlockedEvent)·SseEnvelope는 liveId 구현과 함께 맞춘다.
 
     아래는 0.6.0-draft에서 이어진 구현 상태다. 내부 business-tool 중 `/context`, `/channel-info`, `/role`은 현재 조회 구현이며,
     사건 조회는 필수 메타데이터가 있는 경우, 이력 조회는 명시한 days가 있는 경우에 구현된다.
