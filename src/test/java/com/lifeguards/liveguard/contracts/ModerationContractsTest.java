@@ -64,11 +64,11 @@ class ModerationContractsTest {
 		assertValues(CaseStatus.class, "ANALYZING", "NO_ACTION", "HIDDEN", "NEEDS_REVIEW",
 				"KICK_REVIEW_PENDING", "CLOSED", "FAILED");
 		assertValues(Verdict.class, "VIOLATION", "NO_VIOLATION", "NEEDS_REVIEW");
-		assertValues(Category.class, "PROFANITY", "HARASSMENT", "FLOOD", "PHISHING");
+		assertValues(Category.class, "PROFANITY", "HARASSMENT", "FLOOD", "PHISHING", "PII_EXPOSURE");
 		assertValues(KickReviewStatus.class, "PENDING", "APPROVED", "REJECTED", "EXECUTED", "FAILED");
 		assertValues(ErrorCode.class, "VALIDATION_FAILED", "UNAUTHENTICATED", "FORBIDDEN", "KICKED",
 				"NOT_FOUND", "STALE_VERSION", "IDEMPOTENCY_CONFLICT", "REVIEW_NOT_APPROVED",
-				"TEMPORARY_UNAVAILABLE", "INTERNAL_ERROR");
+				"NOT_IMPLEMENTED", "TEMPORARY_UNAVAILABLE", "INTERNAL_ERROR");
 		assertValues(KickDecision.class, "APPROVE", "REJECT");
 		assertValues(AuthorRole.class, "VIEWER", "STREAMER", "OFFICIAL_STAFF", "MODERATOR");
 		assertValues(AgentEventType.class, "TOOL_START", "TOOL_END", "TASK_FAILED");
@@ -207,9 +207,11 @@ class ModerationContractsTest {
 	}
 
 	@Test
-	void userHistoryWindowIsTwentyFourHours() {
+	void timeoutHistoryWindowIsNotFixedToKickWindow() {
 		assertEquals(24, new UserHistory(2, 24, List.of()).windowHours());
-		assertThrows(InvalidContractException.class, () -> new UserHistory(2, 12, List.of()));
+		assertEquals(720, new UserHistory(2, 720, List.of()).windowHours());
+		assertThrows(InvalidContractException.class, () -> new UserHistory(2, 0, List.of()));
+		assertThrows(InvalidContractException.class, () -> new UserHistory(-1, 24, List.of()));
 	}
 
 	@Test

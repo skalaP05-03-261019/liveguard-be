@@ -21,14 +21,23 @@ import com.lifeguards.liveguard.contracts.dto.request.AgentEventRequest;
 import com.lifeguards.liveguard.contracts.dto.response.ApiResponse;
 import com.lifeguards.liveguard.contracts.dto.response.ChannelInfo;
 import com.lifeguards.liveguard.contracts.dto.response.ContextData;
+import com.lifeguards.liveguard.contracts.dto.response.ChannelUserRole;
 import com.lifeguards.liveguard.contracts.enums.ErrorCode;
 import com.lifeguards.liveguard.contracts.exception.InvalidContractException;
 import com.lifeguards.liveguard.platform.CaseContextQuery;
 import com.lifeguards.liveguard.platform.port.GuardEventPublisher;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.security.SecurityRequirement;
+import io.swagger.v3.oas.annotations.security.SecurityScheme;
+import io.swagger.v3.oas.annotations.enums.SecuritySchemeType;
+import io.swagger.v3.oas.annotations.enums.SecuritySchemeIn;
 
 /** B1 담당 내부 API (Agent·business-mcp 호출). B2 담당 경로(사건 조회, 사용자 이력, 판정, 강퇴 실행)는 B2가 만든다. */
 @RestController
 @RequestMapping("/internal/cases/{caseId}")
+@SecurityRequirement(name = "serviceToken")
+@SecurityScheme(name = "serviceToken", type = SecuritySchemeType.APIKEY,
+		in = SecuritySchemeIn.HEADER, paramName = "X-Service-Token")
 class InternalCaseController {
 
 	private final CaseContextQuery cases;
@@ -40,14 +49,31 @@ class InternalCaseController {
 	}
 
 	@GetMapping("/context")
+	@Operation(summary = "get_chat_context: get masked case messages and surrounding context",
+			description = "Real BE1 query, at most 20 messages; before/after each 0..10. Legacy view=chatContext is accepted.")
 	ApiResponse<ContextData> context(@PathVariable UUID caseId,
-			@RequestParam(defaultValue = "10") int before, @RequestParam(defaultValue = "10") int after) {
+			@RequestParam(defaultValue = "10") int before, @RequestParam(defaultValue = "10") int after,
+			@RequestParam(required = false) String view) {
+		if (view != null && !view.equals("chatContext")) {
+			throw new InvalidContractException("Use the dedicated case or channel-info endpoint instead of view");
+		}
 		return new ApiResponse<>(cases.context(caseId, before, after), TraceIdFilter.current());
 	}
 
 	@GetMapping("/channel-info")
+	@Operation(summary = "Get current channel role, official hosts and registered events",
+			description = "Shared source for get_stream_info/get_official_links; not live lifecycle or verified PII facts. Official links are not exempt from link prohibition.")
 	ApiResponse<ChannelInfo> channelInfo(@PathVariable UUID caseId) {
 		return new ApiResponse<>(cases.channelInfo(caseId), TraceIdFilter.current());
+	}
+
+	@GetMapping("/role")
+	@Operation(summary = "get_channel_user_role: get the current case author's channel role",
+			description = "Reuses BE1 channel info. A former member is returned as VIEWER by the current BE1 query; this is not a historical or verified identity claim.")
+	ApiResponse<ChannelUserRole> role(@PathVariable UUID caseId) {
+		ChannelInfo info = cases.channelInfo(caseId);
+		return new ApiResponse<>(new ChannelUserRole(info.authorRole(), info.isOfficialOperator()),
+				TraceIdFilter.current());
 	}
 
 	/** Agent 진행 이벤트를 관제 SSE로 넘긴다. 계약 필드만 옮기고 나머지 payload(도구 인자 등)는 버린다. */

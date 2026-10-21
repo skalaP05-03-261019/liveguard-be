@@ -133,6 +133,18 @@ class InternalApiTest {
 	// ----- context -----
 
 	@Test
+	void legacyChatViewUsesRealMaskedQueryAndRoleUsesChannelInfo() throws Exception {
+		insert(VIEWER, "연락처 010-1234-5678", 0, caseId);
+		mockMvc.perform(internal(get(context(caseId))).param("view", "chatContext"))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.data.messages[0].text").value("연락처 [PHONE]"));
+		mockMvc.perform(internal(get("/internal/cases/{id}/role", caseId)))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.data.authorRole").value("VIEWER"))
+				.andExpect(jsonPath("$.data.isOfficialOperator").value(false));
+	}
+
+	@Test
 	void contextHasEvidenceWithSurroundingMessagesInOrder() throws Exception {
 		for (int i = 0; i < 12; i++) {
 			insert(MODERATOR, "앞 " + i, i, null);

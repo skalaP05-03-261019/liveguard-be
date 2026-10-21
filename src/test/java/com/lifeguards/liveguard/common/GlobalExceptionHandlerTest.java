@@ -171,17 +171,18 @@ class GlobalExceptionHandlerTest {
 	@ParameterizedTest
 	@EnumSource(ErrorCode.class)
 	void apiExceptionMapsEveryErrorCodeToItsStatus(ErrorCode code) throws Exception {
-		Map<ErrorCode, Integer> expected = Map.of(
-				ErrorCode.VALIDATION_FAILED, 400,
-				ErrorCode.UNAUTHENTICATED, 401,
-				ErrorCode.FORBIDDEN, 403,
-				ErrorCode.KICKED, 403,
-				ErrorCode.NOT_FOUND, 404,
-				ErrorCode.STALE_VERSION, 409,
-				ErrorCode.IDEMPOTENCY_CONFLICT, 409,
-				ErrorCode.REVIEW_NOT_APPROVED, 422,
-				ErrorCode.TEMPORARY_UNAVAILABLE, 503,
-				ErrorCode.INTERNAL_ERROR, 500);
+		Map<ErrorCode, Integer> expected = Map.ofEntries(
+				Map.entry(ErrorCode.VALIDATION_FAILED, 400),
+				Map.entry(ErrorCode.UNAUTHENTICATED, 401),
+				Map.entry(ErrorCode.FORBIDDEN, 403),
+				Map.entry(ErrorCode.KICKED, 403),
+				Map.entry(ErrorCode.NOT_FOUND, 404),
+				Map.entry(ErrorCode.STALE_VERSION, 409),
+				Map.entry(ErrorCode.IDEMPOTENCY_CONFLICT, 409),
+				Map.entry(ErrorCode.REVIEW_NOT_APPROVED, 422),
+				Map.entry(ErrorCode.NOT_IMPLEMENTED, 501),
+				Map.entry(ErrorCode.TEMPORARY_UNAVAILABLE, 503),
+				Map.entry(ErrorCode.INTERNAL_ERROR, 500));
 
 		mockMvc.perform(get("/test/api-error/" + code.name()))
 				.andExpect(status().is(expected.get(code)))

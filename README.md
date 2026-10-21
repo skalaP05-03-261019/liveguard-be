@@ -53,47 +53,90 @@ Spring Boot 4.1에 맞는 `springdoc-openapi-starter-webmvc-ui` 3.1.1을 사용�
 
 ## Agent Business MCP REST 계약
 
-인접한 `../liveguard-agent/app/business_mcp/tools.py` 및 `backend.py`의 실제 호출에 맞춘
-**계약 스텁**입니다. 정상 형식 요청도 HTTP `501`과
-`{error:{code:"NOT_IMPLEMENTED",message:...,retryable:false},traceId:...}`를 반환합니다.
-조회 결과를 꾸며내거나 제재·재심 조치를 실행하지 않습니다.
-`X-Trace-Id`에는 UUID를 전달하며, 생략하면 오류 응답에 새 UUID를 생성합니다.
+기준은 [2026-10-20 CONTRACTS](https://geode-phosphorus-891.notion.site/CONTRACTS-f8e61f4176b5829c9e1c8157b8124676)와
+[POLICY](https://geode-phosphorus-891.notion.site/POLICY-e3661f4176b582ab920d01ba690418b7)입니다.
+REST 경로·필드는 이 저장소의 [OpenAPI](contracts/openapi.yaml)를 사용합니다.
+모든 내부 요청은 `X-Service-Token`이 필요합니다. BE의 `liveguard.internal.service-token`
+(`INTERNAL_SERVICE_TOKEN`으로 주입하거나 `LIVEGUARD_INTERNAL_SERVICE_TOKEN`으로 직접 설정)과 맞추며,
+미설정·누락·오류 시 `403 FORBIDDEN`입니다.
+브라우저 세션이나 `Authorization: Bearer ...`로 대체할 수 없으며 CSRF 토큰은 필요하지 않습니다.
+`X-Trace-Id`가 유효한 UUID면 정규화해 유지하고, 없거나 잘못된 값이면 새로 생성합니다.
+오류·성공 본문의 `traceId`와 응답 헤더를 일치시킵니다.
 
-| Agent tool | Backend REST |
-| --- | --- |
-| `get_moderation_case` | `GET /internal/cases/{caseId}/context?view=moderationCase` |
-| `get_chat_context` | `GET /internal/cases/{caseId}/context?view=chatContext&before=5&after=5` |
-| `get_stream_info` | `GET /internal/cases/{caseId}/context?view=streamInfo` |
-| `get_official_links` | `GET /internal/cases/{caseId}/context?view=officialLinks` |
-| `get_security_facts` | `GET /internal/cases/{caseId}/context?view=securityFacts` |
-| `get_user_history` | `GET /internal/cases/{caseId}/history` (TIMEOUT 유형별 이력, 현재 사건 제외) |
-| `get_kick_eligibility` (Agent에 추가 필요) | `GET /internal/cases/{caseId}/kick-eligibility` (강퇴 후보, 최근 24시간 고정) |
-| `get_action_status` | `GET /internal/actions/{actionId}` |
-| `hide_message`, `timeout_user`, `release_message`, `kick_user` | `POST /internal/actions/{actionId}/execute` |
-| `reconcile_review` | `POST /internal/cases/{caseId}/reviews/{decisionId}/reconcile` |
+| Agent tool | 표준 Backend REST | 현재 상태 |
+| --- | --- | --- |
+| `get_moderation_case` | `GET /internal/cases/{caseId}` | 501 스텁 |
+| `get_chat_context` | `GET /internal/cases/{caseId}/context?before=5&after=5` | 실제 DB 조회·마스킹 |
+| `get_stream_info`, `get_official_links` | `GET /internal/cases/{caseId}/channel-info` | 실제 채널 역할·공식 호스트·등록 이벤트 조회 |
+| `get_channel_user_role` | `GET /internal/cases/{caseId}/role` | 실제 채널 정보 조회 재사용 |
+| `get_security_facts` | `GET /internal/cases/{caseId}/security-facts` | 501 스텁, 출처 기반 TRUE/FALSE/UNKNOWN 계약 |
+| `get_user_history` | `GET /internal/cases/{caseId}/user-history` | 501 스텁, TIMEOUT 유형별 이력 |
+| `get_kick_eligibility` | `GET /internal/cases/{caseId}/kick-eligibility` | 501 스텁, 강퇴 신규 후보 |
+| `get_kick_review_basis` | `GET /internal/kick-reviews/{reviewId}/basis` | 501 스텁, 원 승인 기준·소진 소유권 |
+| `get_action_status` | `GET /internal/actions/{actionId}` | 501 스텁 |
+| `hide_message`, `timeout_user`, `release_message`, `kick_user` | `POST /internal/actions/{actionId}/execute` | 501 스텁 |
+| `reconcile_review` (폐기 예정) | `POST /internal/cases/{caseId}/reviews/{decisionId}/reconcile` | 501 레거시 스텁 |
 
-실행 요청 본문은 Agent의 `ActionCommand` JSON입니다. Agent 전용 `BusinessActionCommand`로
-`KICK`, 승인 `decisionId`, 서로 다른 위반 참조 `violationIds` 3개 이상을 포함한 계약을 정의하며,
-기존 업무 `ActionCommand`의 `RECONCILE_REVIEW` 계약은 변경하지 않습니다.
-재심 요청 본문은 `{caseId,decisionId}`이며 경로의 값과 같아야 합니다.
+스텁은 인증·입력 검증 후 `501 {error:{code:"NOT_IMPLEMENTED",message:...,retryable:false},traceId:...}`를 반환하며
+성공 데이터나 실제 조치를 생성하지 않습니다. 잘못된 입력은 `400 VALIDATION_FAILED`,
+구현된 조회의 사건 메시지가 없으면 `404 NOT_FOUND`입니다. `/internal/**`는 외부에 공개하지 않습니다.
+서비스 인증은 구현됐지만 실제 조치의 업무 권한·버전·멱등성 검증은 후속 작업입니다.
 
-기획서 v0.3과 달리 Agent는 조회를 `context?view=...`로 통합하고 `/history`를 사용합니다.
-문맥 조회의 `before/after`는 각각 0~10입니다.
-TIMEOUT 이력의 `days`는 호환성을 위한 선택적 양수 입력이며 기본값이나 30일 상한을
-확정 정책으로 두지 않습니다. 조회 기간은 정책 합의 후 Service에서 결정해야 하고,
-`UserHistory.windowHours`는 실제 조회 기간을 표현합니다. 강퇴 심사 소진은 이 이력을 삭제하지 않습니다.
+### 조회 계약과 남은 정책
 
-강퇴 후보는 같은 사용자·채널·방송의 Backend 확정 사건을 최근 24시간 내에서 조회하며,
-이번 사건을 포함하고 5개 위험 유형을 합쳐 `caseId`당 1건으로 집계합니다.
-판정 취소·심사 소진 사건은 제외하지만 TIMEOUT 만료만으로는 제외하지 않습니다.
-`KickEligibility`의 사건 ID는 중복될 수 없고 `violationCount`와 일치해야 합니다.
-3건 이상이면 운영자 승인 요청 대상이지 자동 강퇴가 아닙니다.
-대기 중에는 기준 사건을 예약하고 승인·거절 결정 시 사용한 사건을 기록해 반복 요청을 막아야 합니다.
-거절 시 기존 가림을 유지하며, 승인 후 원 기준을 재검증해 현재 방송 종료까지 퇴장·재입장·채팅 금지를 적용합니다.
-새 방송으로 강퇴 효력을 승계하지 않습니다. 이 처리는 아직 구현되지 않았습니다.
-강퇴 후보 API의 `days` 입력은 거부합니다. Agent의 기존 이력 도구와 별도 도구로 연결해야 합니다.
-내부 API 인증·권한 검사도 아직 미구현이므로 `/internal/**`를 외부에 공개하지 마세요.
-실제 업무 구현 전에 서비스 토큰 검증과 권한·버전·멱등성 검증을 연결해야 합니다.
+- 문맥: `before/after` 각각 0~10, 생략 시 각각 10. 사건 메시지를 우선하는 응답 전체 최대 20건입니다.
+- 채널 정보는 방송 활성 상태·종료 시각이나 개인정보 실체를 보장하지 않습니다.
+  공식 호스트라는 이유로 링크 전송 금지를 면제하지 않습니다.
+- 역할은 현재 채널 역할입니다. BE1 조회는 탈퇴한 작성자를 VIEWER로 반환하므로 과거 역할·본인 확인 결과로 쓰지 않습니다.
+- `SecurityFacts`의 TRUE/FALSE에는 검증 출처가 필요하고 확인 불가는 UNKNOWN입니다.
+  채널 정보를 개인정보 검증 결과로 바꿔 반환하지 않습니다.
+- TIMEOUT 이력은 현재 사건을 제외하며 강퇴 소진 후에도 유효한 과거 이력을 유지합니다.
+  `days`는 선택적 양수 요청값이며 기본값·30일 상한을 확정하지 않습니다.
+  조회 기간은 TBD-03 합의 후 정하고, 응답 `windowHours`는 실제 조회 기간을 표현합니다.
+- 강퇴 후보는 같은 사용자·채널·방송의 Backend 확정 사건 중 최근 24시간, 현재 사건 포함,
+  5개 위험 유형 통합 `distinct caseId`입니다. 취소·소진은 제외하지만 TIMEOUT 만료는 제외 사유가 아닙니다.
+  3건 이상은 심사 요청 조건이지 승인이나 실행 허가가 아닙니다. 기간 변경용 `days`는 거부합니다.
+- 승인 심사는 기준 사건을 고정·예약하고 승인/거절 모두 소진을 기록해야 합니다.
+  `KickReviewBasis`는 원 승인 사건과 소진의 `reviewId/decisionId`를 제공하며 신규 후보 조회와 다릅니다.
+  자기 승인에 따른 소진은 재검증 때 허용하지만 타 심사 소진·취소 등은 검증해야 합니다.
+- `InternalCase`는 `liveId`, `snapshotId`, `evidenceVersion`, `policyVersion`, `handlingRoute`,
+  대상 메시지의 가시성·버전(`targets`)을 정의합니다. 실제 영속 스냅샷 생성은 후속 사건 저장 이슈에서 연결합니다.
+  방송 생명주기, 유형별 이력 기간, 기준 시각/경계, 심사 3건 초과 선택, 승인 유효기간,
+  TIMEOUT 중첩, 재시도 오류 코드·간격은 합의 전 임의 구현하지 않습니다.
+  활성 `policyVersion`은 아직 승인된 값이 없으며 예제·테스트 값은 배포 버전이 아닙니다.
+
+### 실행·결정 계약
+
+`BusinessActionCommand`는 Backend 발급 계획만 전달합니다. 공통 `liveId`가 필요하고,
+KICK에는 `reviewId`, `decisionId`, `basisSnapshotId`, `validationRef`, 서로 다른 `basisCaseIds` 3개 이상이 필요합니다.
+입력 형식 검증은 승인 검증을 대체하지 않습니다. BE는 저장된 승인·고정 기준·버전·방송 상태를 실행 직전에 재검증해야 합니다.
+`durationSeconds`는 TIMEOUT에만 사용하고 KICK에는 사용하지 않습니다. KICK은 현재 방송 종료까지 적용합니다.
+RELEASE_HELD는 문맥의 저장된 정상 결정을 참조할 수 있으며 다른 유효 HOLD/HIDE가 있으면 공개할 수 없습니다.
+
+`ActionExecutionResult`는 `status`(PENDING/RUNNING/SUCCEEDED/FAILED)와
+`observation`(CONFIRMED/UNKNOWN), nullable `applied`, 영속 `attemptCount/retryCount`를 구분합니다.
+UNKNOWN은 `applied=null`이며 성공·실패로 확정하지 않습니다. KICK의 최초 포함 최대 시도는 3회이고,
+응답 유실 시 새 조치를 만들지 말고 동일 action의 상태를 확인합니다. KICK에 고정 만료 시각을 사용하지 않습니다.
+
+`reconcile_review`는 기존 호환 계약일 뿐 새 CONTEXT/KICK 결정·Agent resume API가 아닙니다.
+본문 `{caseId,decisionId}`는 경로와 같아야 하며 자동 강퇴 승인·소진 취소·HIDE/TIMEOUT 복구를 하지 않습니다.
+문맥 AI 제안은 운영자의 정상/위반/보류 결정 전 HELD를 유지해야 합니다.
+강퇴 승인은 별도이며 거절·실패가 기존 가림이나 제한을 해제하지 않습니다.
+OpenAPI에 남은 판정·구형 강퇴 실행 API는 후속 구현 계획이며 현재 제공되는 API로 오해하지 않도록 구분합니다.
+
+### Agent 저장소에 필요한 후속 변경
+
+이번 변경은 BE 저장소에 한정되므로 인접 `liveguard-agent` 어댑터는 별도 수정해야 합니다.
+
+1. 인증 헤더를 `Authorization`에서 `X-Service-Token`으로 변경합니다.
+2. `context?view=moderationCase`는 `/cases/{caseId}`로,
+   `view=streamInfo/officialLinks`는 `/channel-info`로, `view=securityFacts`는 `/security-facts`로 변경합니다.
+   `/context`는 문맥 전용이며 이전 `view=chatContext`만 호환합니다. 다른 view는 400으로 거부합니다.
+3. `/history`는 폐기 예정 별칭입니다. `/user-history`로 전환하고 고정 `days=30` 정책을 제거합니다.
+4. `get_kick_eligibility`, `get_kick_review_basis`, `get_channel_user_role`을 등록합니다.
+5. 실행 명령의 `violationIds`를 `basisCaseIds`로 바꾸고 `liveId`와 KICK 승인·검증 참조를 연결합니다.
+   응답의 UNKNOWN·실제 적용 여부와 지속 재시도 예산을 처리합니다.
+6. RAG의 `search_policy/get_policy_section`은 별도 서버 책임이며 BE와 정책 버전을 맞춥니다.
 
 ## Docker 실행
 
