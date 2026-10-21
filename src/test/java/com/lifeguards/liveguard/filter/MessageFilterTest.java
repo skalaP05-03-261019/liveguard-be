@@ -253,6 +253,17 @@ class MessageFilterTest {
 		assertEquals("norm-v1+dict-v2", MessageFilter.version());
 	}
 
+	@ParameterizedTest
+	@ValueSource(strings = { "first.last@example.com", "a.b.c+tag@sub.example.co.kr" })
+	void emailIsNotALinkEvenWithDottedLocalPart(String text) {
+		FilterDecision decision = classify(text);
+
+		assertEquals(HandlingRoute.PASS, decision.handlingRoute(), text);
+		assertEquals(Visibility.PUBLIC, decision.visibility(), text);
+		assertNull(decision.ruleId(), text);
+		assertFalse(decision.matchingTags().contains(MessageFilter.LINK), text);
+	}
+
 	@Test
 	void plainChatIsPass() {
 		FilterDecision decision = classify("오늘 무대 좋았어요");
