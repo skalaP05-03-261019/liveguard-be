@@ -607,8 +607,11 @@ paths:
         Implemented Backend query of masked case messages and surrounding chat; response has at most 20 messages.
         before and after each default to 10 and must be between 0 and 10. Missing case message is 404.
         Optional deprecated view accepts only `chatContext`; any other value is 400.
-        Snapshot/evidence version and message visibility enrichment required by the Agent loader
-        is deferred; this response alone does not satisfy the complete Agent context contract.
+        Surrounding messages are taken from the same live as the case messages. Case messages from before
+        the live lifecycle (no live) only see other such messages of the same channel. Every message carries
+        its current `visibility`.
+        Snapshot/evidence version enrichment required by the Agent loader is owned by the guard side and is
+        deferred; this response alone does not satisfy the complete Agent context contract.
       x-owner: B1
       x-implementation-status: implemented
       security:
