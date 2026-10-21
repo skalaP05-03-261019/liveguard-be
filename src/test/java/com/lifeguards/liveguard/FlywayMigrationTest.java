@@ -47,7 +47,7 @@ class FlywayMigrationTest {
 				"SELECT version FROM flyway_schema_history WHERE success AND version IS NOT NULL ORDER BY installed_rank",
 				String.class);
 
-		assertEquals(List.of("100", "101", "200", "201"), versions);
+		assertEquals(List.of("100", "101", "200", "201", "202"), versions);
 	}
 
 	@Test
