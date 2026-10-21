@@ -1,30 +1,41 @@
 openapi: 3.1.0
 info:
   title: LIVE:GUARD API
-  version: 0.5.0
+  version: 0.6.0-draft
   description: |
-    v0.5 구현 기준. 메시지 가림은 Backend 업무 규칙, Agent의 변경 도구는 interrupt가 걸린 `kick_user` 하나.
+    0.6.0-draft 계약. 내부 business-tool 중 `/context`, `/channel-info`, `/role`은 현재 조회 구현이며,
+    나머지 표시된 business-tool 스텁은 HTTP 501 `NOT_IMPLEMENTED` (retryable=false)이다.
+    `x-implementation-status: planned`는 미래/레거시 계약일 뿐 현재 구현을 의미하지 않는다.
+    InternalCase DTO는 현재 기본 snapshot 필드만 포함하며, persistence 기반 snapshot 보강은 후속 작업이다.
 
     공통 규칙
-    - ID는 UUID 문자열, 시각은 UTC ISO 8601. JSON은 camelCase.
+    - ID와 traceId는 UUID 문자열, 시각은 UTC ISO 8601. JSON은 camelCase.
     - 성공 응답 `{data, traceId}`, 오류 응답 `{error, traceId}`.
     - 브라우저 인증은 같은 출처 세션 쿠키. CSRF는 Spring `CookieCsrfTokenRepository` 기본값을 사용한다
       (`XSRF-TOKEN` 쿠키를 읽어 변경 요청에 `X-XSRF-TOKEN` 헤더로 보냄. axios는 자동 처리).
-    - 내부 API(`/internal/**`)는 브라우저에 공개하지 않고 서비스 토큰을 검사한다.
+    - 내부 API(`/internal/**`)는 브라우저에 공개하지 않고 `X-Service-Token`을 검사한다. 누락·오류 시 403.
+    - `X-Trace-Id`가 UUID 형식이면 요청 traceId로 재사용하고, 아니면 새 UUID를 생성해 응답 헤더와 응답 envelope에 넣는다.
 
     MCP 도구 (내부 API를 감싼 어댑터)
     | 서버 | 도구 | 구분 | 내부 API |
     | --- | --- | --- | --- |
-    | business-mcp | get_moderation_case | 조회 | GET /internal/cases/{caseId} |
-    | business-mcp | get_chat_context | 조회 | GET /internal/cases/{caseId}/context |
-    | business-mcp | get_user_history | 조회 | GET /internal/cases/{caseId}/user-history |
-    | business-mcp | get_channel_info | 조회 | GET /internal/cases/{caseId}/channel-info |
-    | business-mcp | kick_user | 변경, destructiveHint, interrupt 필수 | POST /internal/kick-reviews/{reviewId}/execute |
+    | business-mcp | get_moderation_case | 스텁 | GET /internal/cases/{caseId} |
+    | business-mcp | get_chat_context | 구현된 조회 | GET /internal/cases/{caseId}/context |
+    | business-mcp | get_channel_info, get_stream_info, get_official_links | 구현된 공유 조회 | GET /internal/cases/{caseId}/channel-info |
+    | business-mcp | get_channel_user_role | 구현된 조회 | GET /internal/cases/{caseId}/role |
+    | business-mcp | get_security_facts | 스텁 | GET /internal/cases/{caseId}/security-facts |
+    | business-mcp | get_user_history | 스텁 | GET /internal/cases/{caseId}/user-history |
+    | business-mcp | get_kick_eligibility | 스텁 | GET /internal/cases/{caseId}/kick-eligibility |
+    | business-mcp | get_kick_review_basis | 스텁 | GET /internal/kick-reviews/{reviewId}/basis |
+    | business-mcp | get_action_status | 스텁 | GET /internal/actions/{actionId} |
+    | business-mcp | business action | 스텁 | POST /internal/actions/{actionId}/execute |
+    | business-mcp | reconcile_review | deprecated 스텁 | POST /internal/cases/{caseId}/reviews/{decisionId}/reconcile |
     | rag-mcp | search_policy | 조회 | (pgvector) |
     | rag-mcp | policy://{version}/{documentId}/{sectionId} | Resource | 정책 원문 |
 
-    판정 제출(`POST /internal/cases/{caseId}/judgment`)은 MCP 도구가 아니라 Agent 서버가 결과를 보고하는 호출이다.
-    Agent 서버 엔드포인트: `POST /agent/cases/{caseId}/run`, `POST /agent/kick-reviews/{reviewId}/resume`.
+    `POST /internal/cases/{caseId}/judgment`와 `POST /internal/kick-reviews/{reviewId}/execute`는 planned legacy 계약이다.
+    새 action 실행의 canonical 계약은 `/internal/actions/{actionId}/execute`이며 현재 스텁이다.
+    Judgment의 Agent context 판정은 사람의 결정 전 최종 판정이 아니며 자동 kick을 의미하지 않는다.
 
     `x-owner`: B1 = 인증·채팅·채팅 SSE·내부 조회 API, B2 = 사건·판정 처리·강퇴·관제 SSE 발행.
 servers:
@@ -303,50 +314,71 @@ paths:
   /internal/cases/{caseId}:
     parameters:
       - $ref: '#/components/parameters/CaseId'
+      - $ref: '#/components/parameters/TraceIdHeader'
     get:
       tags: [Internal]
       operationId: internalGetCase
       summary: get_moderation_case
+      description: Contract stub. Current InternalCase fields only; persistence-backed snapshot enrichment is pending.
+      x-implementation-status: stub
       x-owner: B2
       security:
         - serviceToken: []
       responses:
-        '200':
-          description: 사건과 메시지 (마스킹)
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/InternalCaseResponse'
+        '403':
+          $ref: '#/components/responses/Error'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
 
   /internal/cases/{caseId}/context:
     parameters:
       - $ref: '#/components/parameters/CaseId'
+      - $ref: '#/components/parameters/TraceIdHeader'
     get:
       tags: [Internal]
       operationId: internalGetContext
       summary: get_chat_context
       description: |
-        사건 메시지(messages.case_id)와 앞뒤 채팅. 사건 메시지가 없으면 404. before·after가 0~10 밖이면 400.
-        서비스 토큰이 없거나 틀리면 403 (브라우저 세션으로는 호출할 수 없다).
+        Implemented Backend query of masked case messages and surrounding chat; response has at most 20 messages.
+        before and after each default to 10 and must be between 0 and 10. Missing case message is 404.
+        Optional deprecated view accepts only `chatContext`; any other value is 400.
       x-owner: B1
+      x-implementation-status: implemented
       security:
         - serviceToken: []
       parameters:
         - name: before
           in: query
+          required: false
+          description: Number of preceding messages; range 0..10.
           schema:
             type: integer
+            minimum: 0
             default: 10
             maximum: 10
         - name: after
           in: query
+          required: false
+          description: Number of following messages; range 0..10.
           schema:
             type: integer
+            minimum: 0
             default: 10
             maximum: 10
+        - name: view
+          in: query
+          required: false
+          deprecated: true
+          description: Legacy compatibility parameter. Only `chatContext` is accepted; all other values return 400.
+          schema:
+            type: string
+            enum: [chatContext]
       responses:
         '200':
           description: 전후 채팅 최대 20건 (마스킹)
+          headers:
+            X-Trace-Id:
+              $ref: '#/components/headers/TraceId'
           content:
             application/json:
               schema:
@@ -361,35 +393,120 @@ paths:
   /internal/cases/{caseId}/user-history:
     parameters:
       - $ref: '#/components/parameters/CaseId'
+      - $ref: '#/components/parameters/TraceIdHeader'
     get:
       tags: [Internal]
       operationId: internalGetUserHistory
       summary: get_user_history
+      description: |
+        Contract stub (501). TIMEOUT history by category, excluding the current case.
+        Consumed kick-review cases remain in history. Optional positive `days` requests a range;
+        no default, maximum, or policy lookback is established. `windowHours` reports the resolved range.
+      x-implementation-status: stub
       x-owner: B2
       security:
         - serviceToken: []
+      parameters:
+        - name: days
+          in: query
+          required: false
+          description: Optional positive requested range; no default or maximum is established.
+          schema:
+            type: integer
+            minimum: 1
       responses:
-        '200':
-          description: 최근 24시간 위반 횟수와 최근 사건
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/UserHistoryResponse'
+        '400':
+          $ref: '#/components/responses/Error'
+        '403':
+          $ref: '#/components/responses/Error'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+
+  /internal/cases/{caseId}/history:
+    parameters:
+      - $ref: '#/components/parameters/CaseId'
+      - $ref: '#/components/parameters/TraceIdHeader'
+    get:
+      tags: [Internal]
+      operationId: internalGetUserHistoryLegacy
+      summary: Legacy user-history alias
+      description: Deprecated alias with the same TIMEOUT-only, excludes-current-case semantics as `/user-history`.
+      deprecated: true
+      x-implementation-status: stub
+      x-owner: B2
+      security:
+        - serviceToken: []
+      parameters:
+        - name: days
+          in: query
+          required: false
+          description: Optional positive requested range; no default or maximum is established.
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        '400':
+          $ref: '#/components/responses/Error'
+        '403':
+          $ref: '#/components/responses/Error'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+
+  /internal/cases/{caseId}/kick-eligibility:
+    parameters:
+      - $ref: '#/components/parameters/CaseId'
+      - $ref: '#/components/parameters/TraceIdHeader'
+    get:
+      tags: [Internal]
+      operationId: internalGetKickEligibility
+      summary: get_kick_eligibility
+      description: |
+        Contract stub (501). Fixed 24-hour window includes the current confirmed case and distinct
+        confirmed cases across all five categories. Excludes revoked and consumed cases, but not cases
+        whose TIMEOUT has expired. Eligibility is not approval or permission to execute KICK.
+        A supplied `days` parameter is unsupported and returns 400.
+      x-implementation-status: stub
+      x-owner: B2
+      security:
+        - serviceToken: []
+      parameters:
+        - name: days
+          in: query
+          required: false
+          deprecated: true
+          description: Unsupported; supplying this parameter returns 400 because the window is fixed at 24 hours.
+          schema:
+            type: integer
+      responses:
+        '400':
+          $ref: '#/components/responses/Error'
+        '403':
+          $ref: '#/components/responses/Error'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
 
   /internal/cases/{caseId}/channel-info:
     parameters:
       - $ref: '#/components/parameters/CaseId'
+      - $ref: '#/components/parameters/TraceIdHeader'
     get:
       tags: [Internal]
       operationId: internalGetChannelInfo
       summary: get_channel_info
-      description: 공식 호스트·이벤트와 작성자의 실제 채널 역할. 피싱 판단용.
+      description: |
+        Implemented shared source for get_stream_info and get_official_links. Returns registered official
+        hosts/events, observed link hosts, and the author's current channel role. Not live lifecycle data
+        or verified PII facts. An official host does not exempt a link from link-prohibition rules.
+      x-implementation-status: implemented
       x-owner: B1
       security:
         - serviceToken: []
       responses:
         '200':
           description: 조회 성공
+          headers:
+            X-Trace-Id:
+              $ref: '#/components/headers/TraceId'
           content:
             application/json:
               schema:
@@ -401,16 +518,65 @@ paths:
         '404':
           $ref: '#/components/responses/Error'
 
+  /internal/cases/{caseId}/role:
+    parameters:
+      - $ref: '#/components/parameters/CaseId'
+      - $ref: '#/components/parameters/TraceIdHeader'
+    get:
+      tags: [Internal]
+      operationId: internalGetChannelUserRole
+      summary: get_channel_user_role
+      description: Implemented query of the current case author's channel role; this is not historical or verified identity.
+      x-implementation-status: implemented
+      x-owner: B1
+      security:
+        - serviceToken: []
+      responses:
+        '200':
+          description: Current role
+          headers:
+            X-Trace-Id:
+              $ref: '#/components/headers/TraceId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChannelUserRoleResponse'
+        '403':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+
+  /internal/cases/{caseId}/security-facts:
+    parameters:
+      - $ref: '#/components/parameters/CaseId'
+      - $ref: '#/components/parameters/TraceIdHeader'
+    get:
+      tags: [Internal]
+      operationId: internalGetSecurityFacts
+      summary: get_security_facts
+      description: Contract stub (501). TRUE/FALSE facts require source references; unresolved facts are UNKNOWN. Channel metadata alone is not proof of PII.
+      x-implementation-status: stub
+      x-owner: B2
+      security:
+        - serviceToken: []
+      responses:
+        '403':
+          $ref: '#/components/responses/Error'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+
   /internal/cases/{caseId}/judgment:
     parameters:
       - $ref: '#/components/parameters/CaseId'
+      - $ref: '#/components/parameters/TraceIdHeader'
     post:
       tags: [Internal]
       operationId: internalSubmitJudgment
-      summary: 판정 제출 (Agent 서버 → Backend)
+      summary: Planned legacy judgment contract (Agent server → Backend)
       description: |
-        Backend가 업무 규칙으로 가림·복원과 누적 횟수 계산을 수행한다. 누적 3회면 kick_reviews(PENDING)를 만들고 ID를 돌려준다.
-        Agent는 kickReviewId를 받으면 kick_user 앞의 interrupt 노드로 이동한다.
+        Planned only; not implemented. An Agent context assessment is not a final judgment before the
+        human decision and does not automatically kick a user. Do not infer action or review behavior from this contract.
+      x-implementation-status: planned
       x-owner: B2
       security:
         - serviceToken: []
@@ -421,27 +587,24 @@ paths:
             schema:
               $ref: '#/components/schemas/JudgmentRequest'
       responses:
-        '200':
-          description: 처리 결과
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/JudgmentResultResponse'
-        '409':
+        '403':
           $ref: '#/components/responses/Error'
-        '422':
-          $ref: '#/components/responses/Error'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
 
   /internal/kick-reviews/{reviewId}/execute:
     parameters:
       - $ref: '#/components/parameters/ReviewId'
+      - $ref: '#/components/parameters/TraceIdHeader'
     post:
       tags: [Internal]
       operationId: internalExecuteKick
-      summary: kick_user (변경 도구)
+      summary: Planned legacy kick execution contract
       description: |
-        검토가 APPROVED가 아니면 422 REVIEW_NOT_APPROVED. Idempotency-Key가 같으면 기존 결과를 반환해 재시도해도 중복 강퇴가 없다.
+        Planned, unimplemented legacy contract. Legacy kick execution is pending consolidation with
+        canonical `POST /internal/actions/{actionId}/execute`; this path does not imply kick execution.
       x-owner: B2
+      x-implementation-status: planned
       security:
         - serviceToken: []
       parameters:
@@ -452,22 +615,118 @@ paths:
             type: string
             examples: ['kick:review-uuid']
       responses:
-        '200':
-          description: 강퇴 적용 (또는 기존 결과)
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/KickResultResponse'
-        '409':
+        '403':
           $ref: '#/components/responses/Error'
-        '422':
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+
+  /internal/kick-reviews/{reviewId}/basis:
+    parameters:
+      - $ref: '#/components/parameters/ReviewId'
+      - $ref: '#/components/parameters/TraceIdHeader'
+    get:
+      tags: [Internal]
+      operationId: internalGetKickReviewBasis
+      summary: get_kick_review_basis
+      description: |
+        Contract stub (501). Returns the fixed approved review basis and consumption ownership, not a
+        new eligibility count. During revalidation only this review/decision's consumption is permitted;
+        another review's consumption blocks execution. This read does not approve a review or issue validationRef.
+      x-implementation-status: stub
+      x-owner: B2
+      security:
+        - serviceToken: []
+      responses:
+        '403':
           $ref: '#/components/responses/Error'
-        '503':
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+
+  /internal/actions/{actionId}:
+    parameters:
+      - $ref: '#/components/parameters/ActionId'
+      - $ref: '#/components/parameters/TraceIdHeader'
+    get:
+      tags: [Internal]
+      operationId: internalGetActionStatus
+      summary: get_action_status
+      description: Contract stub (501); reads action status only and does not execute an action.
+      x-implementation-status: stub
+      x-owner: B2
+      security:
+        - serviceToken: []
+      responses:
+        '403':
           $ref: '#/components/responses/Error'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+
+  /internal/actions/{actionId}/execute:
+    parameters:
+      - $ref: '#/components/parameters/ActionId'
+      - $ref: '#/components/parameters/TraceIdHeader'
+    post:
+      tags: [Internal]
+      operationId: internalExecuteAction
+      summary: Execute a Backend-issued action command
+      description: |
+        Contract stub (501). Canonical action command for HIDE, TIMEOUT, RELEASE_HELD, and KICK.
+        The path actionId must match the body. Future execution must revalidate versions, policy,
+        permissions, idempotency, and (for KICK) approval/basis. UNKNOWN observations are nonterminal.
+      x-implementation-status: stub
+      x-owner: B2
+      security:
+        - serviceToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BusinessActionCommand'
+      responses:
+        '400':
+          $ref: '#/components/responses/Error'
+        '403':
+          $ref: '#/components/responses/Error'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+
+  /internal/cases/{caseId}/reviews/{decisionId}/reconcile:
+    parameters:
+      - $ref: '#/components/parameters/CaseId'
+      - $ref: '#/components/parameters/DecisionId'
+      - $ref: '#/components/parameters/TraceIdHeader'
+    post:
+      tags: [Internal]
+      operationId: internalReconcileReview
+      summary: Legacy reconcile_review contract
+      description: |
+        Deprecated contract stub (501); not the CONTEXT/KICK decision or resume API.
+        Does not approve KICK, unconsume cases, or automatically undo existing HIDE/TIMEOUT actions.
+        Body caseId and decisionId must match the path.
+      deprecated: true
+      x-implementation-status: stub
+      x-owner: B2
+      security:
+        - serviceToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReconcileReviewRequest'
+      responses:
+        '400':
+          $ref: '#/components/responses/Error'
+        '403':
+          $ref: '#/components/responses/Error'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
 
   /internal/cases/{caseId}/events:
     parameters:
       - $ref: '#/components/parameters/CaseId'
+      - $ref: '#/components/parameters/TraceIdHeader'
     post:
       tags: [Internal]
       operationId: internalPostEvent
@@ -484,6 +743,9 @@ paths:
       responses:
         '202':
           description: 중계 완료
+          headers:
+            X-Trace-Id:
+              $ref: '#/components/headers/TraceId'
         '400':
           $ref: '#/components/responses/Error'
         '403':
@@ -521,14 +783,46 @@ components:
       required: true
       schema:
         $ref: '#/components/schemas/Uuid'
+    DecisionId:
+      name: decisionId
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/Uuid'
+    ActionId:
+      name: actionId
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/Uuid'
+    TraceIdHeader:
+      name: X-Trace-Id
+      in: header
+      required: false
+      description: UUID is reused; any non-UUID value is ignored and replaced with a generated UUID.
+      schema:
+        type: string
+        pattern: '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
 
   responses:
     Error:
       description: 오류
+      headers:
+        X-Trace-Id:
+          $ref: '#/components/headers/TraceId'
       content:
         application/json:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
+    NotImplemented:
+      description: Contract stub; no business operation was executed. Error code NOT_IMPLEMENTED, retryable=false.
+      headers:
+        X-Trace-Id:
+          $ref: '#/components/headers/TraceId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/NotImplementedErrorResponse'
     EventStream:
       description: SSE. 각 이벤트는 `id`, `event`, `data`(JSON)로 구성된다.
       content:
@@ -541,6 +835,13 @@ components:
             data: {"messageId":"33333333-3333-4333-8333-333333333333","visibility":"HIDDEN","version":2}
 
             : ping
+
+  headers:
+    TraceId:
+      description: UUID trace identifier reused from a valid request header or generated by the server.
+      schema:
+        type: string
+        format: uuid
 
   schemas:
     Uuid:
@@ -566,7 +867,7 @@ components:
       enum: [VIOLATION, NO_VIOLATION, NEEDS_REVIEW]
     Category:
       type: string
-      enum: [PROFANITY, HARASSMENT, FLOOD, PHISHING]
+      enum: [PROFANITY, HARASSMENT, FLOOD, PHISHING, PII_EXPOSURE]
     KickReviewStatus:
       type: string
       enum: [PENDING, APPROVED, REJECTED, EXECUTED, FAILED]
@@ -608,6 +909,26 @@ components:
               type: integer
         traceId:
           type: string
+          format: uuid
+    NotImplementedErrorResponse:
+      type: object
+      required: [error, traceId]
+      properties:
+        error:
+          type: object
+          required: [code, message, retryable]
+          properties:
+            code:
+              type: string
+              const: NOT_IMPLEMENTED
+            message:
+              type: string
+            retryable:
+              type: boolean
+              const: false
+        traceId:
+          type: string
+          format: uuid
 
     LoginRequest:
       type: object
@@ -970,12 +1291,27 @@ components:
           $ref: '#/components/schemas/Timestamp'
     InternalCase:
       type: object
-      required: [caseId, channelId, filterResult, matchingTags, version, messages]
+      description: Current basic DTO. Persistence-backed snapshot enrichment is pending; no additional fields are implied.
+      required: [caseId, channelId, liveId, snapshotId, evidenceVersion, policyVersion, handlingRoute, filterResult, matchingTags, version, messages, targets]
       properties:
         caseId:
           $ref: '#/components/schemas/Uuid'
         channelId:
           $ref: '#/components/schemas/Uuid'
+        liveId:
+          $ref: '#/components/schemas/Uuid'
+        snapshotId:
+          $ref: '#/components/schemas/Uuid'
+        evidenceVersion:
+          type: integer
+          minimum: 1
+        policyVersion:
+          type: string
+          minLength: 1
+          description: Nonblank policy version supplied by the current snapshot; no version value is settled here.
+        handlingRoute:
+          type: string
+          enum: [PASS, RULE_CONFIRMED, CONTEXT_REVIEW, PII_INVESTIGATION, FLOOD_REVIEW]
         filterResult:
           $ref: '#/components/schemas/FilterResult'
         matchingTags:
@@ -984,10 +1320,28 @@ components:
             type: string
         version:
           type: integer
+          minimum: 1
         messages:
           type: array
           items:
             $ref: '#/components/schemas/MaskedMessage'
+        targets:
+          type: array
+          minItems: 1
+          description: Distinct targets; each messageId must reference a message in this snapshot.
+          items:
+            $ref: '#/components/schemas/InternalCaseTarget'
+    InternalCaseTarget:
+      type: object
+      required: [messageId, visibility, version]
+      properties:
+        messageId:
+          $ref: '#/components/schemas/Uuid'
+        visibility:
+          $ref: '#/components/schemas/Visibility'
+        version:
+          type: integer
+          minimum: 1
     InternalCaseResponse:
       type: object
       required: [data, traceId]
@@ -996,90 +1350,489 @@ components:
           $ref: '#/components/schemas/InternalCase'
         traceId:
           type: string
+          format: uuid
+    ContextData:
+      type: object
+      required: [messages, truncated]
+      properties:
+        messages:
+          type: array
+          maxItems: 20
+          items:
+            $ref: '#/components/schemas/MaskedMessage'
+        truncated:
+          type: boolean
     ContextResponse:
       type: object
       required: [data, traceId]
       properties:
         data:
-          type: object
-          required: [messages, truncated]
-          properties:
-            messages:
-              type: array
-              maxItems: 20
-              items:
-                $ref: '#/components/schemas/MaskedMessage'
-            truncated:
-              type: boolean
+          $ref: '#/components/schemas/ContextData'
         traceId:
           type: string
+          format: uuid
+    UserHistory:
+      type: object
+      description: TIMEOUT history by category, excluding the current case; consumed kick-review cases remain included.
+      required: [violationCount, windowHours, recentCases]
+      properties:
+        violationCount:
+          type: integer
+          minimum: 0
+        windowHours:
+          type: integer
+          minimum: 1
+          description: Actual resolved query window; no default or maximum days is established.
+        recentCases:
+          type: array
+          items:
+            $ref: '#/components/schemas/UserHistoryRecentCase'
+    UserHistoryRecentCase:
+      type: object
+      required: [caseId, category, judgedAt]
+      properties:
+        caseId:
+          $ref: '#/components/schemas/Uuid'
+        category:
+          $ref: '#/components/schemas/Category'
+        judgedAt:
+          $ref: '#/components/schemas/Timestamp'
     UserHistoryResponse:
       type: object
       required: [data, traceId]
       properties:
         data:
-          type: object
-          required: [violationCount, windowHours, recentCases]
-          properties:
-            violationCount:
-              type: integer
-            windowHours:
-              type: integer
-              const: 24
-            recentCases:
-              type: array
-              items:
-                type: object
-                required: [caseId, category, judgedAt]
-                properties:
-                  caseId:
-                    $ref: '#/components/schemas/Uuid'
-                  category:
-                    $ref: '#/components/schemas/Category'
-                  judgedAt:
-                    $ref: '#/components/schemas/Timestamp'
+          $ref: '#/components/schemas/UserHistory'
         traceId:
           type: string
+          format: uuid
+    ChannelInfo:
+      type: object
+      required: [officialHosts, events, authorRole, isOfficialOperator, observedLinks]
+      properties:
+        officialHosts:
+          type: array
+          items:
+            type: string
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChannelEventInfo'
+        authorRole:
+          $ref: '#/components/schemas/AuthorRole'
+        isOfficialOperator:
+          type: boolean
+        observedLinks:
+          type: array
+          items:
+            $ref: '#/components/schemas/ObservedLink'
+    ChannelEventInfo:
+      type: object
+      properties:
+        title:
+          type: [string, 'null']
+        summary:
+          type: [string, 'null']
+    ObservedLink:
+      type: object
+      required: [messageId, host, isOfficial]
+      properties:
+        messageId:
+          $ref: '#/components/schemas/Uuid'
+        host:
+          type: string
+        isOfficial:
+          type: boolean
     ChannelInfoResponse:
       type: object
       required: [data, traceId]
       properties:
         data:
-          type: object
-          required: [officialHosts, events, authorRole, isOfficialOperator, observedLinks]
-          properties:
-            officialHosts:
-              type: array
-              items:
-                type: string
-            events:
-              type: array
-              items:
-                type: object
-                properties:
-                  title:
-                    type: string
-                  summary:
-                    type: string
-            authorRole:
-              type: string
-              enum: [VIEWER, STREAMER, OFFICIAL_STAFF, MODERATOR]
-            isOfficialOperator:
-              type: boolean
-            observedLinks:
-              type: array
-              items:
-                type: object
-                required: [messageId, host, isOfficial]
-                properties:
-                  messageId:
-                    $ref: '#/components/schemas/Uuid'
-                  host:
-                    type: string
-                  isOfficial:
-                    type: boolean
+          $ref: '#/components/schemas/ChannelInfo'
         traceId:
           type: string
+          format: uuid
+    AuthorRole:
+      type: string
+      enum: [VIEWER, STREAMER, OFFICIAL_STAFF, MODERATOR]
+    ChannelUserRole:
+      type: object
+      required: [authorRole, isOfficialOperator]
+      properties:
+        authorRole:
+          $ref: '#/components/schemas/AuthorRole'
+        isOfficialOperator:
+          type: boolean
+    ChannelUserRoleResponse:
+      type: object
+      required: [data, traceId]
+      properties:
+        data:
+          $ref: '#/components/schemas/ChannelUserRole'
+        traceId:
+          type: string
+          format: uuid
+    SecurityFacts:
+      type: object
+      required: [facts]
+      properties:
+        facts:
+          type: array
+          items:
+            $ref: '#/components/schemas/SecurityFact'
+    SecurityFact:
+      type: object
+      required: [key, value, sourceRefs]
+      properties:
+        key:
+          type: string
+          minLength: 1
+          description: Nonblank fact key.
+        value:
+          type: string
+          enum: ['TRUE', 'FALSE', UNKNOWN]
+        sourceRefs:
+          type: array
+          description: Required to be non-empty for TRUE/FALSE; UNKNOWN may have no source references.
+          items:
+            type: string
+            minLength: 1
+      allOf:
+        - if:
+            properties:
+              value:
+                enum: ['TRUE', 'FALSE']
+            required: [value]
+          then:
+            properties:
+              sourceRefs:
+                minItems: 1
+    SecurityFactsResponse:
+      type: object
+      required: [data, traceId]
+      properties:
+        data:
+          $ref: '#/components/schemas/SecurityFacts'
+        traceId:
+          type: string
+          format: uuid
+    KickEligibility:
+      type: object
+      description: |
+        Distinct confirmed cases for the same user/channel/live across all five categories in the fixed
+        24-hour window, including the current case. Revoked and consumed cases are excluded; TIMEOUT
+        expiry alone does not revoke a case. Eligibility does not authorize KICK.
+      required: [userId, channelId, liveId, asOf, windowHours, violationCount, eligibleCaseIds]
+      properties:
+        userId:
+          $ref: '#/components/schemas/Uuid'
+        channelId:
+          $ref: '#/components/schemas/Uuid'
+        liveId:
+          $ref: '#/components/schemas/Uuid'
+        asOf:
+          $ref: '#/components/schemas/Timestamp'
+        windowHours:
+          type: integer
+          const: 24
+        violationCount:
+          type: integer
+          minimum: 0
+          description: Must equal the number of distinct eligibleCaseIds.
+        eligibleCaseIds:
+          type: array
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/Uuid'
+    KickEligibilityResponse:
+      type: object
+      required: [data, traceId]
+      properties:
+        data:
+          $ref: '#/components/schemas/KickEligibility'
+        traceId:
+          type: string
+          format: uuid
+    KickReviewBasis:
+      type: object
+      description: Fixed approved review basis and consumption ownership; not a new eligibility count.
+      required: [reviewId, decisionId, liveId, userId, basisSnapshotId, basisCaseIds, consumptions]
+      properties:
+        reviewId:
+          $ref: '#/components/schemas/Uuid'
+        decisionId:
+          $ref: '#/components/schemas/Uuid'
+        liveId:
+          $ref: '#/components/schemas/Uuid'
+        userId:
+          $ref: '#/components/schemas/Uuid'
+        basisSnapshotId:
+          $ref: '#/components/schemas/Uuid'
+        basisCaseIds:
+          type: array
+          minItems: 3
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/Uuid'
+        consumptions:
+          type: array
+          description: Each consumption caseId must be in basisCaseIds. Only this review/decision may own consumption at revalidation.
+          items:
+            $ref: '#/components/schemas/KickReviewConsumption'
+    KickReviewConsumption:
+      type: object
+      required: [caseId, reviewId, decisionId]
+      properties:
+        caseId:
+          $ref: '#/components/schemas/Uuid'
+        reviewId:
+          $ref: '#/components/schemas/Uuid'
+        decisionId:
+          $ref: '#/components/schemas/Uuid'
+    KickReviewBasisResponse:
+      type: object
+      required: [data, traceId]
+      properties:
+        data:
+          $ref: '#/components/schemas/KickReviewBasis'
+        traceId:
+          type: string
+          format: uuid
+    ActionType:
+      type: string
+      enum: [HIDE, TIMEOUT, RELEASE_HELD, KICK]
+    BusinessActionCommand:
+      type: object
+      description: |
+        Backend-issued command. KICK requires review/decision/basis/validation references and at least
+        three distinct basisCaseIds. RELEASE_HELD may carry decisionId; other non-KICK commands must
+        not carry kick basis references. durationSeconds is positive and required only for TIMEOUT.
+      required: [actionId, planId, caseId, liveId, type, targetId, expectedEvidenceVersion, expectedTargetVersion, policyVersion, idempotencyKey]
+      additionalProperties: false
+      properties:
+        actionId:
+          $ref: '#/components/schemas/Uuid'
+        planId:
+          $ref: '#/components/schemas/Uuid'
+        caseId:
+          $ref: '#/components/schemas/Uuid'
+        liveId:
+          $ref: '#/components/schemas/Uuid'
+        type:
+          $ref: '#/components/schemas/ActionType'
+        targetId:
+          $ref: '#/components/schemas/Uuid'
+        expectedEvidenceVersion:
+          type: integer
+          minimum: 1
+        expectedTargetVersion:
+          type: integer
+          minimum: 1
+        policyVersion:
+          type: string
+          minLength: 1
+          description: Nonblank, without a settled or hard-coded policy version.
+        idempotencyKey:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: Nonblank.
+        durationSeconds:
+          type: [integer, 'null']
+          minimum: 1
+        decisionId:
+          oneOf:
+            - $ref: '#/components/schemas/Uuid'
+            - type: 'null'
+        reviewId:
+          oneOf:
+            - $ref: '#/components/schemas/Uuid'
+            - type: 'null'
+        basisSnapshotId:
+          oneOf:
+            - $ref: '#/components/schemas/Uuid'
+            - type: 'null'
+        validationRef:
+          oneOf:
+            - $ref: '#/components/schemas/Uuid'
+            - type: 'null'
+        basisCaseIds:
+          type: [array, 'null']
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/Uuid'
+      allOf:
+        - if:
+            properties:
+              type:
+                const: TIMEOUT
+            required: [type]
+          then:
+            required: [durationSeconds]
+            properties:
+              durationSeconds:
+                type: integer
+                minimum: 1
+          else:
+            properties:
+              durationSeconds:
+                type: 'null'
+        - if:
+            properties:
+              type:
+                const: KICK
+            required: [type]
+          then:
+            required: [decisionId, reviewId, basisSnapshotId, validationRef, basisCaseIds]
+            properties:
+              decisionId:
+                $ref: '#/components/schemas/Uuid'
+              reviewId:
+                $ref: '#/components/schemas/Uuid'
+              basisSnapshotId:
+                $ref: '#/components/schemas/Uuid'
+              validationRef:
+                $ref: '#/components/schemas/Uuid'
+              basisCaseIds:
+                type: array
+                minItems: 3
+                uniqueItems: true
+          else:
+            properties:
+              reviewId:
+                type: 'null'
+              basisSnapshotId:
+                type: 'null'
+              validationRef:
+                type: 'null'
+              basisCaseIds:
+                anyOf:
+                  - type: array
+                    maxItems: 0
+                  - type: 'null'
+        - if:
+            properties:
+              type:
+                enum: [HIDE, TIMEOUT]
+            required: [type]
+          then:
+            properties:
+              decisionId:
+                type: 'null'
+    ReconcileReviewRequest:
+      type: object
+      required: [caseId, decisionId]
+      additionalProperties: false
+      description: Body identifiers must match the caseId and decisionId path parameters.
+      properties:
+        caseId:
+          $ref: '#/components/schemas/Uuid'
+        decisionId:
+          $ref: '#/components/schemas/Uuid'
+    ActionExecutionResult:
+      type: object
+      description: |
+        UNKNOWN requires applied=null and a nonterminal PENDING/RUNNING status. CONFIRMED requires
+        non-null applied. SUCCEEDED requires applied=true; FAILED requires applied=false.
+        retryCount equals max(0, attemptCount - 1). KICK attemptCount is at most 3 and expiresAt is null
+        because KICK ends with the live, not a fixed expiry.
+      required: [actionId, caseId, liveId, type, status, observation, applied, attemptCount, retryCount, startedAt, expiresAt, errorCode]
+      properties:
+        actionId:
+          $ref: '#/components/schemas/Uuid'
+        caseId:
+          $ref: '#/components/schemas/Uuid'
+        liveId:
+          $ref: '#/components/schemas/Uuid'
+        type:
+          $ref: '#/components/schemas/ActionType'
+        status:
+          type: string
+          enum: [PENDING, RUNNING, SUCCEEDED, FAILED]
+        observation:
+          type: string
+          enum: [CONFIRMED, UNKNOWN]
+        applied:
+          type: [boolean, 'null']
+        attemptCount:
+          type: integer
+          minimum: 0
+        retryCount:
+          type: integer
+          minimum: 0
+        startedAt:
+          oneOf:
+            - $ref: '#/components/schemas/Timestamp'
+            - type: 'null'
+        expiresAt:
+          oneOf:
+            - $ref: '#/components/schemas/Timestamp'
+            - type: 'null'
+        errorCode:
+          type: [string, 'null']
+      allOf:
+        - if:
+            properties:
+              observation:
+                const: UNKNOWN
+            required: [observation]
+          then:
+            properties:
+              applied:
+                type: 'null'
+              status:
+                enum: [PENDING, RUNNING]
+        - if:
+            properties:
+              observation:
+                const: CONFIRMED
+            required: [observation]
+          then:
+            properties:
+              applied:
+                type: boolean
+        - if:
+            properties:
+              status:
+                const: SUCCEEDED
+            required: [status]
+          then:
+            properties:
+              observation:
+                const: CONFIRMED
+              applied:
+                const: true
+        - if:
+            properties:
+              status:
+                const: FAILED
+            required: [status]
+          then:
+            properties:
+              observation:
+                const: CONFIRMED
+              applied:
+                const: false
+        - if:
+            properties:
+              type:
+                const: KICK
+            required: [type]
+          then:
+            properties:
+              attemptCount:
+                maximum: 3
+              expiresAt:
+                type: 'null'
+    ActionExecutionResultResponse:
+      type: object
+      required: [data, traceId]
+      properties:
+        data:
+          $ref: '#/components/schemas/ActionExecutionResult'
+        traceId:
+          type: string
+          format: uuid
     JudgmentRequest:
       type: object
       description: |

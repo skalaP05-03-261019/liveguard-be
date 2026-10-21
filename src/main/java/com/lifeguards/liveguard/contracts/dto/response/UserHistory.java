@@ -8,12 +8,11 @@ import com.lifeguards.liveguard.contracts.dto.DtoValidation;
 import com.lifeguards.liveguard.contracts.enums.Category;
 import com.lifeguards.liveguard.contracts.exception.InvalidContractException;
 
+/** TIMEOUT history excludes the current case; kick consumption does not delete it. */
 public record UserHistory(int violationCount, int windowHours, List<RecentCase> recentCases) {
-	private static final int WINDOW_HOURS = 24;
-
 	public UserHistory {
-		if (windowHours != WINDOW_HOURS) {
-			throw new InvalidContractException("windowHours must be " + WINDOW_HOURS);
+		if (windowHours <= 0 || violationCount < 0) {
+			throw new InvalidContractException("windowHours must be positive and violationCount non-negative");
 		}
 		recentCases = DtoValidation.immutableList(recentCases, "recentCases");
 	}

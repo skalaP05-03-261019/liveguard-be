@@ -1,17 +1,18 @@
 package com.lifeguards.liveguard.internal;
 
 import java.util.List;
-import java.util.Objects;
 import java.util.UUID;
 
 import com.lifeguards.liveguard.contracts.dto.DtoValidation;
+import com.lifeguards.liveguard.contracts.enums.ActionType;
+import com.lifeguards.liveguard.contracts.exception.InvalidContractException;
 
-// Agent's KICK contract differs from the existing internal RECONCILE_REVIEW command.
 public record BusinessActionCommand(
 		UUID actionId,
 		UUID planId,
 		UUID caseId,
-		Type type,
+		UUID liveId,
+		ActionType type,
 		UUID targetId,
 		int expectedEvidenceVersion,
 		int expectedTargetVersion,
@@ -19,44 +20,45 @@ public record BusinessActionCommand(
 		String idempotencyKey,
 		Integer durationSeconds,
 		UUID decisionId,
-		List<UUID> violationIds) {
-
-	public enum Type {
-		HIDE, TIMEOUT, RELEASE_HELD, KICK
-	}
+		UUID reviewId,
+		UUID basisSnapshotId,
+		UUID validationRef,
+		List<UUID> basisCaseIds) {
 
 	public BusinessActionCommand {
-		Objects.requireNonNull(actionId, "actionId");
-		Objects.requireNonNull(planId, "planId");
-		Objects.requireNonNull(caseId, "caseId");
-		Objects.requireNonNull(type, "type");
-		Objects.requireNonNull(targetId, "targetId");
+		DtoValidation.requireNonNull(actionId, "actionId");
+		DtoValidation.requireNonNull(planId, "planId");
+		DtoValidation.requireNonNull(caseId, "caseId");
+		DtoValidation.requireNonNull(liveId, "liveId");
+		DtoValidation.requireNonNull(type, "type");
+		DtoValidation.requireNonNull(targetId, "targetId");
 		if (expectedEvidenceVersion <= 0) {
-			throw new IllegalArgumentException("expectedEvidenceVersion must be positive");
+			throw new InvalidContractException("expectedEvidenceVersion must be positive");
 		}
 		if (expectedTargetVersion <= 0) {
-			throw new IllegalArgumentException("expectedTargetVersion must be positive");
+			throw new InvalidContractException("expectedTargetVersion must be positive");
 		}
 		policyVersion = DtoValidation.requireText(policyVersion, "policyVersion");
-		idempotencyKey = DtoValidation.requireText(idempotencyKey, "idempotencyKey");
-		if (idempotencyKey.length() > 200) {
-			throw new IllegalArgumentException("idempotencyKey must be at most 200 characters");
-		}
-		violationIds = violationIds == null ? List.of() : List.copyOf(violationIds);
-		if (type == Type.TIMEOUT) {
+		idempotencyKey = DtoValidation.requireBoundedText(idempotencyKey, "idempotencyKey", 200);
+		basisCaseIds = DtoValidation.immutableListOrEmpty(basisCaseIds);
+		if (type == ActionType.TIMEOUT) {
 			if (durationSeconds == null || durationSeconds < 1) {
-				throw new IllegalArgumentException("TIMEOUT requires positive durationSeconds");
+				throw new InvalidContractException("TIMEOUT requires positive durationSeconds");
 			}
 		} else if (durationSeconds != null) {
-			throw new IllegalArgumentException("durationSeconds is only valid for TIMEOUT");
+			throw new InvalidContractException("durationSeconds is only valid for TIMEOUT");
 		}
-		if (type == Type.KICK) {
-			Objects.requireNonNull(decisionId, "KICK requires decisionId");
-			if (violationIds.stream().distinct().count() < 3) {
-				throw new IllegalArgumentException("KICK requires at least three distinct violationIds");
+		if (type == ActionType.KICK) {
+			DtoValidation.requireNonNull(decisionId, "decisionId");
+			DtoValidation.requireNonNull(reviewId, "reviewId");
+			DtoValidation.requireNonNull(basisSnapshotId, "basisSnapshotId");
+			DtoValidation.requireNonNull(validationRef, "validationRef");
+			if (basisCaseIds.size() < 3 || basisCaseIds.stream().distinct().count() != basisCaseIds.size()) {
+				throw new InvalidContractException("KICK requires at least three distinct basisCaseIds");
 			}
-		} else if (decisionId != null || !violationIds.isEmpty()) {
-			throw new IllegalArgumentException("decisionId and violationIds are only valid for KICK");
+		} else if (reviewId != null || basisSnapshotId != null || validationRef != null || !basisCaseIds.isEmpty()
+				|| (decisionId != null && type != ActionType.RELEASE_HELD)) {
+			throw new InvalidContractException("Kick basis fields are only valid for KICK; RELEASE_HELD may reference a decision");
 		}
 	}
 }
