@@ -193,7 +193,7 @@ Python Agent는 [liveguard-agent](https://github.com/skalaP05-03-261019/liveguar
 
 ## 공통 문서
 
-정책 원본은 [docs/policy/](docs/policy/README.md)(v3.0)입니다. [기획서·정책 v0.3](docs/live-guard/v0.3/README.md)은 이전 기획으로 구현 기준이 아니며, 평가 사례만 계속 사용합니다.
+정책 원본은 [docs/policy/](docs/policy/README.md)(v3.1)입니다. [기획서·정책 v0.3](docs/live-guard/v0.3/README.md)은 이전 기획으로 구현 기준이 아니며, 평가 사례만 계속 사용합니다.
 정책·API 계약 변경은 다른 저장소 담당과 함께 조율합니다.
 
 기존 skala-capstone-P05_03의 커밋 이력은 그대로 보존하며, 저장소 분리 커밋에서 서비스 파일만 재배치합니다.

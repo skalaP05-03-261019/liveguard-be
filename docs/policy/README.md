@@ -1,4 +1,4 @@
-# LIVE:GUARD 정책 원본 (v3.0)
+# LIVE:GUARD 정책 원본 (v3.1)
 
 이 폴더가 LIVE:GUARD의 **정책 원본**이다. 다른 문서(계약 `contracts/openapi.yaml`, `docs/erd.md`, 이전 기획 `docs/live-guard/v0.3/`)와 충돌하면 이 폴더가 우선한다.
 전체 우선순위는 [CLAUDE.md](../../CLAUDE.md)의 "기준 문서" 절을 따른다.
