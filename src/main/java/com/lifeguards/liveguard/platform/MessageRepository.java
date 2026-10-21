@@ -21,8 +21,8 @@ import com.lifeguards.liveguard.contracts.enums.Visibility;
 @Repository
 class MessageRepository {
 
-	record HistoryRow(UUID id, UUID authorId, String authorNickname, String text, Visibility visibility, int version,
-			Instant sentAt) {
+	record HistoryRow(UUID id, UUID liveId, UUID authorId, String authorNickname, String text, Visibility visibility,
+			int version, Instant sentAt) {
 	}
 
 	/** hide·restore가 바꾼 메시지. previous는 바뀌기 전 공개 범위. */
@@ -30,10 +30,10 @@ class MessageRepository {
 			String authorNickname, Instant sentAt) {
 	}
 
-	record StoredMessage(UUID id, String text, Visibility visibility, int version, Instant sentAt) {
+	record StoredMessage(UUID id, UUID liveId, String text, Visibility visibility, int version, Instant sentAt) {
 	}
 
-	private static final String COLUMNS = "id, text, visibility, version, sent_at";
+	private static final String COLUMNS = "id, live_id, text, visibility, version, sent_at";
 
 	private final JdbcClient jdbc;
 
@@ -125,12 +125,12 @@ class MessageRepository {
 	}
 
 	/** 같은 (채널, 작성자, clientMessageId)가 이미 있으면 저장하지 않고 empty를 돌려준다. */
-	Optional<StoredMessage> insertIfAbsent(UUID channelId, UUID authorId, UUID clientMessageId, String text,
-			String normalizedText, FilterResult filterResult, Visibility visibility, Instant sentAt) {
-		return jdbc.sql("INSERT INTO platform.messages (channel_id, author_id, client_message_id, text, "
-				+ "normalized_text, filter_result, visibility, sent_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+	Optional<StoredMessage> insertIfAbsent(UUID channelId, UUID liveId, UUID authorId, UUID clientMessageId,
+			String text, String normalizedText, FilterResult filterResult, Visibility visibility, Instant sentAt) {
+		return jdbc.sql("INSERT INTO platform.messages (channel_id, live_id, author_id, client_message_id, text, "
+				+ "normalized_text, filter_result, visibility, sent_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
 				+ "ON CONFLICT (channel_id, author_id, client_message_id) DO NOTHING RETURNING " + COLUMNS)
-				.params(channelId, authorId, clientMessageId, text, normalizedText, filterResult.name(),
+				.params(channelId, liveId, authorId, clientMessageId, text, normalizedText, filterResult.name(),
 						visibility.name(), Timestamp.from(sentAt))
 				.query((rs, rowNum) -> toStored(rs))
 				.optional();
@@ -146,13 +146,17 @@ class MessageRepository {
 
 	/**
 	 * 최신순 이력. 담당 운영자가 아니면 PUBLIC과 본인 메시지만 SQL에서 거른다
-	 * (타인의 HELD·HIDDEN 원문은 애플리케이션으로 읽어 오지도 않는다).
+	 * (타인의 HELD·HIDDEN 원문은 애플리케이션으로 읽어 오지도 않는다). liveId가 null이면 채널 전체(기존 경로).
 	 */
-	List<HistoryRow> history(UUID channelId, UUID viewerId, boolean operator, MessageCursor after, int limit) {
+	List<HistoryRow> history(UUID channelId, UUID liveId, UUID viewerId, boolean operator, MessageCursor after,
+			int limit) {
 		StringBuilder sql = new StringBuilder("""
-				SELECT m.id, m.author_id, u.nickname, m.text, m.visibility, m.version, m.sent_at
+				SELECT m.id, m.live_id, m.author_id, u.nickname, m.text, m.visibility, m.version, m.sent_at
 				FROM platform.messages m JOIN platform.users u ON u.id = m.author_id
 				WHERE m.channel_id = :channelId""");
+		if (liveId != null) {
+			sql.append(" AND m.live_id = :liveId");
+		}
 		if (!operator) {
 			sql.append(" AND (m.visibility = 'PUBLIC' OR m.author_id = :viewerId)");
 		}
@@ -164,6 +168,9 @@ class MessageRepository {
 		var statement = jdbc.sql(sql.toString())
 				.param("channelId", channelId)
 				.param("limit", limit);
+		if (liveId != null) {
+			statement = statement.param("liveId", liveId);
+		}
 		if (!operator) {
 			statement = statement.param("viewerId", viewerId);
 		}
@@ -172,6 +179,7 @@ class MessageRepository {
 		}
 		return statement.query((rs, rowNum) -> new HistoryRow(
 				rs.getObject("id", UUID.class),
+				rs.getObject("live_id", UUID.class),
 				rs.getObject("author_id", UUID.class),
 				rs.getString("nickname"),
 				rs.getString("text"),
@@ -184,6 +192,7 @@ class MessageRepository {
 	private static StoredMessage toStored(ResultSet rs) throws SQLException {
 		return new StoredMessage(
 				rs.getObject("id", UUID.class),
+				rs.getObject("live_id", UUID.class),
 				rs.getString("text"),
 				Visibility.valueOf(rs.getString("visibility")),
 				rs.getInt("version"),

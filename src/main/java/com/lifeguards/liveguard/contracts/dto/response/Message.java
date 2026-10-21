@@ -6,8 +6,10 @@ import java.util.UUID;
 import com.lifeguards.liveguard.contracts.dto.DtoValidation;
 import com.lifeguards.liveguard.contracts.enums.Visibility;
 
+/** liveId는 방송 도입 전에 저장된 메시지면 null이다(A-17). */
 public record Message(
 		UUID messageId,
+		UUID liveId,
 		UUID channelId,
 		String authorAlias,
 		String text,
