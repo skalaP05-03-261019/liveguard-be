@@ -58,7 +58,6 @@ public class BusinessToolController {
 					days is an optional positive requested range, not an approved policy window.
 					The default TIMEOUT lookback remains undecided; no 30-day default is applied.
 					Explicit days is implemented; omitted days returns 501 for an existing case.
-					windowHours describes the resolved query range and must fit an integer.
 					violationCount counts distinct cases; recentCases contains case/category rows.
 					""")
 	public ApiResponse<UserHistory> getUserHistory(

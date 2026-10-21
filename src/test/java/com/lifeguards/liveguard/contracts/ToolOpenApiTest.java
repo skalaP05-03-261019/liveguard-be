@@ -75,7 +75,7 @@ class ToolOpenApiTest {
 		Map<?, ?> root = contract();
 		Map<?, ?> schemas = map(map(root, "components"), "schemas");
 		Map<?, ?> timeoutProperties = map(map(schemas, "UserHistory"), "properties");
-		assertTrue(!map(timeoutProperties, "windowHours").containsKey("const"));
+		assertTrue(!timeoutProperties.containsKey("windowHours"), "TIMEOUT history scope is the whole live (TBD-03)");
 		assertEquals(24, map(map(map(schemas, "KickEligibility"), "properties"), "windowHours").get("const"));
 		validateReferences(root, root);
 	}

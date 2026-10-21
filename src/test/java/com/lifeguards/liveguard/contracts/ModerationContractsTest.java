@@ -227,11 +227,11 @@ class ModerationContractsTest {
 	}
 
 	@Test
-	void timeoutHistoryWindowIsNotFixedToKickWindow() {
-		assertEquals(24, new UserHistory(2, 24, List.of()).windowHours());
-		assertEquals(720, new UserHistory(2, 720, List.of()).windowHours());
-		assertThrows(InvalidContractException.class, () -> new UserHistory(2, 0, List.of()));
-		assertThrows(InvalidContractException.class, () -> new UserHistory(-1, 24, List.of()));
+	void timeoutHistoryHasNoWindowFieldAndRejectsNegativeCount() {
+		// TIMEOUT 이력 범위는 같은 방송 전체(TBD-03)라 응답에 windowHours가 없다
+		assertEquals(2, new UserHistory(2, List.of()).violationCount());
+		assertThrows(InvalidContractException.class, () -> new UserHistory(-1, List.of()));
+		assertThrows(InvalidContractException.class, () -> new UserHistory(0, null));
 	}
 
 	@Test

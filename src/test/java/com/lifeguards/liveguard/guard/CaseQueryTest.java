@@ -257,7 +257,7 @@ class CaseQueryTest {
 			mockMvc.perform(get("/internal/cases/{id}/" + suffix, current).param("days", "31")
 							.header("X-Service-Token", "query-test-token"))
 					.andExpect(status().isOk())
-					.andExpect(jsonPath("$.data.windowHours").value(744))
+					.andExpect(jsonPath("$.data.windowHours").doesNotExist())
 					.andExpect(jsonPath("$.data.violationCount").value(1))
 					.andExpect(jsonPath("$.data.recentCases[0].caseId").value(past.toString()));
 		}

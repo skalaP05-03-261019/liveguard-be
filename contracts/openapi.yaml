@@ -584,7 +584,8 @@ paths:
         confirmations after the upper bound are excluded. This reads current revocation state, not historical replay.
         violationCount counts distinct cases; recentCases contains one row per case/category.
         No default policy period is approved: omitted days returns 501 for an existing case.
-        days * 24 must fit windowHours (integer); overflow returns 400, not a policy duration limit.
+        days * 24 must fit an integer; overflow returns 400, not a policy duration limit.
+        The response has no windowHours; the v1.0 history scope is the whole live (TBD-03, A-13).
       x-implementation-status: partial
       x-owner: B2
       security:
@@ -1930,18 +1931,13 @@ components:
       type: object
       description: |
         TIMEOUT history by category, excluding the current case; consumed kick-review cases remain included.
-        v1.0 목표: 범위는 같은 userId·liveId의 방송 전체(TBD-03)라 windowHours를 없애고, violationCount는 CONTRACTS 이름에 맞춘다.
-        Java 계약 테스트와 함께 contracts.enums PR에서 바꾼다(A-13, B2 확인 요청).
-      required: [violationCount, windowHours, recentCases]
+        범위는 같은 userId·liveId의 방송 전체(TBD-03)라 조회 창(windowHours)을 응답에 두지 않는다(A-13).
+      required: [violationCount, recentCases]
       properties:
         violationCount:
           type: integer
           minimum: 0
           description: Number of distinct cases, not the sum of category counts.
-        windowHours:
-          type: integer
-          minimum: 1
-          description: Actual resolved query window; no default or maximum days is established.
         recentCases:
           type: array
           items:
@@ -2082,8 +2078,7 @@ components:
         Distinct confirmed cases for the same user/live across all five categories in the fixed
         24-hour window, including the current case. Revoked, consumed and reserved cases are excluded; TIMEOUT
         expiry alone does not revoke a case. Eligibility does not authorize KICK.
-        v1.0 목표: violationCount → count(CONTRACTS §3). Java record·계약 테스트와 함께 contracts.enums PR에서 바꾼다(A-13, B2 확인 요청).
-      required: [userId, channelId, liveId, asOf, windowHours, violationCount, eligibleCaseIds]
+      required: [userId, channelId, liveId, asOf, windowHours, count, eligibleCaseIds]
       properties:
         userId:
           $ref: '#/components/schemas/Uuid'
@@ -2096,10 +2091,10 @@ components:
         windowHours:
           type: integer
           const: 24
-        violationCount:
+        count:
           type: integer
           minimum: 0
-          description: Must equal the number of distinct eligibleCaseIds.
+          description: 통합 사건 수(CONTRACTS §3 KickEligibility.count). Must equal the number of distinct eligibleCaseIds.
         eligibleCaseIds:
           type: array
           uniqueItems: true
