@@ -1,6 +1,8 @@
 package com.lifeguards.liveguard.common;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
@@ -17,9 +19,16 @@ class PolicyPropertiesTest {
 	}
 
 	@Test
-	void bindsTheConfiguredVersion() {
-		runner.withPropertyValues("liveguard.policy.version= v3.2 ")
-				.run(context -> assertEquals("v3.2", context.getBean(PolicyProperties.class).version()));
+	void bindsTheSupportedVersionIgnoringSurroundingSpaces() {
+		runner.withPropertyValues("liveguard.policy.version= v3.1 ")
+				.run(context -> assertEquals("v3.1", context.getBean(PolicyProperties.class).version()));
+	}
+
+	@Test
+	void rejectsUnsupportedVersionsWhileBinding() {
+		assertThrows(IllegalArgumentException.class, () -> new PolicyProperties("v3.2"));
+		runner.withPropertyValues("liveguard.policy.version=v3.2")
+				.run(context -> assertNotNull(context.getStartupFailure()));
 	}
 
 }

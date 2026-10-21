@@ -11,8 +11,13 @@ public record PolicyProperties(String version) {
 
 	public static final String DEFAULT_VERSION = "v3.1";
 
+	/** 필터 규칙과 후보 근거가 v3.1 기준이라 다른 값은 받지 않는다(TBD-08, openapi PolicyVersion). */
 	public PolicyProperties {
 		version = version == null || version.isBlank() ? DEFAULT_VERSION : version.strip();
+		if (!DEFAULT_VERSION.equals(version)) {
+			throw new IllegalArgumentException(
+					"지원하지 않는 정책 버전입니다: " + version + " (liveguard.policy.version은 " + DEFAULT_VERSION + " 고정)");
+		}
 	}
 
 }
