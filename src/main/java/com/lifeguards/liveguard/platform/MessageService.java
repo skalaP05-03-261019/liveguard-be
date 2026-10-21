@@ -83,8 +83,7 @@ class MessageService {
 	Message sendToChannel(UUID channelId, AuthenticatedUser author, SendMessageRequest request) {
 		requireStorable(request.text());
 		if(moderation.integrationEnabled()) {
-			Live current=moderation.current(channelId,author);
-			return mapper.convertValue(moderation.send(current.liveId(),author,request),Message.class);
+			return mapper.convertValue(moderation.sendToChannel(channelId,author,request),Message.class);
 		}
 		return send(channelId, null, author, request);
 	}
@@ -178,7 +177,6 @@ class MessageService {
 	/** 기존 channel 경로(A-18). 모든 방송과 방송 도입 전 메시지를 함께 돌려준다. */
 	@Transactional(readOnly = true)
 	MessagePage historyOfChannel(UUID channelId, AuthenticatedUser viewer, String cursor, int limit) {
-		if(moderation.integrationEnabled()) return mapper.convertValue(moderation.history(moderation.current(channelId,viewer).liveId(),viewer,cursor,limit),MessagePage.class);
 		return history(channelId, null, viewer, cursor, limit);
 	}
 

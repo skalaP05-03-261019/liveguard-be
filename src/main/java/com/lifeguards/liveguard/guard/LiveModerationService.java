@@ -1043,7 +1043,9 @@ public class LiveModerationService implements LiveGuardPort {
     var c = row(id(stored.get("case_id")), true);
     active(c);
     UUID r = id(command.get("reviewId")), d = id(command.get("decisionId"));
-    if (!decision(r, d, true).get("decision").equals("APPROVE") || !validBasis(r, c))
+    var approvedDecision=decision(r,d,true);
+    platform.authorize(id(c.get("live_id")),id(approvedDecision.get("operatorId")),true);
+    if (!approvedDecision.get("decision").equals("APPROVE") || !validBasis(r, c))
       throw error(ErrorCode.REVIEW_NOT_APPROVED, "Kick no longer approved");
     scopeLock(id(c.get("live_id")), id(c.get("user_id")));
     if(((Number)command.get("expectedTargetVersion")).intValue()!=targetVersion(id(c.get("live_id")),id(c.get("user_id"))))

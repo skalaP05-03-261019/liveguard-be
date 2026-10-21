@@ -20,9 +20,6 @@ import jakarta.servlet.http.HttpServletRequest;
 @RestController
 class ChannelEventController {
 
-	@org.springframework.beans.factory.annotation.Autowired
-	private LiveService lives;
-
 	private final JdbcChannelMembershipQuery memberships;
 	private final ChannelEventHub hub;
 	private final KickStatusQuery kickStatus;
@@ -36,8 +33,6 @@ class ChannelEventController {
 	@GetMapping("/api/channels/{channelId}/events")
 	ResponseEntity<SseEmitter> subscribe(@PathVariable UUID channelId, @AuthenticationPrincipal AuthenticatedUser user,
 			HttpServletRequest request) {
-		if(lives.integrationEnabled()) return ResponseEntity.ok().header("Cache-Control","no-cache")
-			.body(lives.subscribe(lives.current(channelId,user).liveId(),user,request.getSession().getId(),false));
 		AuthorRole role = memberships.memberRole(channelId, user.userId())
 				.orElseThrow(() -> new ApiException(ErrorCode.FORBIDDEN, "Not a member of this channel"));
 		kickStatus.activeKickUntil(channelId, user.userId()).ifPresent(until -> {

@@ -352,6 +352,28 @@ class LiveModerationIntegrationTest {
   }
 
   @Test
+  void issuedKickCommandRejectsRevokedOperatorAuthority() {
+    UUID live=lives.start(channel,moderator).liveId();List<UUID> cs=new ArrayList<>(),rs=new ArrayList<>();
+    for(int i=0;i<3;i++){UUID c=candidate(live,"너 꺼져 권한 확인 "+i);cs.add(c);rs.add(proposal(c,"VIOLATION"));}
+    Map<String,Object> result=Map.of();for(int i=0;i<3;i++)result=apply(cs.get(i),rs.get(i),decide(rs.get(i),"CONFIRM_VIOLATION",1));
+    UUID r=UUID.fromString(((Map<?,?>)result.get("kickReview")).get("reviewId").toString());
+    UUID d=UUID.fromString(decide(r,"APPROVE",1).get("decisionId").toString());
+    var command=(Map<String,Object>)guard.revalidate(r,d).get("actionCommand");
+    db.update("UPDATE platform.channel_members SET member_role='VIEWER' WHERE channel_id=? AND user_id=?",channel,operator);
+    assertEquals(ErrorCode.FORBIDDEN,assertThrows(ApiException.class,()->guard.execute(UUID.fromString(command.get("actionId").toString()),command)).code());
+    assertEquals(0,db.queryForObject("SELECT count(*) FROM guard.live_kicks WHERE live_id=?",Integer.class,live));
+  }
+
+  @Test
+  void legacyReplaySurvivesEndAndHistoryKeepsPriorBroadcast() {
+    UUID live=lives.start(channel,moderator).liveId();UUID request=UUID.randomUUID();
+    var first=lives.sendToChannel(channel,viewer,new SendMessageRequest(request,"legacy replay"));
+    lives.end(live,moderator);
+    assertEquals(first,lives.sendToChannel(channel,viewer,new SendMessageRequest(request,"legacy replay")));
+    assertEquals(ErrorCode.LIVE_ENDED,assertThrows(ApiException.class,()->lives.sendToChannel(channel,viewer,new SendMessageRequest(UUID.randomUUID(),"fresh"))).code());
+  }
+
+  @Test
   void threeConfirmedCasesRequireSeparateKickApprovalAndIdempotentExecution() {
     UUID live = lives.start(channel, moderator).liveId();
     List<UUID> cases = new ArrayList<>();

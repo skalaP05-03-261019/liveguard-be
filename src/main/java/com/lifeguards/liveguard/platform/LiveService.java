@@ -23,6 +23,7 @@ public class LiveService implements LivePlatformPort {
   private final LiveGuardPort guard;
   private final MessageFilter filter;
   private final MessageRepository messages;
+  private final ChannelEventHub legacyEvents;
   private final JdbcLiveQuery liveQueries;
   private final org.springframework.context.ApplicationEventPublisher applicationEvents;
   private final SseRegistry chats = new SseRegistry("live-chat-v1", Duration.ofSeconds(15));
@@ -36,6 +37,7 @@ public class LiveService implements LivePlatformPort {
       LiveGuardPort guard,
       MessageFilter filter,
       MessageRepository messages,
+      ChannelEventHub legacyEvents,
       JdbcLiveQuery liveQueries,
       org.springframework.context.ApplicationEventPublisher applicationEvents,
       @Value("${LIVEGUARD_POLICY_VERSION:}") String policy,
@@ -45,6 +47,7 @@ public class LiveService implements LivePlatformPort {
     this.guard = guard;
     this.filter = filter;
     this.messages = messages;
+    this.legacyEvents=legacyEvents;
     this.liveQueries = liveQueries;
     this.applicationEvents = applicationEvents;
     this.policy = policy;
@@ -152,6 +155,22 @@ public class LiveService implements LivePlatformPort {
       if (count != 1)
         throw new ApiException(ErrorCode.STALE_VERSION, "Target visibility or version changed");
     }
+  }
+
+  @Transactional
+  public Map<String,Object> sendToChannel(UUID channel,AuthenticatedUser user,SendMessageRequest req) {
+    authorizeChannel(channel,user.userId(),false);
+    messages.lockAuthorInChannel(channel,user.userId());
+    var previous=messages.find(channel,user.userId(),req.clientMessageId());
+    if(previous.isPresent()) {
+      var old=previous.get();
+      if(old.liveId()!=null) return send(old.liveId(),user,req);
+      if(!old.text().equals(req.text())) throw new ApiException(ErrorCode.IDEMPOTENCY_CONFLICT,"Message request conflict");
+      return message(old.id(),user.userId());
+    }
+    UUID id=liveQueries.currentLive(channel).map(Live::liveId)
+      .orElseThrow(()->new ApiException(ErrorCode.LIVE_ENDED,"No live in progress"));
+    return send(id,user,req);
   }
 
   @Transactional
@@ -410,6 +429,7 @@ public class LiveService implements LivePlatformPort {
                 event,
                 envelope,
                 event.equals("LIVE_ENDED"));
+          legacyEvents.integrated(live(id).channelId(),author,restricted,event,data);
           events.broadcast(id, s -> true, event, envelope);
         });
   }
