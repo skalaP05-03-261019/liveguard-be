@@ -1,0 +1,19 @@
+{
+  "backendCommit": "184f2a3f2209d7ca55a04939ffbd50e84f6ef926",
+  "kind": "observed_local_upgrade",
+  "backup": "liveguard-connected DB volume: /var/lib/postgresql/data/liveguard-before-v200-20261021.dump",
+  "cloneDatabase": "liveguard_upgrade_validation",
+  "messagesBefore": 27,
+  "messagesAfter": 27,
+  "legacyMessageLinksArchived": 18,
+  "distinctLegacyCaseIds": 12,
+  "allColumnsExceptCaseIdHashBefore": "a2b43edf891bce9a29f386610341fa22",
+  "allColumnsExceptCaseIdHashAfter": "a2b43edf891bce9a29f386610341fa22",
+  "preV200IdempotentRerun": "passed",
+  "postV200Rerun": "rejected_before_changes",
+  "originalV200AppliedOnClone": true,
+  "originalV200FlywayAppliedOnLocal": true,
+  "findingsInventedByReconciliation": 0,
+  "subsequentRealChatCandidate": {"caseRows": 1, "candidateRows": 1, "findingRows": 0},
+  "notice": "Local explicit maintenance after backup; no migration file changed; no text/visibility/version changed; no approval or sanction fabricated"
+}
