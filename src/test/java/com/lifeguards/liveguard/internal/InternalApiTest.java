@@ -69,11 +69,13 @@ class InternalApiTest {
 
 	private UUID caseId;
 	private final List<UUID> lives = new ArrayList<>();
+	private final List<UUID> users = new ArrayList<>();
 
 	@BeforeEach
 	void setUp() {
 		caseId = UUID.randomUUID();
 		lives.clear();
+		users.clear();
 		CaseFixtures.insertCase(jdbc, caseId, CHANNEL_A, VIEWER);
 	}
 
@@ -82,6 +84,7 @@ class InternalApiTest {
 		jdbc.update("DELETE FROM platform.messages");
 		CaseFixtures.deleteCases(jdbc);
 		lives.forEach(id -> jdbc.update("DELETE FROM platform.lives WHERE id = ?", id));
+		users.forEach(id -> jdbc.update("DELETE FROM platform.users WHERE id = ?", id));
 	}
 
 	// ----- 서비스 토큰 -----
@@ -330,6 +333,22 @@ class InternalApiTest {
 				.andExpect(jsonPath("$.data.isOfficialOperator").value(true));
 	}
 
+	@Test
+	void authorWithoutMembershipIsUnknownNotViewer() throws Exception {
+		// 채널을 떠났거나 멤버십을 확인할 수 없는 작성자
+		UUID stranger = insertUser();
+		insert(stranger, "증거", 0, caseId);
+
+		mockMvc.perform(internal(get("/internal/cases/" + caseId + "/channel-info")))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.data.authorRole").value("UNKNOWN"))
+				.andExpect(jsonPath("$.data.isOfficialOperator").value(false));
+		mockMvc.perform(internal(get("/internal/cases/{id}/role", caseId)))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.data.authorRole").value("UNKNOWN"))
+				.andExpect(jsonPath("$.data.isOfficialOperator").value(false));
+	}
+
 	// ----- events -----
 
 	@Test
@@ -384,6 +403,15 @@ class InternalApiTest {
 
 	private static String context(UUID caseId) {
 		return "/internal/cases/" + caseId + "/context";
+	}
+
+	/** 어느 채널에도 속하지 않은 사용자. */
+	private UUID insertUser() {
+		UUID id = UUID.randomUUID();
+		jdbc.update("INSERT INTO platform.users (id, username, password_hash, nickname, role) "
+				+ "VALUES (?, ?, 'h', '외부인', 'VIEWER')", id, "stranger-" + id);
+		users.add(id);
+		return id;
 	}
 
 	/** 방송 도입 전 시험과 섞이지 않도록 이미 끝난 방송만 만든다(채널당 진행 중 방송은 하나뿐이다). */
