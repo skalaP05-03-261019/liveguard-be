@@ -168,9 +168,11 @@ class FloodWindowBoundaryTest {
 
 	private UUID insertAt(Instant sentAt) {
 		UUID id = UUID.randomUUID();
-		jdbc.update("INSERT INTO platform.messages (id, channel_id, author_id, client_message_id, text, "
-				+ "normalized_text, filter_result, visibility, sent_at) VALUES (?, ?, ?, ?, ?, ?, 'PASS', 'PUBLIC', ?)",
-				id, CHANNEL_A, VIEWER, UUID.randomUUID(), TEXT, TEXT, Timestamp.from(sentAt));
+		// 도배는 같은 방송 범위라 시드 채널의 진행 중 방송에 넣는다
+		jdbc.update("INSERT INTO platform.messages (id, channel_id, live_id, author_id, client_message_id, text, "
+				+ "normalized_text, filter_result, visibility, sent_at) VALUES (?, ?, (SELECT id FROM platform.lives WHERE channel_id = ? AND ended_at IS NULL), ?, ?, ?, ?, "
+				+ "'PASS', 'PUBLIC', ?)",
+				id, CHANNEL_A, CHANNEL_A, VIEWER, UUID.randomUUID(), TEXT, TEXT, Timestamp.from(sentAt));
 		return id;
 	}
 

@@ -11,6 +11,7 @@ import java.time.*;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -22,6 +23,7 @@ public class LiveService implements LivePlatformPort {
   private final LiveGuardPort guard;
   private final MessageFilter filter;
   private final MessageRepository messages;
+  private final ApplicationEventPublisher appEvents;
   private final SseRegistry chats = new SseRegistry("live-chat-v1", Duration.ofSeconds(15));
   private final SseRegistry events = new SseRegistry("live-guard-v1", Duration.ofSeconds(15));
   private final String policy;
@@ -33,6 +35,7 @@ public class LiveService implements LivePlatformPort {
       LiveGuardPort guard,
       MessageFilter filter,
       MessageRepository messages,
+      ApplicationEventPublisher appEvents,
       @Value("${LIVEGUARD_POLICY_VERSION:}") String policy,
       @Value("${LIVEGUARD_TBD_FIXTURE_ENABLED:false}") boolean fixtureEnabled) {
     this.db = db;
@@ -40,6 +43,7 @@ public class LiveService implements LivePlatformPort {
     this.guard = guard;
     this.filter = filter;
     this.messages = messages;
+    this.appEvents = appEvents;
     this.policy = policy;
     this.fixtureEnabled = fixtureEnabled;
   }
@@ -122,7 +126,9 @@ public class LiveService implements LivePlatformPort {
     if (live(id).endedAt() != null) throw new ApiException(ErrorCode.LIVE_ENDED, "Live ended");
     db.sql("UPDATE platform.lives SET ended_at=? WHERE id=?").params(now(), id).update();
     emit(id, "LIVE_ENDED", Map.of("liveId", id), null, false);
-    return live(id);
+    Live ended = live(id);
+    appEvents.publishEvent(new LiveEndedEvent(ended.liveId(), ended.channelId(), ended.endedAt()));
+    return ended;
   }
 
   private void lockLive(UUID id) {
@@ -165,7 +171,6 @@ public class LiveService implements LivePlatformPort {
   public Map<String, Object> send(UUID id, AuthenticatedUser user, SendMessageRequest req) {
     authorize(id, user.userId(), false);
     lockLive(id);
-    active(id);
     guard.checkAccess(id, user.userId());
     if (req.text().indexOf(0) >= 0)
       throw new ApiException(ErrorCode.VALIDATION_FAILED, "Unsupported text");
@@ -186,6 +191,7 @@ public class LiveService implements LivePlatformPort {
         throw new ApiException(ErrorCode.IDEMPOTENCY_CONFLICT, "Message request conflict");
       return message(old.get(), user.userId());
     }
+    active(id);
     var live = live(id);
     Timestamp at = now();
     String normalized = TextNormalizer.normalize(req.text());

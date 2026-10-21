@@ -54,20 +54,27 @@ public class AgentOutboxRepository {
 
 	@Transactional
 	public Optional<Delivery> claim(Instant now, Instant leaseUntil) {
+		return claim(null, now, leaseUntil);
+	}
+
+	@Transactional
+	public Optional<Delivery> claim(UUID id, Instant now, Instant leaseUntil) {
 		return jdbc.sql("""
 				WITH ready AS (
 					SELECT id FROM guard.agent_task_outbox
-					WHERE (status IN ('PENDING', 'RETRY') AND next_attempt_at <= :now)
-						OR (status = 'IN_FLIGHT' AND lease_until <= :now)
+					WHERE (CAST(:id AS uuid) IS NULL OR id = :id)
+						AND ((status IN ('PENDING', 'RETRY') AND next_attempt_at <= :now)
+						OR (status = 'IN_FLIGHT' AND lease_until <= :now))
 					ORDER BY next_attempt_at, created_at, id FOR UPDATE SKIP LOCKED LIMIT 1
 				)
 				UPDATE guard.agent_task_outbox o
 				SET status = 'IN_FLIGHT', attempt_count = attempt_count + 1,
 					delivery_uncertain = delivery_uncertain OR status = 'IN_FLIGHT',
+					publish_token = NULL, publish_lease_until = NULL,
 					lease_token = :token, lease_until = :leaseUntil, updated_at = :now
 				FROM ready WHERE o.id = ready.id
 				RETURNING o.id, o.payload::text, o.attempt_count, o.lease_token, o.delivery_uncertain
-				""").param("now", Timestamp.from(now)).param("token", UUID.randomUUID())
+				""").param("id", id).param("now", Timestamp.from(now)).param("token", UUID.randomUUID())
 				.param("leaseUntil", Timestamp.from(leaseUntil))
 				.query((rs, n) -> new Delivery(rs.getObject("id", UUID.class),
 						mapper.readValue(rs.getString("payload"), AgentTaskEnvelope.class),
@@ -81,10 +88,46 @@ public class AgentOutboxRepository {
 		return jdbc.sql("""
 				UPDATE guard.agent_task_outbox
 				SET status = ?, last_error_code = ?, next_attempt_at = ?, updated_at = ?,
+					notification_after = ?,
 					delivery_uncertain = delivery_uncertain OR ?,
 					lease_token = NULL, lease_until = NULL
 				WHERE id = ? AND status = 'IN_FLIGHT' AND lease_token = ? AND lease_until > ?
 				""").params(status, errorCode, Timestamp.from(nextAttempt), Timestamp.from(now),
-						uncertain, delivery.id(), delivery.leaseToken(), Timestamp.from(now)).update() == 1;
+						Timestamp.from(nextAttempt), uncertain, delivery.id(), delivery.leaseToken(), Timestamp.from(now)).update() == 1;
+	}
+
+	public record Publication(UUID id, UUID token) {
+	}
+
+	@Transactional
+	public Optional<Publication> claimPublication(Instant now, Instant leaseUntil) {
+		return jdbc.sql("""
+				WITH ready AS (
+					SELECT id FROM guard.agent_task_outbox
+					WHERE ((status IN ('PENDING', 'RETRY') AND next_attempt_at <= :now)
+						OR (status = 'IN_FLIGHT' AND lease_until <= :now))
+						AND notification_after <= :now
+						AND (publish_lease_until IS NULL OR publish_lease_until <= :now)
+					ORDER BY notification_after, next_attempt_at, id
+					FOR UPDATE SKIP LOCKED LIMIT 1
+				)
+				UPDATE guard.agent_task_outbox o
+				SET publish_token = :token, publish_lease_until = :until
+				FROM ready WHERE o.id = ready.id
+				RETURNING o.id, o.publish_token
+				""").param("now", Timestamp.from(now)).param("until", Timestamp.from(leaseUntil))
+				.param("token", UUID.randomUUID())
+				.query((rs, n) -> new Publication(rs.getObject("id", UUID.class),
+						rs.getObject("publish_token", UUID.class))).optional();
+	}
+
+	@Transactional
+	public boolean finishPublication(Publication publication, Instant nextNotification, Instant now) {
+		return jdbc.sql("""
+				UPDATE guard.agent_task_outbox
+				SET notification_after = ?, publish_token = NULL, publish_lease_until = NULL
+				WHERE id = ? AND publish_token = ? AND publish_lease_until > ?
+				""").params(Timestamp.from(nextNotification), publication.id(), publication.token(),
+						Timestamp.from(now)).update() == 1;
 	}
 }

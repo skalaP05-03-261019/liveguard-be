@@ -270,6 +270,54 @@ class AgentOutboxTest {
 		assertEquals(3, attempts(task));
 		assertFalse(worker.deliverOne());
 		assertEquals(3, methods.stream().filter("POST"::equals).count());
+		assertEquals(List.of("POST", "POST", "POST"), methods);
+	}
+
+	@Test
+	void specificNotificationsDoNotSpendAttemptsOnDuplicatesContentionOrFutureRetries() {
+		UUID id = enqueue(task);
+		assertTrue(worker.deliver(UUID.randomUUID()));
+		var claimed = repository.claim(id, NOW, NOW.plusSeconds(60)).orElseThrow();
+		assertTrue(worker.deliver(id));
+		assertEquals(1, attempts(task));
+		assertTrue(repository.finish(claimed, "RETRY", "HTTP_429", NOW.plusSeconds(10), NOW, false));
+		assertTrue(worker.deliver(id));
+		assertEquals(1, attempts(task));
+		time.advance(Duration.ofSeconds(10));
+		assertTrue(worker.deliver(id));
+		assertTrue(worker.deliver(id));
+		assertEquals(2, attempts(task));
+		assertEquals(List.of("POST"), methods);
+	}
+
+	@Test
+	void publishLeaseRecoveryIsFencedAndDoesNotChangeHttpUncertaintyOrBudget() {
+		UUID id = enqueue(task);
+		var first = repository.claimPublication(NOW, NOW.plusSeconds(30)).orElseThrow();
+		assertEquals(id, first.id());
+		assertTrue(repository.claimPublication(NOW.plusSeconds(29), NOW.plusSeconds(60)).isEmpty());
+		var replacement = repository.claimPublication(NOW.plusSeconds(30), NOW.plusSeconds(60)).orElseThrow();
+		assertNotEquals(first.token(), replacement.token());
+		assertFalse(repository.finishPublication(first, NOW.plusSeconds(100), NOW.plusSeconds(31)));
+		assertTrue(repository.finishPublication(replacement, NOW.plusSeconds(90), NOW.plusSeconds(31)));
+		assertTrue(repository.claimPublication(NOW.plusSeconds(89), NOW.plusSeconds(120)).isEmpty());
+		assertTrue(repository.claimPublication(NOW.plusSeconds(90), NOW.plusSeconds(120)).isPresent());
+		assertEquals(0, attempts(task));
+		assertFalse(jdbc.queryForObject("SELECT delivery_uncertain FROM guard.agent_task_outbox WHERE id = ?",
+				Boolean.class, id));
+	}
+
+	@Test
+	void httpClaimFencesPublisherAndRetryBecomesNotifiableOnlyWhenDue() {
+		UUID id = enqueue(task);
+		var publisher = repository.claimPublication(NOW, NOW.plusSeconds(30)).orElseThrow();
+		behavior = exchange -> respond(exchange, 429, "{}");
+		worker.deliver(id);
+		assertFalse(repository.finishPublication(publisher, NOW.plusSeconds(100), NOW));
+		assertTrue(repository.claimPublication(NOW, NOW.plusSeconds(30)).isEmpty());
+		time.advance(properties.initialBackoff());
+		assertTrue(repository.claimPublication(time.instant(), time.instant().plusSeconds(30)).isPresent());
+		assertEquals(List.of("POST"), methods);
 	}
 
 	@Test

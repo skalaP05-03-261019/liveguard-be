@@ -19,6 +19,7 @@ import com.lifeguards.liveguard.common.ApiException;
 import com.lifeguards.liveguard.common.security.AuthenticatedUser;
 import com.lifeguards.liveguard.contracts.dto.event.ChatEvent;
 import com.lifeguards.liveguard.contracts.dto.request.SendMessageRequest;
+import com.lifeguards.liveguard.contracts.dto.response.Live;
 import com.lifeguards.liveguard.contracts.dto.response.Message;
 import com.lifeguards.liveguard.contracts.dto.response.MessagePage;
 import com.lifeguards.liveguard.contracts.enums.AuthorRole;
@@ -43,6 +44,7 @@ class MessageService {
 	private static final Duration FLOOD_WINDOW = Duration.ofSeconds(10);
 
 	private final MessageRepository messages;
+	private final JdbcLiveQuery lives;
 	private final JdbcChannelMembershipQuery memberships;
 	private final MessageFilter filter;
 	private final CandidateSink candidateSink;
@@ -50,9 +52,11 @@ class MessageService {
 	private final ApplicationEventPublisher events;
 	private final Clock clock;
 
-	MessageService(MessageRepository messages, JdbcChannelMembershipQuery memberships, MessageFilter filter,
-			CandidateSink candidateSink, KickStatusQuery kickStatus, ApplicationEventPublisher events, Clock clock) {
+	MessageService(MessageRepository messages, JdbcLiveQuery lives, JdbcChannelMembershipQuery memberships,
+			MessageFilter filter, CandidateSink candidateSink, KickStatusQuery kickStatus, ApplicationEventPublisher events,
+			Clock clock) {
 		this.messages = messages;
+		this.lives = lives;
 		this.memberships = memberships;
 		this.filter = filter;
 		this.candidateSink = candidateSink;
@@ -61,9 +65,23 @@ class MessageService {
 		this.clock = clock;
 	}
 
+	/** 이 방송으로 전송한다. 없는 방송은 404. */
 	@Transactional
-	Message send(UUID channelId, AuthenticatedUser author, SendMessageRequest request) {
+	Message sendToLive(UUID liveId, AuthenticatedUser author, SendMessageRequest request) {
 		requireStorable(request.text());
+		Live live = lives.find(liveId).orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND, "Live not found"));
+		return send(live.channelId(), liveId, author, request);
+	}
+
+	/** 기존 channel 경로(A-18). 그 채널의 진행 중 방송으로 귀속하고, 없으면 409 LIVE_ENDED. */
+	@Transactional
+	Message sendToChannel(UUID channelId, AuthenticatedUser author, SendMessageRequest request) {
+		requireStorable(request.text());
+		return send(channelId, null, author, request);
+	}
+
+	/** liveId가 null이면 채널의 진행 중 방송을 찾는다. */
+	private Message send(UUID channelId, UUID liveId, AuthenticatedUser author, SendMessageRequest request) {
 		if (!messages.isMember(channelId, author.userId())) {
 			// 채널 존재 여부가 드러나지 않도록 없는 채널도 같은 응답
 			throw new ApiException(ErrorCode.FORBIDDEN, "Not a member of this channel");
@@ -72,18 +90,33 @@ class MessageService {
 		kickStatus.activeKickUntil(channelId, author.userId()).ifPresent(until -> {
 			throw new ApiException(ErrorCode.KICKED, "Kicked from this channel", until, null);
 		});
+		// 잠금 순서: 작성자·채널 advisory 잠금 → 재전송 조회 → 방송 행 FOR SHARE. 동시 재전송이 원본 전송의
+		// 커밋을 기다린 뒤 조회하게 해서, 원본이 커밋되고 방송이 종료돼도 첫 응답을 돌려준다(A-18)
+		messages.lockAuthorInChannel(channelId, author.userId());
+		// 재전송은 방송 종료 검사보다 먼저 확인한다. 종료 직전 저장됐는데 응답이 유실된 경우 첫 응답을 돌려준다(A-18)
+		var replayed = messages.find(channelId, author.userId(), request.clientMessageId());
+		if (replayed.isPresent()) {
+			return replay(channelId, author, request, replayed.get());
+		}
+		UUID targetLive = liveId != null ? liveId : lives.currentLive(channelId).map(Live::liveId)
+				.orElseThrow(() -> new ApiException(ErrorCode.LIVE_ENDED, "No live in progress"));
+		// 종료 UPDATE와 직렬화한다. 잠근 뒤에 종료 여부를 본다
+		Live live = lives.lockForSend(targetLive).orElseThrow();
+		if (live.endedAt() != null) {
+			throw new ApiException(ErrorCode.LIVE_ENDED, "Live has ended");
+		}
 
 		// timestamptz는 마이크로초 정밀도라 미리 잘라 재전송 응답의 sentAt이 최초와 같게 한다
 		Instant sentAt = clock.instant().truncatedTo(ChronoUnit.MICROS);
 		String normalizedText = TextNormalizer.normalize(request.text());
-		messages.lockAuthorInChannel(channelId, author.userId());
-		List<UUID> sameTextInWindow = messages.sameTextMessageIds(channelId, author.userId(), normalizedText,
+		// 도배는 같은 사용자·방송 범위다. 이전 방송과 방송 도입 전(live_id NULL) 메시지는 세지 않는다
+		List<UUID> sameTextInWindow = messages.sameTextMessageIds(live.liveId(), author.userId(), normalizedText,
 				sentAt.minus(FLOOD_WINDOW));
 		FilterDecision decision = filter.classify(new FilterInput(request.text(), normalizedText,
 				messages.officialHosts(channelId), sameTextInWindow.size() + 1));
-		// 재전송이면 아래 INSERT가 무시되고 저장된 결과를 돌려주므로 이번 판정은 쓰이지 않는다
-		var inserted = messages.insertIfAbsent(channelId, author.userId(), request.clientMessageId(), request.text(),
-				normalizedText, decision.result(), decision.visibility(), sentAt);
+		// 동시 재전송이면 아래 INSERT가 무시되고 저장된 결과를 돌려주므로 이번 판정은 쓰이지 않는다
+		var inserted = messages.insertIfAbsent(channelId, live.liveId(), author.userId(), request.clientMessageId(),
+				request.text(), normalizedText, decision.result(), decision.visibility(), sentAt);
 		if (inserted.isPresent()) {
 			if (decision.result() != FilterResult.PASS) {
 				// FLOOD이면 창 안의 이전 메시지도 같은 사건에 연결한다. 그 외에는 빈 목록
@@ -94,8 +127,11 @@ class MessageService {
 			events.publishEvent(new MessageCreatedEvent(channelId, author.userId(), toChatEvent(message)));
 			return message;
 		}
+		return replay(channelId, author, request,
+				messages.find(channelId, author.userId(), request.clientMessageId()).orElseThrow());
+	}
 
-		StoredMessage existing = messages.find(channelId, author.userId(), request.clientMessageId()).orElseThrow();
+	private Message replay(UUID channelId, AuthenticatedUser author, SendMessageRequest request, StoredMessage existing) {
 		if (!existing.text().equals(request.text())) {
 			throw new ApiException(ErrorCode.IDEMPOTENCY_CONFLICT,
 					"clientMessageId was already used with a different text");
@@ -108,7 +144,7 @@ class MessageService {
 			List<UUID> related) {
 		UUID caseId;
 		try {
-			caseId = candidateSink.open(new CandidateRequest(channelId, author.userId(), stored.id(),
+			caseId = candidateSink.open(new CandidateRequest(channelId, stored.liveId(), author.userId(), stored.id(),
 					decision.result(), decision.matchingTags(), MessageFilter.version(), stored.sentAt(), related));
 		} catch (ApiException ex) {
 			throw ex;
@@ -122,8 +158,20 @@ class MessageService {
 		messages.linkCase(channelId, author.userId(), toLink, caseId);
 	}
 
+	/** 이 방송의 이력. 없는 방송은 404. */
 	@Transactional(readOnly = true)
-	MessagePage history(UUID channelId, AuthenticatedUser viewer, String cursor, int limit) {
+	MessagePage historyOfLive(UUID liveId, AuthenticatedUser viewer, String cursor, int limit) {
+		Live live = lives.find(liveId).orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND, "Live not found"));
+		return history(live.channelId(), liveId, viewer, cursor, limit);
+	}
+
+	/** 기존 channel 경로(A-18). 모든 방송과 방송 도입 전 메시지를 함께 돌려준다. */
+	@Transactional(readOnly = true)
+	MessagePage historyOfChannel(UUID channelId, AuthenticatedUser viewer, String cursor, int limit) {
+		return history(channelId, null, viewer, cursor, limit);
+	}
+
+	private MessagePage history(UUID channelId, UUID liveId, AuthenticatedUser viewer, String cursor, int limit) {
 		if (limit < 1 || limit > MAX_PAGE_SIZE) {
 			throw new InvalidContractException("limit must be between 1 and " + MAX_PAGE_SIZE);
 		}
@@ -132,26 +180,27 @@ class MessageService {
 				.orElseThrow(() -> new ApiException(ErrorCode.FORBIDDEN, "Not a member of this channel"));
 
 		// 다음 페이지 유무를 알기 위해 하나 더 읽는다
-		List<HistoryRow> rows = messages.history(channelId, viewer.userId(), role == AuthorRole.MODERATOR, after,
-				limit + 1);
+		List<HistoryRow> rows = messages.history(channelId, liveId, viewer.userId(), role == AuthorRole.MODERATOR,
+				after, limit + 1);
 		List<HistoryRow> page = rows.subList(0, Math.min(limit, rows.size()));
 		String nextCursor = rows.size() > limit
 				? new MessageCursor(page.getLast().sentAt(), page.getLast().id()).encode()
 				: null;
 		List<Message> items = page.stream()
-				.map(row -> new Message(row.id(), channelId, row.authorNickname(), row.text(), row.visibility(),
+				.map(row -> new Message(row.id(), row.liveId(), channelId, row.authorNickname(), row.text(), row.visibility(),
 						row.version(), row.sentAt(), row.authorId().equals(viewer.userId())))
 				.toList();
 		return new MessagePage(items, nextCursor);
 	}
 
 	private static Message toMessage(UUID channelId, AuthenticatedUser author, StoredMessage stored) {
-		return new Message(stored.id(), channelId, author.nickname(), stored.text(), stored.visibility(),
+		return new Message(stored.id(), stored.liveId(), channelId, author.nickname(), stored.text(), stored.visibility(),
 				stored.version(), stored.sentAt(), true);
 	}
 
 	private static ChatEvent toChatEvent(Message message) {
-		return new ChatEvent(message.messageId(), message.authorAlias(), message.text(), message.visibility(),
+		return new ChatEvent(message.messageId(), message.liveId(), message.authorAlias(), message.text(),
+				message.visibility(),
 				message.version(), message.sentAt());
 	}
 

@@ -298,7 +298,9 @@ class CaseQueryTest {
 					text, normalized_text, filter_result, visibility, sent_at)
 				VALUES (?, ?, ?, ?, '010-1234-5678 person@example.com', 'test', 'REVIEW', 'PUBLIC', ?)
 				""", message, channel, user, UUID.randomUUID(), Timestamp.from(at));
-		UUID caseId = sink.open(new CandidateRequest(channel, user, message, FilterResult.REVIEW,
+		// JdbcCandidateSink는 아직 liveId를 저장하지 않는다(B2 후속). 방송이 없는 경우를 만드는 시험은 임의 값을 넘긴다
+		UUID caseId = sink.open(new CandidateRequest(channel, live == null ? UUID.randomUUID() : live, user, message,
+				FilterResult.REVIEW,
 				List.of("ATTACK_TERM"), "norm-test+dict-test", at, List.of()));
 		jdbc.update("""
 				UPDATE guard.cases SET live_id = ?, policy_version = 'test-policy',

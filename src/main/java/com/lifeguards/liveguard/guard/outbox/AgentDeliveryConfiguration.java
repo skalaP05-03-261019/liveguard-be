@@ -18,7 +18,7 @@ import org.springframework.scheduling.annotation.Scheduled;
 import tools.jackson.databind.json.JsonMapper;
 
 @Configuration(proxyBeanMethods = false)
-@EnableConfigurationProperties(AgentDeliveryProperties.class)
+@EnableConfigurationProperties({AgentDeliveryProperties.class, AgentTransportProperties.class})
 public class AgentDeliveryConfiguration {
 
 	@Configuration(proxyBeanMethods = false)
@@ -37,6 +37,8 @@ public class AgentDeliveryConfiguration {
 		}
 
 		@Bean(destroyMethod = "close")
+		@ConditionalOnProperty(prefix = "liveguard.agent.delivery", name = "transport",
+				havingValue = "db", matchIfMissing = true)
 		DeliveryScheduler deliveryScheduler(AgentDeliveryWorker worker, AgentDeliveryProperties properties) {
 			return new DeliveryScheduler(worker, properties);
 		}

@@ -8,6 +8,7 @@ import com.lifeguards.liveguard.contracts.enums.Visibility;
 
 public record ChatEvent(
 		UUID messageId,
+		UUID liveId,
 		String authorAlias,
 		String text,
 		Visibility visibility,
@@ -15,6 +16,7 @@ public record ChatEvent(
 		Instant sentAt) {
 	public ChatEvent {
 		DtoValidation.requireNonNull(messageId, "messageId");
+		DtoValidation.requireNonNull(liveId, "liveId");
 		DtoValidation.requireNonNull(authorAlias, "authorAlias");
 		DtoValidation.requireNonNull(text, "text");
 		DtoValidation.requireNonNull(visibility, "visibility");

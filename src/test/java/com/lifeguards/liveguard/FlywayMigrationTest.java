@@ -89,6 +89,56 @@ class FlywayMigrationTest {
 	}
 
 	@Test
+	void createsLiveScopedMessageIndexes() {
+		List<String> definitions = jdbc.queryForList(
+				"SELECT indexdef FROM pg_indexes WHERE schemaname = 'platform' AND tablename = 'messages'",
+				String.class);
+
+		assertTrue(definitions.stream().anyMatch(d -> d.contains("(live_id, sent_at DESC)")));
+		assertTrue(definitions.stream().anyMatch(d -> d.contains("(live_id, author_id, normalized_text, sent_at)")));
+	}
+
+	@Test
+	void allowsOnlyOneActiveLivePerChannel() {
+		insertLive(UUID.randomUUID(), channelId, null);
+		insertLive(UUID.randomUUID(), channelId, Instant.parse("2026-01-01T01:00:00Z"));
+
+		assertThrows(DataIntegrityViolationException.class, () -> insertLive(UUID.randomUUID(), channelId, null));
+	}
+
+	@Test
+	void rejectsLiveThatEndsBeforeItStarts() {
+		assertThrows(DataIntegrityViolationException.class,
+				() -> insertLive(UUID.randomUUID(), channelId, Instant.parse("2025-12-31T23:59:59Z")));
+	}
+
+	@Test
+	void messageMayHaveNoLiveOrALiveOfItsOwnChannel() {
+		UUID ownLive = UUID.randomUUID();
+		insertLive(ownLive, channelId, null);
+
+		insertMessage(UUID.randomUUID(), "no live", "PASS", "PUBLIC");
+		insertLiveMessage(ownLive);
+
+		assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM platform.messages WHERE live_id IS NULL", Integer.class));
+	}
+
+	@Test
+	void rejectsMessageWhoseLiveBelongsToAnotherChannel() {
+		UUID otherChannel = UUID.randomUUID();
+		jdbc.update("INSERT INTO platform.channels (id, name) VALUES (?, 'other')", otherChannel);
+		UUID otherLive = UUID.randomUUID();
+		insertLive(otherLive, otherChannel, null);
+
+		assertThrows(DataIntegrityViolationException.class, () -> insertLiveMessage(otherLive));
+	}
+
+	@Test
+	void rejectsMessageForUnknownLive() {
+		assertThrows(DataIntegrityViolationException.class, () -> insertLiveMessage(UUID.randomUUID()));
+	}
+
+	@Test
 	void rejectsDuplicateClientMessageIdForSameAuthorAndChannel() {
 		UUID clientMessageId = UUID.randomUUID();
 		insertMessage(clientMessageId, "hello", "PASS", "PUBLIC");
@@ -159,6 +209,18 @@ class FlywayMigrationTest {
 		insertMessage(UUID.randomUUID(), "hello", "PASS", "PUBLIC");
 
 		assertEquals(1, jdbc.queryForObject("SELECT version FROM platform.messages", Integer.class));
+	}
+
+	private void insertLive(UUID liveId, UUID channel, Instant endedAt) {
+		jdbc.update("INSERT INTO platform.lives (id, channel_id, started_at, ended_at) VALUES (?, ?, ?, ?)",
+				liveId, channel, Timestamp.from(Instant.parse("2026-01-01T00:00:00Z")),
+				endedAt == null ? null : Timestamp.from(endedAt));
+	}
+
+	private void insertLiveMessage(UUID liveId) {
+		jdbc.update("INSERT INTO platform.messages (channel_id, live_id, author_id, client_message_id, text, "
+				+ "normalized_text, filter_result, visibility, sent_at) VALUES (?, ?, ?, ?, 't', 't', 'PASS', 'PUBLIC', ?)",
+				channelId, liveId, userId, UUID.randomUUID(), Timestamp.from(Instant.now()));
 	}
 
 	private void insertMessage(UUID clientMessageId, String text, String filterResult, String visibility) {
