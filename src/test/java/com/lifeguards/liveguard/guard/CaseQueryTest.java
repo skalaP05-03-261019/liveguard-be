@@ -35,6 +35,7 @@ import com.lifeguards.liveguard.common.ApiException;
 import com.lifeguards.liveguard.contracts.enums.Category;
 import com.lifeguards.liveguard.contracts.enums.ErrorCode;
 import com.lifeguards.liveguard.contracts.enums.FilterResult;
+import com.lifeguards.liveguard.contracts.enums.HandlingRoute;
 import com.lifeguards.liveguard.contracts.enums.Verdict;
 import com.lifeguards.liveguard.contracts.exception.InvalidContractException;
 import com.lifeguards.liveguard.guard.FindingService.FindingInput;
@@ -300,8 +301,8 @@ class CaseQueryTest {
 				""", message, channel, user, UUID.randomUUID(), Timestamp.from(at));
 		// JdbcCandidateSink는 아직 liveId를 저장하지 않는다(B2 후속). 방송이 없는 경우를 만드는 시험은 임의 값을 넘긴다
 		UUID caseId = sink.open(new CandidateRequest(channel, live == null ? UUID.randomUUID() : live, user, message,
-				FilterResult.REVIEW,
-				List.of("ATTACK_TERM"), "norm-test+dict-test", at, List.of()));
+				FilterResult.HOLD, HandlingRoute.CONTEXT_REVIEW, null,
+				List.of("ATTACK_TERM"), "norm-test+dict-test", "v3.1", at, List.of()));
 		jdbc.update("""
 				UPDATE guard.cases SET live_id = ?, policy_version = 'test-policy',
 					handling_route = 'CONTEXT_REVIEW' WHERE id = ?

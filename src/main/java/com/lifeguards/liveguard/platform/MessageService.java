@@ -16,6 +16,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.lifeguards.liveguard.common.ApiException;
+import com.lifeguards.liveguard.common.PolicyProperties;
 import com.lifeguards.liveguard.common.security.AuthenticatedUser;
 import com.lifeguards.liveguard.contracts.dto.event.ChatEvent;
 import com.lifeguards.liveguard.contracts.dto.request.SendMessageRequest;
@@ -50,11 +51,12 @@ class MessageService {
 	private final CandidateSink candidateSink;
 	private final KickStatusQuery kickStatus;
 	private final ApplicationEventPublisher events;
+	private final PolicyProperties policy;
 	private final Clock clock;
 
 	MessageService(MessageRepository messages, JdbcLiveQuery lives, JdbcChannelMembershipQuery memberships,
 			MessageFilter filter, CandidateSink candidateSink, KickStatusQuery kickStatus, ApplicationEventPublisher events,
-			Clock clock) {
+			PolicyProperties policy, Clock clock) {
 		this.messages = messages;
 		this.lives = lives;
 		this.memberships = memberships;
@@ -62,6 +64,7 @@ class MessageService {
 		this.candidateSink = candidateSink;
 		this.kickStatus = kickStatus;
 		this.events = events;
+		this.policy = policy;
 		this.clock = clock;
 	}
 
@@ -145,7 +148,8 @@ class MessageService {
 		UUID caseId;
 		try {
 			caseId = candidateSink.open(new CandidateRequest(channelId, stored.liveId(), author.userId(), stored.id(),
-					decision.result(), decision.matchingTags(), MessageFilter.version(), stored.sentAt(), related));
+					decision.result(), decision.handlingRoute(), decision.ruleId(), decision.matchingTags(),
+					MessageFilter.version(), policy.version(), stored.sentAt(), related));
 		} catch (ApiException ex) {
 			throw ex;
 		} catch (RuntimeException ex) {
