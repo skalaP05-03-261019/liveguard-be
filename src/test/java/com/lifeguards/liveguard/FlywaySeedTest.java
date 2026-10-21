@@ -60,12 +60,27 @@ class FlywaySeedTest {
 	}
 
 	@Test
+	void seedsOneActiveLivePerChannel() {
+		assertEquals(2, jdbc.queryForObject("""
+				SELECT count(*) FROM platform.lives
+				WHERE ended_at IS NULL AND channel_id IN (
+					'20000000-0000-4000-8000-000000000001', '20000000-0000-4000-8000-000000000002')""",
+				Integer.class));
+	}
+
+	@Test
 	void rerunningTheSeedKeepsTheSameRows() {
 		new ResourceDatabasePopulator(new ClassPathResource("db/seed/R__dev_seed.sql")).execute(dataSource);
 
 		assertEquals(3, jdbc.queryForObject("SELECT count(*) FROM platform.users", Integer.class));
 		assertEquals(2, jdbc.queryForObject("SELECT count(*) FROM platform.channels", Integer.class));
 		assertEquals(4, jdbc.queryForObject("SELECT count(*) FROM platform.channel_members", Integer.class));
+		// 이미 진행 중인 방송이 있으면 시드 방송을 다시 넣지 않는다(부분 유일 위반 없음)
+		assertEquals(2, jdbc.queryForObject("""
+				SELECT count(*) FROM platform.lives
+				WHERE ended_at IS NULL AND channel_id IN (
+					'20000000-0000-4000-8000-000000000001', '20000000-0000-4000-8000-000000000002')""",
+				Integer.class));
 	}
 
 }
