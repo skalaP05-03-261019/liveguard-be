@@ -105,7 +105,7 @@ erDiagram
 | 테이블 | 제약·인덱스 | 이유 |
 | --- | --- | --- |
 | lives | 부분 유일 `(channel_id) WHERE ended_at IS NULL` | 채널당 진행 중 방송 1개 |
-| messages | `UNIQUE(live_id, author_id, client_message_id)` | 재전송 중복 제거 |
+| messages | `UNIQUE(channel_id, author_id, client_message_id)` | 재전송 중복 제거. 방송 단위(live_id)가 아니라 채널 단위다(A-21) |
 | messages | 인덱스 `(live_id, sent_at DESC)` | 이력 조회 |
 | messages | 인덱스 `(live_id, author_id, normalized_text, sent_at)` | 도배 10초 창, 묶음 열림 확인 |
 | message_hold_reasons | 인덱스 `(message_id) WHERE released_at IS NULL` | 미해제 원인 확인 |
