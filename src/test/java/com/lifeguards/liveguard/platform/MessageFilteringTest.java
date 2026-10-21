@@ -4,6 +4,7 @@ import static com.lifeguards.liveguard.support.LoginSupport.login;
 import static com.lifeguards.liveguard.support.LoginSupport.withXsrf;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -208,6 +209,79 @@ class MessageFilteringTest {
 
 		assertEquals(List.of("HOLD", "HOLD"),
 				jdbc.queryForList("SELECT filter_result FROM platform.messages ORDER BY sent_at", String.class));
+	}
+
+	@Test
+	void authorResponseCarriesTheModerationReasonCodeForEachRoute() throws Exception {
+		MockHttpSession viewer = login(mockMvc, "viewer");
+
+		assertEquals("PROFANITY_INCLUDED", reasonOf(sendOk("씨발 진짜", viewer)));
+		assertEquals("LINK_NOT_ALLOWED", reasonOf(sendOk("여기 https://evil.test 접속", viewer)));
+		assertEquals("CONTEXT_PENDING", reasonOf(sendOk("무대 미쳤다ㅋㅋ", viewer)));
+		assertNull(reasonOf(sendOk("오늘 무대 좋았어요", viewer)));
+		assertNull(reasonOf(sendOk("도배 문장", viewer)));
+		assertNull(reasonOf(sendOk("도배 문장", viewer)));
+		assertEquals("FLOOD_REPEATED", reasonOf(sendOk("도배 문장", viewer)));
+
+		assertEquals(List.of("PROFANITY_INCLUDED", "LINK_NOT_ALLOWED", "CONTEXT_PENDING", "FLOOD_REPEATED"),
+				jdbc.queryForList("SELECT moderation_reason_code FROM platform.messages "
+						+ "WHERE moderation_reason_code IS NOT NULL ORDER BY sent_at, id", String.class));
+	}
+
+	@Test
+	void replayReturnsTheSameModerationReasonCode() throws Exception {
+		MockHttpSession viewer = login(mockMvc, "viewer");
+		UUID clientMessageId = UUID.randomUUID();
+
+		String first = mockMvc.perform(send(CHANNEL_A, clientMessageId, "씨발 진짜", viewer))
+				.andReturn().getResponse().getContentAsString();
+		String replay = mockMvc.perform(send(CHANNEL_A, clientMessageId, "씨발 진짜", viewer))
+				.andReturn().getResponse().getContentAsString();
+
+		assertEquals("PROFANITY_INCLUDED", reasonOf(first));
+		assertEquals("PROFANITY_INCLUDED", reasonOf(replay));
+	}
+
+	@Test
+	void historyShowsTheReasonOnlyToTheAuthorWhileTheMessageIsConcealed() throws Exception {
+		String sent = sendOk("씨발 진짜", login(mockMvc, "viewer"));
+		String messageId = JsonPath.read(sent, "$.data.messageId");
+
+		assertEquals(List.of("PROFANITY_INCLUDED"), reasonsInHistory("viewer", messageId));
+		// 담당 운영자는 원문을 보지만 사유 코드는 작성자 응답에만 있다
+		assertNull(reasonsInHistory("moderator", messageId).getFirst());
+
+		// 복구되어 PUBLIC이 되면 작성자에게도 사유가 없다
+		jdbc.update("UPDATE platform.messages SET visibility = 'PUBLIC' WHERE id = ?::uuid", messageId);
+		assertNull(reasonsInHistory("viewer", messageId).getFirst());
+	}
+
+	@Test
+	void concealedMessageWithoutStoredReasonStillReadsAsNull() throws Exception {
+		// 사유 컬럼 도입 전에 저장된 가려진 메시지
+		jdbc.update("INSERT INTO platform.messages (channel_id, live_id, author_id, client_message_id, text, "
+				+ "normalized_text, filter_result, visibility, sent_at) VALUES (?, (SELECT id FROM platform.lives "
+				+ "WHERE channel_id = ? AND ended_at IS NULL), ?, ?, '예전 메시지', '예전 메시지', 'HOLD', 'HELD', ?)",
+				CHANNEL_A, CHANNEL_A, VIEWER, UUID.randomUUID(), Timestamp.from(Instant.now()));
+
+		String body = history("viewer");
+
+		assertEquals(1, JsonPath.<List<Object>>read(body, "$.data.items").size());
+		assertNull(JsonPath.read(body, "$.data.items[0].moderationReasonCode"));
+	}
+
+	private String sendOk(String text, MockHttpSession session) throws Exception {
+		return mockMvc.perform(send(CHANNEL_A, UUID.randomUUID(), text, session))
+				.andExpect(status().isCreated())
+				.andReturn().getResponse().getContentAsString();
+	}
+
+	private static String reasonOf(String responseBody) {
+		return JsonPath.read(responseBody, "$.data.moderationReasonCode");
+	}
+
+	private List<String> reasonsInHistory(String username, String messageId) throws Exception {
+		return JsonPath.read(history(username), "$.data.items[?(@.messageId=='" + messageId + "')].moderationReasonCode");
 	}
 
 	private String history(String username) throws Exception {

@@ -74,7 +74,7 @@ erDiagram
 | `channels` | `id` PK, `name`, `official_hosts` jsonb, `official_events` jsonb | v0.5 유지. `official_hosts`는 **링크 허용 예외가 아니다.** 사칭 조사 참고 자료로만 쓴다(POLICY §2, CONTRACTS §7) |
 | `channel_members` | `channel_id`·`user_id` PK, `member_role`(VIEWER, STREAMER, OFFICIAL_STAFF, MODERATOR) | v0.5 유지. 담당 운영자 = 그 채널의 MODERATOR. liveId 범위 권한은 방송의 `channel_id`로 확인 |
 | **`lives`** | `id` PK(liveId), `channel_id` FK, `started_at`, `ended_at`(null = 방송 중) | **신규(E-1).** 상태 컬럼 없음. 채널당 진행 중 방송 1개. 시작·종료는 운영자 API(openapi v1.0) |
-| `messages` | `id` PK, **`live_id` FK**, `channel_id` FK, `author_id` FK, `client_message_id`, `text`(1..500), `normalized_text`(norm-v1), `filter_result`, `visibility`(PUBLIC, HELD, HIDDEN), `case_id` FK(소유 사건), `version`, `sent_at` | `live_id` 추가. `filter_result`의 REVIEW는 v3.1 경로에서 쓰지 않는다 |
+| `messages` | `id` PK, **`live_id` FK**, `channel_id` FK, `author_id` FK, `client_message_id`, `text`(1..500), `normalized_text`(norm-v1), `filter_result`, `visibility`(PUBLIC, HELD, HIDDEN), **`moderation_reason_code`**, `case_id` FK(소유 사건), `version`, `sent_at` | `live_id` 추가. `filter_result`의 REVIEW는 v3.1 경로에서 쓰지 않는다. `moderation_reason_code`(V103, A-22)는 작성자 안내 사유 5종(PROFANITY_INCLUDED, LINK_NOT_ALLOWED, FLOOD_REPEATED, CONTEXT_PENDING, PII_PENDING)이며 PASS·방송 도입 전 메시지는 NULL. **메시지 저장 시점의 1차 필터 결과**이고, `message_hold_reasons`(E-2)와 별개다. 응답에는 작성자 본인에게 가려진(HELD·HIDDEN) 동안만 싣는다 |
 | **`message_hold_reasons`** | `message_id` FK, `case_id` FK, `reason`(handlingRoute 값), `created_at`, `released_at` | **신규(E-2).** 해제는 자기 원인만. 미해제 원인이 남아 있으면 PUBLIC으로 되돌리지 않는다 |
 
 ### guard (B2)

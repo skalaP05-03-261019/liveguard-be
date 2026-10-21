@@ -47,7 +47,7 @@ class FlywayMigrationTest {
 				"SELECT version FROM flyway_schema_history WHERE success AND version IS NOT NULL ORDER BY installed_rank",
 				String.class);
 
-		assertEquals(List.of("100", "101", "102", "200", "201", "202"), versions);
+		assertEquals(List.of("100", "101", "102", "103", "200", "201", "202"), versions);
 	}
 
 	@Test
@@ -138,6 +138,22 @@ class FlywayMigrationTest {
 		assertThrows(DataIntegrityViolationException.class, () -> insertLiveMessage(UUID.randomUUID()));
 	}
 
+	@ParameterizedTest
+	@ValueSource(strings = { "PROFANITY_INCLUDED", "LINK_NOT_ALLOWED", "FLOOD_REPEATED", "CONTEXT_PENDING",
+			"PII_PENDING" })
+	void acceptsEveryModerationReasonCodeOfTheContract(String code) {
+		insertMessageWithReason(code);
+
+		assertEquals(code, jdbc.queryForObject("SELECT moderation_reason_code FROM platform.messages", String.class));
+	}
+
+	@Test
+	void rejectsUnknownModerationReasonCodeAndAllowsNull() {
+		insertMessageWithReason(null);
+
+		assertThrows(DataIntegrityViolationException.class, () -> insertMessageWithReason("NOT_A_REASON"));
+	}
+
 	@Test
 	void rejectsDuplicateClientMessageIdForSameAuthorAndChannel() {
 		UUID clientMessageId = UUID.randomUUID();
@@ -215,6 +231,13 @@ class FlywayMigrationTest {
 		jdbc.update("INSERT INTO platform.lives (id, channel_id, started_at, ended_at) VALUES (?, ?, ?, ?)",
 				liveId, channel, Timestamp.from(Instant.parse("2026-01-01T00:00:00Z")),
 				endedAt == null ? null : Timestamp.from(endedAt));
+	}
+
+	private void insertMessageWithReason(String code) {
+		jdbc.update("INSERT INTO platform.messages (channel_id, author_id, client_message_id, text, normalized_text, "
+				+ "filter_result, visibility, moderation_reason_code, sent_at) VALUES (?, ?, ?, 't', 't', 'HOLD', "
+				+ "'HIDDEN', ?, ?)",
+				channelId, userId, UUID.randomUUID(), code, Timestamp.from(Instant.now()));
 	}
 
 	private void insertLiveMessage(UUID liveId) {

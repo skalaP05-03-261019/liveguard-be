@@ -14,6 +14,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 import com.lifeguards.liveguard.contracts.enums.FilterResult;
 import com.lifeguards.liveguard.contracts.enums.HandlingRoute;
+import com.lifeguards.liveguard.contracts.enums.ModerationReasonCode;
 import com.lifeguards.liveguard.contracts.enums.Visibility;
 import com.lifeguards.liveguard.contracts.exception.InvalidContractException;
 
@@ -131,6 +132,18 @@ class MessageFilterTest {
 
 		assertEquals(HandlingRoute.FLOOD_REVIEW, classify("꺼져", 3).handlingRoute());
 		assertEquals(HandlingRoute.CONTEXT_REVIEW, classify("꺼져", 2).handlingRoute());
+	}
+
+	@Test
+	void moderationReasonCodeFollowsRouteAndRule() {
+		assertEquals(ModerationReasonCode.PROFANITY_INCLUDED, classify("씨발").moderationReasonCode());
+		assertEquals(ModerationReasonCode.LINK_NOT_ALLOWED, classify("https://a.test").moderationReasonCode());
+		// 욕설과 링크가 같이 걸리면 욕설 규칙이 근거다
+		assertEquals(ModerationReasonCode.PROFANITY_INCLUDED, classify("씨발 https://a.test").moderationReasonCode());
+		assertEquals(ModerationReasonCode.FLOOD_REPEATED, classify("같은 말", 3).moderationReasonCode());
+		assertEquals(ModerationReasonCode.CONTEXT_PENDING, classify("꺼져").moderationReasonCode());
+		assertEquals(ModerationReasonCode.CONTEXT_PENDING, classify("공식 로그인").moderationReasonCode());
+		assertNull(classify("오늘 무대 좋았어요").moderationReasonCode());
 	}
 
 	@Test

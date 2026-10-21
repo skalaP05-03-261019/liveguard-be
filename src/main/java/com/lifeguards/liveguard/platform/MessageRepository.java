@@ -14,13 +14,14 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 
 import com.lifeguards.liveguard.contracts.enums.FilterResult;
+import com.lifeguards.liveguard.contracts.enums.ModerationReasonCode;
 import com.lifeguards.liveguard.contracts.enums.Visibility;
 
 @Repository
 class MessageRepository {
 
 	record HistoryRow(UUID id, UUID liveId, UUID authorId, String authorNickname, String text, Visibility visibility,
-			int version, Instant sentAt) {
+			int version, Instant sentAt, ModerationReasonCode moderationReasonCode) {
 	}
 
 	/** hide·restore가 바꾼 메시지. previous는 바뀌기 전 공개 범위. */
@@ -28,10 +29,11 @@ class MessageRepository {
 			String authorNickname, Instant sentAt) {
 	}
 
-	record StoredMessage(UUID id, UUID liveId, String text, Visibility visibility, int version, Instant sentAt) {
+	record StoredMessage(UUID id, UUID liveId, String text, Visibility visibility, int version, Instant sentAt,
+			ModerationReasonCode moderationReasonCode) {
 	}
 
-	private static final String COLUMNS = "id, live_id, text, visibility, version, sent_at";
+	private static final String COLUMNS = "id, live_id, text, visibility, version, sent_at, moderation_reason_code";
 
 	private final JdbcClient jdbc;
 
@@ -116,12 +118,15 @@ class MessageRepository {
 
 	/** 같은 (채널, 작성자, clientMessageId)가 이미 있으면 저장하지 않고 empty를 돌려준다. */
 	Optional<StoredMessage> insertIfAbsent(UUID channelId, UUID liveId, UUID authorId, UUID clientMessageId,
-			String text, String normalizedText, FilterResult filterResult, Visibility visibility, Instant sentAt) {
+			String text, String normalizedText, FilterResult filterResult, Visibility visibility,
+			ModerationReasonCode moderationReasonCode, Instant sentAt) {
 		return jdbc.sql("INSERT INTO platform.messages (channel_id, live_id, author_id, client_message_id, text, "
-				+ "normalized_text, filter_result, visibility, sent_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+				+ "normalized_text, filter_result, visibility, moderation_reason_code, sent_at) "
+				+ "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
 				+ "ON CONFLICT (channel_id, author_id, client_message_id) DO NOTHING RETURNING " + COLUMNS)
 				.params(channelId, liveId, authorId, clientMessageId, text, normalizedText, filterResult.name(),
-						visibility.name(), Timestamp.from(sentAt))
+						visibility.name(), moderationReasonCode == null ? null : moderationReasonCode.name(),
+						Timestamp.from(sentAt))
 				.query((rs, rowNum) -> toStored(rs))
 				.optional();
 	}
@@ -141,7 +146,8 @@ class MessageRepository {
 	List<HistoryRow> history(UUID channelId, UUID liveId, UUID viewerId, boolean operator, MessageCursor after,
 			int limit) {
 		StringBuilder sql = new StringBuilder("""
-				SELECT m.id, m.live_id, m.author_id, u.nickname, m.text, m.visibility, m.version, m.sent_at
+				SELECT m.id, m.live_id, m.author_id, u.nickname, m.text, m.visibility, m.version, m.sent_at,
+					m.moderation_reason_code
 				FROM platform.messages m JOIN platform.users u ON u.id = m.author_id
 				WHERE m.channel_id = :channelId""");
 		if (liveId != null) {
@@ -175,7 +181,8 @@ class MessageRepository {
 				rs.getString("text"),
 				Visibility.valueOf(rs.getString("visibility")),
 				rs.getInt("version"),
-				rs.getObject("sent_at", OffsetDateTime.class).toInstant()))
+				rs.getObject("sent_at", OffsetDateTime.class).toInstant(),
+				reasonOf(rs.getString("moderation_reason_code"))))
 				.list();
 	}
 
@@ -186,7 +193,12 @@ class MessageRepository {
 				rs.getString("text"),
 				Visibility.valueOf(rs.getString("visibility")),
 				rs.getInt("version"),
-				rs.getObject("sent_at", OffsetDateTime.class).toInstant());
+				rs.getObject("sent_at", OffsetDateTime.class).toInstant(),
+				reasonOf(rs.getString("moderation_reason_code")));
+	}
+
+	private static ModerationReasonCode reasonOf(String code) {
+		return code == null ? null : ModerationReasonCode.valueOf(code);
 	}
 
 }

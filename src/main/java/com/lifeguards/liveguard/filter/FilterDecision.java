@@ -5,6 +5,7 @@ import java.util.List;
 import com.lifeguards.liveguard.contracts.dto.DtoValidation;
 import com.lifeguards.liveguard.contracts.enums.FilterResult;
 import com.lifeguards.liveguard.contracts.enums.HandlingRoute;
+import com.lifeguards.liveguard.contracts.enums.ModerationReasonCode;
 import com.lifeguards.liveguard.contracts.enums.Visibility;
 import com.lifeguards.liveguard.contracts.exception.InvalidContractException;
 
@@ -39,6 +40,21 @@ public record FilterDecision(HandlingRoute handlingRoute, String ruleId, List<St
 			case PASS -> Visibility.PUBLIC;
 			case RULE_CONFIRMED -> Visibility.HIDDEN;
 			case CONTEXT_REVIEW, PII_INVESTIGATION, FLOOD_REVIEW -> Visibility.HELD;
+		};
+	}
+
+	/** 작성자에게 보여 줄 사유(A-3). PASS는 null이다. 규칙 확정은 어떤 규칙인지로 욕설과 링크를 가른다. */
+	public ModerationReasonCode moderationReasonCode() {
+		return switch (handlingRoute) {
+			case PASS -> null;
+			case RULE_CONFIRMED -> switch (ruleId) {
+				case MessageFilter.RULE_CERTAIN_PROFANITY -> ModerationReasonCode.PROFANITY_INCLUDED;
+				case MessageFilter.RULE_LINK_BLOCKED -> ModerationReasonCode.LINK_NOT_ALLOWED;
+				default -> throw new IllegalStateException("Unknown ruleId: " + ruleId);
+			};
+			case FLOOD_REVIEW -> ModerationReasonCode.FLOOD_REPEATED;
+			case CONTEXT_REVIEW -> ModerationReasonCode.CONTEXT_PENDING;
+			case PII_INVESTIGATION -> ModerationReasonCode.PII_PENDING;
 		};
 	}
 

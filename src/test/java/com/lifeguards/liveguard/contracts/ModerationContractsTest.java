@@ -181,9 +181,9 @@ class ModerationContractsTest {
 		assertThrows(InvalidContractException.class, () -> new Me(null, "닉네임", Role.VIEWER, List.of()));
 		assertThrows(InvalidContractException.class, () -> new Me(id, "닉네임", Role.VIEWER, null));
 		assertThrows(InvalidContractException.class,
-				() -> new Message(id, id, id, "U1", "본문", null, 1, now, false));
+				() -> new Message(id, id, id, "U1", "본문", null, 1, now, false, null));
 		// 방송 도입 전 메시지는 liveId가 없다(A-17)
-		assertNull(new Message(id, null, id, "U1", "본문", Visibility.PUBLIC, 1, now, false).liveId());
+		assertNull(new Message(id, null, id, "U1", "본문", Visibility.PUBLIC, 1, now, false, null).liveId());
 		assertThrows(InvalidContractException.class,
 				() -> new CaseSummary(id, id, id, "U1", FilterResult.PASS, HandlingRoute.PASS, null,
 						ConfirmationStatus.PENDING, null, null, 1, now));
