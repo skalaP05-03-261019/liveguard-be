@@ -2513,9 +2513,12 @@ components:
             $ref: '#/components/schemas/Uuid'
       allOf:
         - if:
-            properties: { valid: { const: false } }
+            properties: { valid: { const: true } }
             required: [valid]
           then:
+            properties:
+              validationRef: { $ref: '#/components/schemas/Uuid' }
+          else:
             properties:
               validationRef: { type: 'null' }
     KickRevalidationResponse:
