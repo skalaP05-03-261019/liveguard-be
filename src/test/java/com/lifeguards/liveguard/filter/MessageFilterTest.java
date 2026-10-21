@@ -1,6 +1,7 @@
 package com.lifeguards.liveguard.filter;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
@@ -120,7 +121,7 @@ class MessageFilterTest {
 	}
 
 	@ParameterizedTest
-	@ValueSource(strings = { "ㅅㅂ", "ㅅㅂㅅㅂ", "ＯＦＦＩＣＩＡＬ 안내", "진짜  ㅂㅅ  같네", "OFFICIAL 관리자" })
+	@ValueSource(strings = { "ＯＦＦＩＣＩＡＬ 안내", "OFFICIAL 관리자", "무대 미쳤다", "꺼져  제발" })
 	void dictionaryTermsAreComparedInNormalizedForm(String text) {
 		assertTrue(classify(text).matchingTags().stream()
 				.anyMatch(tag -> tag.equals(MessageFilter.ATTACK_TERM) || tag.equals(MessageFilter.OFFICIAL_CLAIM)));
@@ -128,11 +129,85 @@ class MessageFilterTest {
 
 	@Test
 	void dictionaryEntriesAreNormalizedOnLoad() {
-		FilterDictionary dictionary = new FilterDictionary(List.of("ㅅㅂ", "  "), List.of("OFFICIAL"), List.of());
+		FilterDictionary dictionary = new FilterDictionary(List.of("꺼져", "  "), List.of("OFFICIAL"), List.of(),
+				List.of("ㅅㅂ"), List.of("ＳＩＢＡＬ점"));
 
-		assertEquals(List.of(TextNormalizer.normalize("ㅅㅂ")), dictionary.attackTerms());
+		assertEquals(List.of("꺼져"), dictionary.attackTerms());
 		assertEquals(List.of("official"), dictionary.officialClaimTerms());
-		assertEquals("ᄉᄇ", dictionary.attackTerms().get(0), "호환 자모가 초성 자모로 바뀐 형태로 저장된다");
+		assertEquals(List.of(TextNormalizer.normalize("ㅅㅂ")), dictionary.certainProfanityTerms());
+		assertEquals("ᄉᄇ", dictionary.certainProfanityTerms().get(0), "호환 자모가 초성 자모로 바뀐 형태로 저장된다");
+		assertEquals(List.of("sibal점"), dictionary.profanityExceptions());
+	}
+
+	// ----- 확실한 욕설: HOLD (피싱과 구분은 matchingTags) -----
+
+	@ParameterizedTest
+	@ValueSource(strings = { "시발", "너 진짜 씨발 ㅋㅋ", "ㅅㅂ", "ㅅㅂㅅㅂ", "진짜  ㅂㅅ  같네", "ㅆㅂ", "개새끼야", "시발발발발", "ㅅㅂㅂㅂㅂ",
+			"느금마", "좆같네" })
+	void certainProfanityIsHoldAndHeld(String text) {
+		FilterDecision decision = classify(text);
+
+		assertEquals(FilterResult.HOLD, decision.result(), text);
+		assertEquals(Visibility.HELD, decision.visibility());
+		assertEquals(List.of(MessageFilter.CERTAIN_PROFANITY), decision.matchingTags());
+	}
+
+	@Test
+	void d01StaysReviewBecauseItIsOnlyAnAmbiguousAttackTerm() {
+		FilterDecision decision = classify("무대 미쳤다ㅋㅋ");
+
+		assertEquals(FilterResult.REVIEW, decision.result());
+		assertEquals(Visibility.PUBLIC, decision.visibility());
+		assertEquals(List.of(MessageFilter.ATTACK_TERM), decision.matchingTags());
+	}
+
+	@ParameterizedTest
+	@ValueSource(strings = { "시발점에서 출발합니다", "다음 역은 시발역입니다", "병신년 새해", "이시 발표 시작", "시바견 귀엽다", "존나 좋다" })
+	void benignWordsOrAmbiguousSlangAreNotCertainProfanity(String text) {
+		assertEquals(FilterResult.PASS, classify(text).result(), text);
+	}
+
+	@Test
+	void exceptionWordDoesNotShieldRealProfanityInTheSameMessage() {
+		FilterDecision decision = classify("시발점 가는 버스 씨발");
+
+		assertEquals(FilterResult.HOLD, decision.result());
+		assertEquals(List.of(MessageFilter.CERTAIN_PROFANITY), decision.matchingTags());
+	}
+
+	@Test
+	void certainProfanityAndAmbiguousAttackKeepBothTags() {
+		FilterDecision decision = classify("씨발 꺼져");
+
+		assertEquals(FilterResult.HOLD, decision.result());
+		assertEquals(List.of(MessageFilter.ATTACK_TERM, MessageFilter.CERTAIN_PROFANITY), decision.matchingTags());
+	}
+
+	@Test
+	void certainProfanityAndPhishingAreOneHoldWithBothTags() {
+		FilterDecision decision = classify("공식 이벤트 씨발 evil.test 에서 로그인하세요");
+
+		assertEquals(FilterResult.HOLD, decision.result());
+		assertEquals(List.of(MessageFilter.CERTAIN_PROFANITY, MessageFilter.OFFICIAL_CLAIM,
+				MessageFilter.CREDENTIAL_REQUEST, MessageFilter.UNOFFICIAL_URL), decision.matchingTags());
+	}
+
+	@Test
+	void certainProfanityBeatsFloodAndKeepsTheRepeatedTag() {
+		FilterDecision decision = classify("씨발", 3);
+
+		assertEquals(FilterResult.HOLD, decision.result());
+		assertEquals(List.of(MessageFilter.CERTAIN_PROFANITY, MessageFilter.REPEATED_TEXT), decision.matchingTags());
+		assertEquals(FilterResult.HOLD, classify("씨발", 1).result());
+	}
+
+	@Test
+	void phishingHoldStillCarriesNoProfanityTag() {
+		FilterDecision decision = classify("공식 이벤트 evil.test 에서 로그인하세요");
+
+		assertEquals(FilterResult.HOLD, decision.result());
+		assertFalse(decision.matchingTags().contains(MessageFilter.CERTAIN_PROFANITY));
+		assertTrue(decision.matchingTags().contains(MessageFilter.UNOFFICIAL_URL));
 	}
 
 	@Test
