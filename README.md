@@ -65,12 +65,12 @@ REST 경로·필드는 이 저장소의 [OpenAPI](contracts/openapi.yaml)를 사
 
 | Agent tool | 표준 Backend REST | 현재 상태 |
 | --- | --- | --- |
-| `get_moderation_case` | `GET /internal/cases/{caseId}` | 501 스텁 |
+| `get_moderation_case` | `GET /internal/cases/{caseId}` | DB 조회, 필수 정보 미준비 시 409 |
 | `get_chat_context` | `GET /internal/cases/{caseId}/context?before=5&after=5` | 실제 DB 조회·마스킹 |
 | `get_stream_info`, `get_official_links` | `GET /internal/cases/{caseId}/channel-info` | 실제 채널 역할·공식 호스트·등록 이벤트 조회 |
 | `get_channel_user_role` | `GET /internal/cases/{caseId}/role` | 실제 채널 정보 조회 재사용 |
 | `get_security_facts` | `GET /internal/cases/{caseId}/security-facts` | 501 스텁, 출처 기반 TRUE/FALSE/UNKNOWN 계약 |
-| `get_user_history` | `GET /internal/cases/{caseId}/user-history` | 501 스텁, TIMEOUT 유형별 이력 |
+| `get_user_history` | `GET /internal/cases/{caseId}/user-history` | 명시한 `days`로 DB 조회, 기본 기간 미확정 시 501 |
 | `get_kick_eligibility` | `GET /internal/cases/{caseId}/kick-eligibility` | 501 스텁, 강퇴 신규 후보 |
 | `get_kick_review_basis` | `GET /internal/kick-reviews/{reviewId}/basis` | 501 스텁, 원 승인 기준·소진 소유권 |
 | `get_action_status` | `GET /internal/actions/{actionId}` | 501 스텁 |
@@ -96,8 +96,35 @@ REST 경로·필드는 이 저장소의 [OpenAPI](contracts/openapi.yaml)를 사
 - 여러 유형의 확정 finding이 있어도 사건은 한 번만 집계합니다. 취소는 finding과 기존 근거를
   삭제하지 않고 취소 감사 이벤트를 추가합니다. TIMEOUT 만료는 취소가 아닙니다.
 - BE1이 아직 제공하지 않는 방송 ID·활성 정책 버전·처리 경로는 DB에서 미제공 상태로 보존합니다.
-  완성된 내부 조회 DTO를 임의 값으로 채우지 않으며, 조회 API 연결은 다음 이슈에서 진행합니다.
+  완성된 내부 조회 DTO를 임의 값으로 채우지 않습니다.
   확정 이력 조회는 저장 계층용이며 강퇴 심사용 방송 범위·예약·소진 조건은 후속 이슈에서 추가합니다.
+
+### 사건·이력 조회 기반 (03-1)
+
+- `CaseQueryRepository`는 사건 메타데이터, 후보별 증거 버전·스냅샷, 증거/대상 연결,
+  유형별 finding과 감사 이벤트를 읽습니다. 원문을 포함하는 저장 계층 조회는 REST로 노출하지 않습니다.
+- 사건 API는 REPEATABLE READ 트랜잭션에서 현재 증거와 대상의 현재 가시성·버전을 읽고,
+  기존 `PiiMasker`와 사건 내 가명을 적용합니다. 사건이 없으면 `404 NOT_FOUND`,
+  방송·정책·처리 경로 또는 현재 증거/대상이 없으면 `409 CASE_NOT_READY`, `retryable=false`입니다.
+  미준비는 재시도만으로 해결됨을 보장하지 않으며 BE1 정보 제공 또는 계약 설정이 필요합니다.
+- `targets`가 정본입니다. Agent 호환 필드 `targetMessageIds`, `targetVersions`는 이 목록에서
+  파생하므로 독립적으로 수정하거나 별도 입력으로 받지 않습니다.
+  주변 문맥 API는 아직 `snapshotId`·`evidenceVersion`·메시지 가시성을 제공하지 않습니다.
+  Agent 사건 로더의 사건/문맥 버전 일치 검증까지 연결하는 작업은 BE1과의 후속 협업 범위입니다.
+  현재 응답은 불변의 과거 문맥 스냅샷이나 Agent E2E 준비 완료를 보장하지 않습니다.
+- TIMEOUT 이력은 명시한 `days`로 서버 시각 기준 기간을 선택합니다. 기존 `/history`도 같은 조회를 사용합니다.
+  사건 발생 시각이 `[since, asOf]`에 포함되고 기준 시각까지 확정된, 현재 취소되지 않은 Backend 위반만 조회합니다.
+  현재 사건은 제외하며 `violationCount`는 서로 다른 사건 수, `recentCases`는 사건·유형별 한 행입니다.
+  서비스의 `timeoutHistory`는 명시적인 시작/종료 시각과 유형별 건수도 제공합니다.
+  이는 현재 취소 상태를 반영하는 조회이며 과거 기준 시각의 상태를 재생하는 감사 조회가 아닙니다.
+- `days` 생략 시 기존 사건은 기본 기간 미확정으로 `501 NOT_IMPLEMENTED`를 반환합니다.
+  30일 기본값·상한은 없습니다. `days * 24`가 응답의 정수 `windowHours` 범위를 넘으면
+  정책상 기간 제한이 아니라 표현 범위 오류로 `400 VALIDATION_FAILED`를 반환합니다.
+- 강퇴 기초 조회 `kickBasis`는 명시한 사용자·채널·방송과 기준 시각을 받고, 최근 24시간의
+  5개 유형을 합친 확정 위반을 사건 단위로 반환합니다. 현재 확정 사건도 포함하며 방송 ID 누락은 거부합니다.
+  이 단계의 포함 경계는 저장 계층의 `[asOf - 24h, asOf]`이며 최종 심사 정책의 확정을 대신하지 않습니다.
+  예약·소진 제외가 미연동이므로 `eligible`을 제공하지 않고 `/kick-eligibility`도 계속 501입니다.
+  TIMEOUT 만료나 강퇴 소진은 판정 취소가 아니며 TIMEOUT 이력을 지우지 않습니다.
 
 ### 조회 계약과 남은 정책
 
@@ -117,7 +144,8 @@ REST 경로·필드는 이 저장소의 [OpenAPI](contracts/openapi.yaml)를 사
   `KickReviewBasis`는 원 승인 사건과 소진의 `reviewId/decisionId`를 제공하며 신규 후보 조회와 다릅니다.
   자기 승인에 따른 소진은 재검증 때 허용하지만 타 심사 소진·취소 등은 검증해야 합니다.
 - `InternalCase`는 `liveId`, `snapshotId`, `evidenceVersion`, `policyVersion`, `handlingRoute`,
-  대상 메시지의 가시성·버전(`targets`)을 정의합니다. 실제 영속 스냅샷 생성은 후속 사건 저장 이슈에서 연결합니다.
+  대상 메시지의 가시성·버전(`targets`)을 정의합니다. 후보의 영속 스냅샷과 현재 대상 조회는 연결됐지만
+  불변의 주변 문맥 스냅샷 및 BE1 메타데이터 제공은 후속 작업입니다.
   방송 생명주기, 유형별 이력 기간, 기준 시각/경계, 심사 3건 초과 선택, 승인 유효기간,
   TIMEOUT 중첩, 재시도 오류 코드·간격은 합의 전 임의 구현하지 않습니다.
   활성 `policyVersion`은 아직 승인된 값이 없으며 예제·테스트 값은 배포 버전이 아닙니다.

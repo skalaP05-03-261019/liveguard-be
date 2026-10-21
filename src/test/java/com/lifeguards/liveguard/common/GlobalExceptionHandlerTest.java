@@ -181,6 +181,7 @@ class GlobalExceptionHandlerTest {
 				Map.entry(ErrorCode.IDEMPOTENCY_CONFLICT, 409),
 				Map.entry(ErrorCode.REVIEW_NOT_APPROVED, 422),
 				Map.entry(ErrorCode.NOT_IMPLEMENTED, 501),
+				Map.entry(ErrorCode.CASE_NOT_READY, 409),
 				Map.entry(ErrorCode.TEMPORARY_UNAVAILABLE, 503),
 				Map.entry(ErrorCode.INTERNAL_ERROR, 500));
 
