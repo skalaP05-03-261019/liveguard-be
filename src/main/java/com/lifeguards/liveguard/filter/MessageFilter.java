@@ -8,6 +8,7 @@ import java.util.stream.Collectors;
 import org.springframework.stereotype.Component;
 
 import com.lifeguards.liveguard.contracts.enums.FilterResult;
+import com.lifeguards.liveguard.contracts.enums.MatchingTag;
 
 /**
  * 1차 필터 (docs/live-guard/v0.3/policies/classification-and-actions.md 3절).
@@ -24,12 +25,12 @@ public class MessageFilter {
 
 	public static final int FLOOD_THRESHOLD = 3;
 
-	public static final String ATTACK_TERM = "ATTACK_TERM";
-	public static final String CERTAIN_PROFANITY = "CERTAIN_PROFANITY";
-	public static final String OFFICIAL_CLAIM = "OFFICIAL_CLAIM";
-	public static final String CREDENTIAL_REQUEST = "CREDENTIAL_REQUEST";
-	public static final String UNOFFICIAL_URL = "UNOFFICIAL_URL";
-	public static final String REPEATED_TEXT = "REPEATED_TEXT";
+	public static final String ATTACK_TERM = MatchingTag.ATTACK_TERM.name();
+	public static final String CERTAIN_PROFANITY = MatchingTag.CERTAIN_PROFANITY.name();
+	public static final String OFFICIAL_CLAIM = MatchingTag.OFFICIAL_CLAIM.name();
+	public static final String CREDENTIAL_REQUEST = MatchingTag.CREDENTIAL_REQUEST.name();
+	public static final String UNOFFICIAL_URL = MatchingTag.UNOFFICIAL_URL.name();
+	public static final String REPEATED_TEXT = MatchingTag.REPEATED_TEXT.name();
 
 	private final FilterDictionary dictionary;
 

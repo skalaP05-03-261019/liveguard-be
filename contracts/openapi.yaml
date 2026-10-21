@@ -859,6 +859,16 @@ components:
     FilterResult:
       type: string
       enum: [PASS, REVIEW, HOLD, FLOOD]
+    MatchingTag:
+      type: string
+      description: |
+        1차 필터가 걸린 조건. 한 메시지에 여러 개가 붙을 수 있고, filterResult가 같아도 태그로 이유를 구분한다.
+        ATTACK_TERM: 공격·비하 사전(애매한 표현, REVIEW).
+        CERTAIN_PROFANITY: 확실한 욕설(HOLD).
+        OFFICIAL_CLAIM: 공식 주체 자칭. CREDENTIAL_REQUEST: 로그인·인증 요구. UNOFFICIAL_URL: 채널 공식 호스트에 없는 URL.
+        (세 태그가 모두 있으면 피싱 HOLD)
+        REPEATED_TEXT: 10초 안에 같은 정규화 문장 3회 이상(FLOOD).
+      enum: [ATTACK_TERM, CERTAIN_PROFANITY, OFFICIAL_CLAIM, CREDENTIAL_REQUEST, UNOFFICIAL_URL, REPEATED_TEXT]
     CaseStatus:
       type: string
       enum: [ANALYZING, NO_ACTION, HIDDEN, NEEDS_REVIEW, KICK_REVIEW_PENDING, CLOSED, FAILED]
@@ -1322,7 +1332,7 @@ components:
         matchingTags:
           type: array
           items:
-            type: string
+            $ref: '#/components/schemas/MatchingTag'
         version:
           type: integer
           minimum: 1
