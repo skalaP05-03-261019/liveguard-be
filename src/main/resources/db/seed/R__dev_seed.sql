@@ -31,3 +31,16 @@ INSERT INTO platform.channel_members (channel_id, user_id, member_role) VALUES
 	('20000000-0000-4000-8000-000000000002', '10000000-0000-4000-8000-000000000002', 'MODERATOR')
 ON CONFLICT (channel_id, user_id) DO UPDATE SET
 	member_role = EXCLUDED.member_role;
+
+-- 채널마다 진행 중 방송 하나(E-1). 이미 진행 중인 방송이 있으면 넣지 않고, 종료된 시드 방송을 되살리지 않는다.
+INSERT INTO platform.lives (id, channel_id, started_at)
+SELECT seed.id, seed.channel_id, seed.started_at
+FROM (VALUES
+	('30000000-0000-4000-8000-000000000001'::uuid, '20000000-0000-4000-8000-000000000001'::uuid,
+		'2026-01-01T00:00:00Z'::timestamptz),
+	('30000000-0000-4000-8000-000000000002'::uuid, '20000000-0000-4000-8000-000000000002'::uuid,
+		'2026-01-01T00:00:00Z'::timestamptz)
+) AS seed (id, channel_id, started_at)
+WHERE NOT EXISTS (
+	SELECT 1 FROM platform.lives l WHERE l.channel_id = seed.channel_id AND l.ended_at IS NULL)
+ON CONFLICT (id) DO NOTHING;

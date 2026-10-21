@@ -3,6 +3,7 @@ package com.lifeguards.liveguard.platform;
 import com.lifeguards.liveguard.common.*;
 import com.lifeguards.liveguard.common.security.AuthenticatedUser;
 import com.lifeguards.liveguard.contracts.dto.request.SendMessageRequest;
+import com.lifeguards.liveguard.contracts.dto.response.Live;
 import com.lifeguards.liveguard.contracts.enums.*;
 import com.lifeguards.liveguard.filter.*;
 import com.lifeguards.liveguard.platform.port.*;
@@ -22,6 +23,8 @@ public class LiveService implements LivePlatformPort {
   private final LiveGuardPort guard;
   private final MessageFilter filter;
   private final MessageRepository messages;
+  private final JdbcLiveQuery liveQueries;
+  private final org.springframework.context.ApplicationEventPublisher applicationEvents;
   private final SseRegistry chats = new SseRegistry("live-chat-v1", Duration.ofSeconds(15));
   private final SseRegistry events = new SseRegistry("live-guard-v1", Duration.ofSeconds(15));
   private final String policy;
@@ -33,6 +36,8 @@ public class LiveService implements LivePlatformPort {
       LiveGuardPort guard,
       MessageFilter filter,
       MessageRepository messages,
+      JdbcLiveQuery liveQueries,
+      org.springframework.context.ApplicationEventPublisher applicationEvents,
       @Value("${LIVEGUARD_POLICY_VERSION:}") String policy,
       @Value("${LIVEGUARD_TBD_FIXTURE_ENABLED:false}") boolean fixtureEnabled) {
     this.db = db;
@@ -40,6 +45,8 @@ public class LiveService implements LivePlatformPort {
     this.guard = guard;
     this.filter = filter;
     this.messages = messages;
+    this.liveQueries = liveQueries;
+    this.applicationEvents = applicationEvents;
     this.policy = policy;
     this.fixtureEnabled = fixtureEnabled;
   }
@@ -50,20 +57,10 @@ public class LiveService implements LivePlatformPort {
 
   @Override
   public Live live(UUID id) {
-    return db.sql("SELECT * FROM platform.lives WHERE id=?")
-        .param(id)
-        .query(
-            (r, n) ->
-                new Live(
-                    r.getObject("id", UUID.class),
-                    r.getObject("channel_id", UUID.class),
-                    r.getTimestamp("started_at").toInstant(),
-                    r.getTimestamp("ended_at") == null
-                        ? null
-                        : r.getTimestamp("ended_at").toInstant()))
-        .optional()
-        .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND, "Live not found"));
+    return liveQueries.find(id).orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND, "Live not found"));
   }
+
+  public boolean integrationEnabled() { return fixtureEnabled && policy.equals("v3.1"); }
 
   @Override
   public void authorize(UUID liveId, UUID userId, boolean operator) {
@@ -80,49 +77,31 @@ public class LiveService implements LivePlatformPort {
       throw new ApiException(ErrorCode.FORBIDDEN, "Channel permission required");
   }
 
+  // Lifecycle uses the team PR #34 repository and its transaction/end event contract.
   @Transactional
   public Live start(UUID channel, AuthenticatedUser user) {
-    authorizeChannel(channel, user.userId(), true);
-    if (!policy.equals("v3.1") || !fixtureEnabled)
-      throw new ApiException(
-          ErrorCode.CASE_NOT_READY,
-          "Explicit shared policy and integration fixture configuration required");
-    db.sql("SELECT id FROM platform.channels WHERE id=? FOR UPDATE")
-        .param(channel)
-        .query(UUID.class)
-        .single();
-    if (db.sql("SELECT count(*) FROM platform.lives WHERE channel_id=? AND ended_at IS NULL")
-            .param(channel)
-            .query(Integer.class)
-            .single()
-        > 0) throw new ApiException(ErrorCode.LIVE_ALREADY_ACTIVE, "Live already active");
-    UUID id = UUID.randomUUID();
-    db.sql("INSERT INTO platform.lives(id,channel_id,started_at) VALUES(?,?,?)")
-        .params(id, channel, now())
-        .update();
-    return live(id);
+    authorizeChannel(channel,user.userId(),true);
+    return liveQueries.start(channel,now().toInstant()).orElseThrow(() ->
+        new ApiException(ErrorCode.LIVE_ALREADY_ACTIVE,"A live is already in progress in this channel"));
   }
 
-  @Transactional(readOnly = true)
+  @Transactional(readOnly=true)
   public Live current(UUID channel, AuthenticatedUser user) {
-    authorizeChannel(channel, user.userId(), false);
-    UUID id =
-        db.sql("SELECT id FROM platform.lives WHERE channel_id=? AND ended_at IS NULL")
-            .param(channel)
-            .query(UUID.class)
-            .optional()
-            .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND, "No active live"));
-    return live(id);
+    authorizeChannel(channel,user.userId(),false);
+    return liveQueries.currentLive(channel).orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND,"No live in progress"));
   }
 
   @Transactional
   public Live end(UUID id, AuthenticatedUser user) {
-    authorize(id, user.userId(), true);
-    lockLive(id);
-    if (live(id).endedAt() != null) throw new ApiException(ErrorCode.LIVE_ENDED, "Live ended");
-    db.sql("UPDATE platform.lives SET ended_at=? WHERE id=?").params(now(), id).update();
-    emit(id, "LIVE_ENDED", Map.of("liveId", id), null, false);
-    return live(id);
+    authorize(id,user.userId(),true);
+    Live ended=liveQueries.end(id,now().toInstant()).orElseThrow(() -> new ApiException(ErrorCode.LIVE_ENDED,"Live has already ended"));
+    applicationEvents.publishEvent(new LiveEndedEvent(ended.liveId(),ended.channelId(),ended.endedAt()));
+    return ended;
+  }
+
+  @org.springframework.transaction.event.TransactionalEventListener
+  void ended(LiveEndedEvent event) {
+    emit(event.liveId(),"LIVE_ENDED",Map.of("liveId",event.liveId()),null,false);
   }
 
   private void lockLive(UUID id) {
@@ -164,29 +143,18 @@ public class LiveService implements LivePlatformPort {
   @Transactional
   public Map<String, Object> send(UUID id, AuthenticatedUser user, SendMessageRequest req) {
     authorize(id, user.userId(), false);
+    var live = live(id);
+    guard.checkAccess(id,user.userId());
+    if (req.text().indexOf(0)>=0) throw new ApiException(ErrorCode.VALIDATION_FAILED,"Unsupported text");
+    messages.lockAuthorInChannel(live.channelId(),user.userId());
+    var old=messages.find(live.channelId(),user.userId(),req.clientMessageId());
+    if(old.isPresent()) {
+      if(!old.get().text().equals(req.text())) throw new ApiException(ErrorCode.IDEMPOTENCY_CONFLICT,"Message request conflict");
+      return message(old.get().id(),user.userId());
+    }
     lockLive(id);
     active(id);
-    guard.checkAccess(id, user.userId());
-    if (req.text().indexOf(0) >= 0)
-      throw new ApiException(ErrorCode.VALIDATION_FAILED, "Unsupported text");
-    var old =
-        db.sql(
-                "SELECT * FROM platform.messages WHERE live_id=? AND author_id=? AND"
-                    + " client_message_id=?")
-            .params(id, user.userId(), req.clientMessageId())
-            .query((r, n) -> r.getObject("id", UUID.class))
-            .optional();
-    if (old.isPresent()) {
-      String stored =
-          db.sql("SELECT text FROM platform.messages WHERE id=?")
-              .param(old.get())
-              .query(String.class)
-              .single();
-      if (!stored.equals(req.text()))
-        throw new ApiException(ErrorCode.IDEMPOTENCY_CONFLICT, "Message request conflict");
-      return message(old.get(), user.userId());
-    }
-    var live = live(id);
+    if (!integrationEnabled()) throw new ApiException(ErrorCode.CASE_NOT_READY,"Explicit shared policy integration required");
     Timestamp at = now();
     String normalized = TextNormalizer.normalize(req.text());
     int repeated =
@@ -278,21 +246,21 @@ public class LiveService implements LivePlatformPort {
         .single();
   }
 
-  @Transactional(readOnly = true)
-  public Map<String, Object> history(UUID id, AuthenticatedUser user) {
-    authorize(id, user.userId(), false);
-    active(id);
-    guard.checkEntry(id, user.userId());
-    boolean op = isOperator(id, user.userId());
-    var ids =
-        db.sql(
-                "SELECT id FROM platform.messages WHERE live_id=? AND (? OR visibility='PUBLIC' OR"
-                    + " author_id=?) ORDER BY sent_at DESC,id DESC LIMIT 50")
-            .params(id, op, user.userId())
-            .query(UUID.class)
-            .list();
-    return Map.of(
-        "items", ids.stream().map(mid -> message(mid, user.userId())).toList(), "nextCursor", "");
+  @Transactional(readOnly=true)
+  public Map<String,Object> history(UUID id,AuthenticatedUser user) { return history(id,user,null,50); }
+
+  @Transactional(readOnly=true)
+  public Map<String,Object> history(UUID id,AuthenticatedUser user,String cursor,int limit) {
+    authorize(id,user.userId(),false);
+    guard.checkEntry(id,user.userId());
+    if(limit<1||limit>100) throw new ApiException(ErrorCode.VALIDATION_FAILED,"limit must be 1..100");
+    MessageCursor after=cursor==null?null:MessageCursor.decode(cursor);
+    var rows=messages.history(live(id).channelId(),id,user.userId(),isOperator(id,user.userId()),after,limit+1);
+    var page=rows.subList(0,Math.min(limit,rows.size()));
+    Map<String,Object> result=new LinkedHashMap<>();
+    result.put("items",page.stream().map(r->message(r.id(),user.userId())).toList());
+    result.put("nextCursor",rows.size()>limit?new MessageCursor(page.getLast().sentAt(),page.getLast().id()).encode():null);
+    return result;
   }
 
   boolean isOperator(UUID id, UUID user) {

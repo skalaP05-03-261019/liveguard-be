@@ -47,7 +47,7 @@ class FlywayMigrationTest {
 				"SELECT version FROM flyway_schema_history WHERE success AND version IS NOT NULL ORDER BY installed_rank",
 				String.class);
 
-		assertEquals(List.of("100", "101", "102", "200", "201", "202"), versions);
+		assertEquals(List.of("100", "101", "102", "103", "200", "201", "202", "203"), versions);
 	}
 
 	@Test
@@ -57,14 +57,14 @@ class FlywayMigrationTest {
 				Integer.class));
 		assertEquals(1, jdbc.queryForObject(
 				"SELECT count(*) FROM pg_extension WHERE extname = 'vector'", Integer.class));
-		assertEquals(List.of("channel_members", "channels", "lives", "message_hold_reasons", "messages", "users"), jdbc.queryForList(
+		assertEquals(List.of("channel_members", "channels", "lives", "messages", "users"), jdbc.queryForList(
 				"SELECT table_name FROM information_schema.tables WHERE table_schema = 'platform' ORDER BY table_name",
 				String.class));
 	}
 
 	@Test
 	void createsGuardPersistenceTables() {
-		assertEquals(List.of("agent_task_outbox", "candidates", "case_messages", "cases", "decisions", "finding_events", "findings", "live_actions", "live_case_state", "live_kicks", "live_reservations", "live_timeouts", "reviews"),
+		assertEquals(List.of("agent_task_outbox", "candidates", "case_messages", "cases", "finding_events", "findings"),
 				jdbc.queryForList(
 				"SELECT table_name FROM information_schema.tables WHERE table_schema = 'guard' ORDER BY table_name",
 				String.class));
@@ -86,6 +86,56 @@ class FlywayMigrationTest {
 				.anyMatch(d -> d.contains("(channel_id, author_id, normalized_text, sent_at)")));
 		assertTrue(definitions.stream()
 				.anyMatch(d -> d.contains("UNIQUE") && d.contains("(channel_id, author_id, client_message_id)")));
+	}
+
+	@Test
+	void createsLiveScopedMessageIndexes() {
+		List<String> definitions = jdbc.queryForList(
+				"SELECT indexdef FROM pg_indexes WHERE schemaname = 'platform' AND tablename = 'messages'",
+				String.class);
+
+		assertTrue(definitions.stream().anyMatch(d -> d.contains("(live_id, sent_at DESC)")));
+		assertTrue(definitions.stream().anyMatch(d -> d.contains("(live_id, author_id, normalized_text, sent_at)")));
+	}
+
+	@Test
+	void allowsOnlyOneActiveLivePerChannel() {
+		insertLive(UUID.randomUUID(), channelId, null);
+		insertLive(UUID.randomUUID(), channelId, Instant.parse("2026-01-01T01:00:00Z"));
+
+		assertThrows(DataIntegrityViolationException.class, () -> insertLive(UUID.randomUUID(), channelId, null));
+	}
+
+	@Test
+	void rejectsLiveThatEndsBeforeItStarts() {
+		assertThrows(DataIntegrityViolationException.class,
+				() -> insertLive(UUID.randomUUID(), channelId, Instant.parse("2025-12-31T23:59:59Z")));
+	}
+
+	@Test
+	void messageMayHaveNoLiveOrALiveOfItsOwnChannel() {
+		UUID ownLive = UUID.randomUUID();
+		insertLive(ownLive, channelId, null);
+
+		insertMessage(UUID.randomUUID(), "no live", "PASS", "PUBLIC");
+		insertLiveMessage(ownLive);
+
+		assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM platform.messages WHERE live_id IS NULL", Integer.class));
+	}
+
+	@Test
+	void rejectsMessageWhoseLiveBelongsToAnotherChannel() {
+		UUID otherChannel = UUID.randomUUID();
+		jdbc.update("INSERT INTO platform.channels (id, name) VALUES (?, 'other')", otherChannel);
+		UUID otherLive = UUID.randomUUID();
+		insertLive(otherLive, otherChannel, null);
+
+		assertThrows(DataIntegrityViolationException.class, () -> insertLiveMessage(otherLive));
+	}
+
+	@Test
+	void rejectsMessageForUnknownLive() {
+		assertThrows(DataIntegrityViolationException.class, () -> insertLiveMessage(UUID.randomUUID()));
 	}
 
 	@Test
@@ -159,6 +209,18 @@ class FlywayMigrationTest {
 		insertMessage(UUID.randomUUID(), "hello", "PASS", "PUBLIC");
 
 		assertEquals(1, jdbc.queryForObject("SELECT version FROM platform.messages", Integer.class));
+	}
+
+	private void insertLive(UUID liveId, UUID channel, Instant endedAt) {
+		jdbc.update("INSERT INTO platform.lives (id, channel_id, started_at, ended_at) VALUES (?, ?, ?, ?)",
+				liveId, channel, Timestamp.from(Instant.parse("2026-01-01T00:00:00Z")),
+				endedAt == null ? null : Timestamp.from(endedAt));
+	}
+
+	private void insertLiveMessage(UUID liveId) {
+		jdbc.update("INSERT INTO platform.messages (channel_id, live_id, author_id, client_message_id, text, "
+				+ "normalized_text, filter_result, visibility, sent_at) VALUES (?, ?, ?, ?, 't', 't', 'PASS', 'PUBLIC', ?)",
+				channelId, liveId, userId, UUID.randomUUID(), Timestamp.from(Instant.now()));
 	}
 
 	private void insertMessage(UUID clientMessageId, String text, String filterResult, String visibility) {

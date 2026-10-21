@@ -244,7 +244,7 @@ class MessageControllerTest {
 		};
 
 		transactionTemplate.executeWithoutResult(tx -> {
-			messageService.send(CHANNEL_A, viewer, new SendMessageRequest(UUID.randomUUID(), "rolled back"));
+			messageService.sendToChannel(CHANNEL_A, viewer, new SendMessageRequest(UUID.randomUUID(), "rolled back"));
 			assertEquals(0, recorder.events.size(), "커밋 전에는 발행되지 않는다");
 			tx.setRollbackOnly();
 		});

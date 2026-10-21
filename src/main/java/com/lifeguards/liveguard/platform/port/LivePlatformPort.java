@@ -1,10 +1,9 @@
 package com.lifeguards.liveguard.platform.port;
 
-import java.time.Instant;
+import com.lifeguards.liveguard.contracts.dto.response.Live;
 import java.util.*;
 
 public interface LivePlatformPort {
-  record Live(UUID liveId, UUID channelId, Instant startedAt, Instant endedAt) {}
 
   Live live(UUID liveId);
 
