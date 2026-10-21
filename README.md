@@ -1,5 +1,7 @@
 # LIVE:GUARD Backend
 
+V200 이전 메모리 후보 ID가 남은 로컬 DB를 업그레이드할 때는 [기존 후보 연결 보존 절차](docs/legacy-candidate-upgrade.md)를 먼저 확인한다. 신규 DB에는 필요하지 않으며, 기존 DB를 초기화하는 절차가 아니다.
+
 Spring Boot 업무 서버의 기본 골격입니다. Java 21, Gradle Wrapper를 사용합니다.
 
 ## 로컬 실행
