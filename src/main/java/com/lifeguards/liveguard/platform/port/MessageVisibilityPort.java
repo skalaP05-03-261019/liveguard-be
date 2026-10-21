@@ -22,7 +22,13 @@ import java.util.UUID;
  * 정책상 도배 조치는 세 번째 이후 메시지가 대상이므로 {@link #hideCaseMessages}는 PASS 메시지를 가리지 않고
  * (공개 유지, 사건 연결도 유지) 세 번째 이후(FLOOD, HELD)만 가린다. {@link #restoreCaseMessages}는
  * filter_result와 상관없이 HELD·HIDDEN을 되돌린다.
+ *
+ * @deprecated 판정 뒤 공개 범위 변경은 {@link LivePlatformPort#visibility}를 쓴다. 그쪽은 {@code message_hold_reasons}를
+ *             사건별로 해제해서, 다른 원인이 남은 메시지는 PUBLIC으로 되돌리지 않는다. 이 포트의
+ *             {@link #restoreCaseMessages}는 원인을 보지 않고 HELD·HIDDEN을 모두 PUBLIC으로 바꾸므로 RULE_CONFIRMED
+ *             (HIDDEN) 사건에는 쓰면 안 된다. 호출처가 없고 제출 후 삭제한다.
  */
+@Deprecated
 public interface MessageVisibilityPort {
 
 	/** PUBLIC·HELD 메시지를 HIDDEN으로 바꾼다. 이미 HIDDEN이거나 filter_result가 PASS인 메시지는 건너뛴다. */

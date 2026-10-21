@@ -171,6 +171,8 @@ class MessageService {
 		List<UUID> toLink = new ArrayList<>(related);
 		toLink.add(stored.id());
 		messages.linkCase(channelId, author.userId(), toLink, caseId);
+		// 가려진 원인은 이 메시지에만 남긴다. FLOOD의 앞선 메시지는 PASS·PUBLIC 그대로라 원인이 없다
+		messages.recordHoldReason(stored.id(), caseId, decision.handlingRoute(), stored.sentAt());
 	}
 
 	/** 이 방송의 이력. 없는 방송은 404. */
