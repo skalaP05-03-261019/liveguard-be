@@ -19,6 +19,7 @@ public final class CaseFixtures {
 	}
 
 	public static void deleteCases(JdbcTemplate jdbc) {
+		jdbc.update("DELETE FROM guard.agent_task_outbox");
 		jdbc.update("DELETE FROM guard.finding_events");
 		jdbc.update("DELETE FROM guard.findings");
 		jdbc.update("DELETE FROM guard.case_messages");
