@@ -1,3 +1,5 @@
+> **구현 기준 아님.** 정책은 [docs/policy/](../../policy/README.md) 우선. [evaluation_cases.md](policies/evaluation_cases.md)는 평가 사례로 계속 사용.
+
 # LIVE:GUARD 기획서·정책 v0.3
 
 실시간 라이브 채팅의 맥락과 자체 정책을 조사해 허용된 조치를 자동 실행하고, 후보고·이의제기·복구를 연결하는 캡스톤 프로젝트의 문서입니다.

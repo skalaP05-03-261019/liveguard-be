@@ -9,20 +9,21 @@
 
 ## 기준 문서 (충돌 시 이 순서)
 
-1. `contracts/openapi.yaml`: 브라우저·내부 API 계약 (v0.5). FE·Agent도 이 파일을 기준으로 한다
-2. `docs/erd.md`: 테이블 7개, 제약, 핵심 쿼리 (v0.5)
-3. `docs/live-guard/v0.3/`, `v0.4/`: 설계 참고용. **구현 범위가 아님**
+1. `docs/policy/{PROJECT,POLICY,CONTRACTS,ARCHITECTURE}.md`: 정책 원본 v3.0. **충돌 시 최우선**
+2. `docs/policy/TBD-decisions.md`: 원본의 미정 항목 결정
+3. `contracts/openapi.yaml`: 브라우저·내부 API 계약. 현재 v0.5, v1.0으로 개정 예정
+4. `docs/erd.md`: 테이블·제약·핵심 쿼리. 현재 v0.5, v1.0으로 개정 예정
+5. `docs/live-guard/v0.3/`: 이전 기획. **구현 기준 아님.** `evaluation_cases.md`만 평가 사례로 참고
 
 - 계약과 다른 필드·경로가 필요하면 코드부터 바꾸지 말고 먼저 알려줄 것.
 - springdoc Swagger UI는 구현 확인용이다. 기준은 `contracts/openapi.yaml`이며, 둘이 다르면 코드를 계약에 맞춘다.
 
 ## 핵심 결정 (바꾸지 말 것)
 
-- 메시지 가림·복원은 **Backend 업무 규칙**이다. Agent는 판정만 제출한다 (`POST /internal/cases/{id}/judgment`).
-- Agent의 MCP 변경 도구는 `kick_user` 하나이며, 실행 전 반드시 LangGraph `interrupt`로 멈춘다.
-- 누적 위반 사건 3회(최근 24시간, 같은 채널) → 강퇴 검토 → 운영자 승인 후 강퇴 24시간.
-- 위험 유형 4개: PROFANITY, HARASSMENT, FLOOD, PHISHING. 개인정보는 마스킹만.
 - HELD·HIDDEN 원문은 작성자·담당 운영자 외에는 SSE·이력 API 어디에도 보내지 않는다.
+- MCP 변경 도구는 사람 승인 `interrupt` 뒤에서만 실행한다.
+- `/internal/**`는 서비스 토큰(`X-Service-Token`)으로만 접근한다.
+- 그 외 정책·판정 규칙은 `docs/policy/`를 따른다.
 
 ## 버전 주의
 
