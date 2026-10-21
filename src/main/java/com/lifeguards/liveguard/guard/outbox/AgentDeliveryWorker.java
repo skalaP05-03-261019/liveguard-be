@@ -32,7 +32,7 @@ public class AgentDeliveryWorker {
 			return false;
 		}
 		var delivery = claimed.get();
-		var result = gateway.deliver(delivery.envelope(), delivery.attemptCount() > 1,
+		var result = gateway.deliver(delivery.envelope(), delivery.uncertain(),
 				delivery.attemptCount() <= properties.maxAttempts());
 		var now = clock.instant();
 		boolean retry = result.retryable() && delivery.attemptCount() < properties.maxAttempts();
