@@ -47,7 +47,31 @@ class FlywayMigrationTest {
 				"SELECT version FROM flyway_schema_history WHERE success AND version IS NOT NULL ORDER BY installed_rank",
 				String.class);
 
-        assertEquals(List.of("100", "101", "102", "103", "200", "201", "202", "203", "204"), versions);
+        assertEquals(List.of("100", "101", "102", "103", "104", "200", "201", "202", "203", "204"), versions);
+	}
+
+	@Test
+	void indexesOnlyUnreleasedHoldReasons() {
+		List<String> definitions = jdbc.queryForList(
+				"SELECT indexdef FROM pg_indexes WHERE schemaname = 'platform' AND tablename = 'message_hold_reasons'",
+				String.class);
+
+		assertTrue(definitions.stream()
+				.anyMatch(d -> d.contains("(message_id)") && d.contains("WHERE (released_at IS NULL)")));
+	}
+
+	@Test
+	void deletingAMessageDeletesItsHoldReasons() {
+		insertMessage(UUID.randomUUID(), "hold", "HOLD", "HELD");
+		UUID messageId = jdbc.queryForObject("SELECT id FROM platform.messages WHERE channel_id = ?", UUID.class,
+				channelId);
+		jdbc.update("INSERT INTO platform.message_hold_reasons (message_id, case_id, reason, created_at) "
+				+ "VALUES (?, ?, 'CONTEXT_REVIEW', now())", messageId, UUID.randomUUID());
+
+		jdbc.update("DELETE FROM platform.messages WHERE id = ?", messageId);
+
+		assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM platform.message_hold_reasons WHERE message_id = ?",
+				Integer.class, messageId));
 	}
 
 	@Test
