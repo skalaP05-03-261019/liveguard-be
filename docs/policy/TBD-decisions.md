@@ -169,3 +169,25 @@
 | E-6 | TIMEOUT 저장 | `timeouts(live_id, user_id, action_id, starts_at, expires_at)`. 활성 TIMEOUT 교체는 TBD-09(새 만료가 더 늦을 때만)를 따르되 기록은 모두 남긴다 | CONTRACTS §4(timeoutUntil), TBD-09 | B2 |
 | E-7 | 도배 재적발 상태 | `flood_marks(live_id, user_id, text_hash, case_id, confirmed_at, notice_event_id)`. `text_hash`는 norm-v1 정규화 문장의 SHA-256, `notice_event_id`는 nullable. 재적발 창은 `confirmed_at + 24시간` | ARCHITECTURE §4, POLICY §7, TBD-05·TBD-11 | B1·B2 |
 | E-8 | PII 태그 | MatchingTag에 `PII_PHONE`, `PII_ACCOUNT`, `PII_EMAIL` 추가 | TBD-02(3순위), POLICY §2 | B1 |
+
+## OpenAPI v1.0 구현 결정
+
+2026-10-21 · 결정: 함형민(B1). 정책 원본·위 TBD 결정·ERD v1.0에 이름이 없는 경로·필드·값을 [contracts/openapi.yaml](../../contracts/openapi.yaml) v1.0을 위해 정한다. 정책의 의미는 바꾸지 않는다. "B2 확인 요청"은 B2가 확인하기 전까지 잠정 결정이다.
+
+| # | 항목 | 결정 | 근거 | 담당 |
+| --- | --- | --- | --- | --- |
+| A-1 | 방송 시작·종료 | 시작 `POST /api/channels/{channelId}/lives`, 종료 `POST /api/lives/{liveId}/end`. 권한은 그 채널의 STREAMER 또는 MODERATOR. 진행 중 방송이 있는데 시작하면 409 `LIVE_ALREADY_ACTIVE`, 이미 끝난 방송을 종료하면 409 `LIVE_ENDED` | E-1, POLICY §10 | B1 |
+| A-2 | 현재 방송 조회 | `GET /api/channels/{channelId}/lives/current` → `Live{liveId, channelId, startedAt, endedAt}`. 진행 중 방송이 없으면 404 | E-1, CONTRACTS §1(liveId) | B1 |
+| A-3 | 작성자 안내 코드 | `moderationReasonCode` 5종: `PROFANITY_INCLUDED`, `LINK_NOT_ALLOWED`, `FLOOD_REPEATED`, `CONTEXT_PENDING`, `PII_PENDING`. PASS는 null. PII 안내에는 원문과 탐지 값을 다시 노출하지 않는다 | CONTRACTS §4, POLICY §4 | B1 |
+| A-4 | 전송 응답 | `moderationNotice`(string, null 가능), `timeoutUntil`(실제 TIMEOUT 적용 시만), `reviewStatus`(ReviewStatus, null 가능: HELD 조사·결정 대기면 PENDING, 그 외 null) | CONTRACTS §4 | B1 |
+| A-5 | 거부 오류 코드 | `TIMED_OUT` 403 + `until`(TIMEOUT 만료 시각). 429는 Recovery가 자동 재시도하므로 쓰지 않는다. `KICKED` 403(`until` 없음, 방송 종료까지). `LIVE_ENDED` 409, `LIVE_ALREADY_ACTIVE` 409. 넷 다 retryable=false | CONTRACTS §4·§9, POLICY §10 | B1 |
+| A-6 | 검토 버전·threadId | ERD `reviews.version` 추가, 결정 요청의 `expectedReviewVersion`과 비교. `threadId`는 브라우저 응답에서 빼고 내부 API에서만 노출 | CONTRACTS §8·§11 | B2 |
+| A-7 | 문맥 위반 결정 | `CONFIRM_VIOLATION`이면 `categories`(Category[], 1개 이상)와 `evidenceMessageIds`(Uuid[], 1개 이상) 필수. 다른 결정에서는 보내지 않는다 | CONTRACTS §8 | B2 |
+| A-8 | 사건 API | `POST /api/cases/{caseId}/release` 삭제(문맥 결정 API로 대체). `GET /api/cases`의 필터는 `liveId`·`confirmationStatus`. CaseStatus enum은 `cases.status`(진행 상태)용으로 유지. **B2 확인 요청: 운영자 오판 취소(finding revoke, POLICY §8) API의 경로·권한** | CONTRACTS §8, POLICY §8 | B2 |
+| A-9 | 판정 제출 | 경로 `POST /internal/cases/{caseId}/judgment` 유지, 본문은 CONTRACTS §5 Agent 출력. CONTEXT_REVIEW 경로의 제출이 CONTEXT 검토를 만든다(별도 생성 API 없음). 응답 `{confirmationStatus, reviewId, reviewKind}`: 이 제출로 만들어진 검토(CONTEXT, 또는 BE 확정 후 3건 도달 시 KICK)가 없으면 둘 다 null | CONTRACTS §5, ARCHITECTURE §3 | B2 |
+| A-10 | Agent 재개 | `POST /agent/tasks/{id}/resume`은 Agent 저장소 계약이라 BE openapi에 넣지 않는다 | CONTRACTS §8 | Agent |
+| A-11 | 강퇴 재검증 | `POST /internal/kick-reviews/{reviewId}/revalidate` 응답 `{reviewId, decisionId, valid, validationRef, basisCaseIds}`. `valid=false`면 `validationRef`는 null | CONTRACTS §6·§9 | B2 |
+| A-12 | 레거시 내부 경로 | `/internal/kick-reviews/{reviewId}/execute`, `/internal/cases/{caseId}/history`, `/internal/cases/{caseId}/reviews/{decisionId}/reconcile`, `KickResultResponse`는 이번에 지우지 않고 deprecated로 둔다. **B2 확인 요청: 삭제 여부** | CONTRACTS §7·§9 | B2 |
+| A-13 | 이력·집계 필드 | `UserHistoryRecentCase.judgedAt` → `confirmedAt`. `KickEligibility.violationCount` → `count`, `UserHistory.windowHours` 제거(같은 방송 전체, TBD-03)는 Java 계약 테스트와 함께 바꿔야 해서 contracts.enums PR로 미룬다. **B2 확인 요청** | CONTRACTS §3·§6, TBD-03 | B2 |
+| A-14 | SSE | 모든 이벤트 `data`를 `{eventId, occurredAt, entityVersion, payload}`로 감싼다. TOOL_START·TOOL_END·TASK_FAILED·CASE_CREATED·CASE_UPDATED 유지(CASE_*에 `handlingRoute`·`confirmationStatus` 추가). KICK_APPLIED는 ACTION_APPLIED로 대체. LIVE_ACCESS_BLOCKED payload `{liveId, activeUntilLiveEnd: true}`, 안내 문구는 FE | CONTRACTS §12 | B1·B2 |
+| A-15 | MatchingTag 데이터 | `UNOFFICIAL_URL` → `LINK` 전환에 데이터 마이그레이션을 만들지 않는다. 운영 데이터가 없고 로컬 DB는 `docker compose down -v`로 초기화한다. enum 값 변경 자체는 contracts.enums PR에서 한다 | E-8, ERD §6 | B1 |
