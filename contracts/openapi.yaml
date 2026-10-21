@@ -1826,6 +1826,8 @@ components:
       type: object
       required: [messageId, authorAlias, text, sentAt]
       properties:
+        visibility:
+          $ref: '#/components/schemas/Visibility'
         messageId:
           $ref: '#/components/schemas/Uuid'
         authorAlias:
@@ -1841,6 +1843,13 @@ components:
       description: Current persisted evidence and current target state. Missing required metadata returns CASE_NOT_READY.
       required: [caseId, channelId, liveId, snapshotId, evidenceVersion, policyVersion, handlingRoute, filterResult, matchingTags, version, messages, targets, targetMessageIds, targetVersions]
       properties:
+        userId:
+          $ref: '#/components/schemas/Uuid'
+        confirmationStatus:
+          $ref: '#/components/schemas/ConfirmationStatus'
+        kickReview:
+          type: object
+          additionalProperties: true
         caseId:
           $ref: '#/components/schemas/Uuid'
         channelId:
@@ -1912,6 +1921,13 @@ components:
       type: object
       required: [messages, truncated]
       properties:
+        caseId:
+          $ref: '#/components/schemas/Uuid'
+        snapshotId:
+          $ref: '#/components/schemas/Uuid'
+        evidenceVersion:
+          type: integer
+          minimum: 1
         messages:
           type: array
           maxItems: 20

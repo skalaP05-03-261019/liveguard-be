@@ -83,6 +83,12 @@ public class AgentHttpGateway implements AutoCloseable {
 	}
 
 	private Result failure(Reply reply, boolean reconciliation) {
+		// The human may decide after the review commits but before the Graph has
+		// checkpointed its interrupt. This 409 proves the resume was not accepted.
+		if (reply.status() == 409 && reply.body() != null
+				&& "THREAD_NOT_WAITING".equals(reply.body().path("detail").path("code").stringValue(""))) {
+			return new Result(false, true, false, "THREAD_NOT_WAITING");
+		}
 		if (reply.status() == 0 || Set.of(408, 429, 500, 502, 503, 504).contains(reply.status())) {
 			return new Result(false, true, reconciliation || reply.status() != 429,
 					reply.status() == 0 ? reply.code() : "AGENT_HTTP_" + reply.status());
