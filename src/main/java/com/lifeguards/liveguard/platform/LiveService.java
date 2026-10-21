@@ -316,6 +316,8 @@ public class LiveService implements LivePlatformPort {
 
   @Override
   public List<Map<String, Object>> snapshot(UUID id, UUID target, UUID author) {
+    Map<UUID,String> aliases = new LinkedHashMap<>();
+    aliases.put(author, "U1");
     var rows =
         db.sql(
                 "SELECT id,author_id,text,visibility,version,sent_at FROM platform.messages WHERE"
@@ -327,9 +329,8 @@ public class LiveService implements LivePlatformPort {
                   m.put("messageId", r.getObject("id", UUID.class));
                   m.put(
                       "authorAlias",
-                      author.equals(r.getObject("author_id", UUID.class))
-                          ? "U1"
-                          : "U_" + r.getObject("author_id").toString().substring(0, 8));
+                      aliases.computeIfAbsent(r.getObject("author_id", UUID.class),
+                          ignored -> "U" + (aliases.size() + 1)));
                   m.put("text", PiiMasker.mask(r.getString("text")));
                   m.put("visibility", r.getString("visibility"));
                   m.put("version", r.getInt("version"));
