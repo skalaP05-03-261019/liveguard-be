@@ -1,9 +1,14 @@
 openapi: 3.1.0
 info:
   title: LIVE:GUARD API
-  version: 0.6.0-draft
+  version: 1.0.0
   description: |
-    0.6.0-draft 계약. 내부 business-tool 중 `/context`, `/channel-info`, `/role`은 현재 조회 구현이며,
+    1.0.0 계약. 기준은 정책 원본 v3.1(`docs/policy/`), TBD-decisions(OpenAPI v1.0 구현 결정 A-1~A-15), `docs/erd.md` v1.0.
+    모든 정책 범위(집계, 도배, 재적발, TIMEOUT, 강퇴)는 `liveId`다. `channelId`는 고정 채널 식별자로만 쓴다.
+    활성 정책 버전은 `v3.1` 고정(TBD-08). 사건·판정·action 명령의 `policyVersion`은 이 값과 같아야 한다.
+    Java enum·DTO는 이 계약에 맞춰 후속 작업에서 바꾼다(contracts.enums PR).
+
+    아래는 0.6.0-draft에서 이어진 구현 상태다. 내부 business-tool 중 `/context`, `/channel-info`, `/role`은 현재 조회 구현이며,
     사건 조회는 필수 메타데이터가 있는 경우, 이력 조회는 명시한 days가 있는 경우에 구현된다.
     나머지 표시된 business-tool 스텁은 HTTP 501 `NOT_IMPLEMENTED` (retryable=false)이다.
     `x-implementation-status: planned`는 미래/레거시 계약일 뿐 현재 구현을 의미하지 않는다.
@@ -898,10 +903,59 @@ components:
       enum: [PUBLIC, HELD, HIDDEN]
     FilterResult:
       type: string
+      description: REVIEW는 v3.1 처리 경로에서 쓰지 않는다(새 의미를 부여하지 않음). 처리 경로는 HandlingRoute로 표현한다.
       enum: [PASS, REVIEW, HOLD, FLOOD]
+    HandlingRoute:
+      type: string
+      description: |
+        1차 필터가 정하는 처리 경로. 한 메시지에 하나.
+        우선순위 RULE_CONFIRMED > FLOOD_REVIEW > PII_INVESTIGATION > CONTEXT_REVIEW > PASS (TBD-02).
+      enum: [PASS, RULE_CONFIRMED, CONTEXT_REVIEW, PII_INVESTIGATION, FLOOD_REVIEW]
+    ConfirmationStatus:
+      type: string
+      description: 사건 확정 상태(E-3). DEFER는 확정이 아니므로 PENDING을 유지한다.
+      enum: [PENDING, CONFIRMED_VIOLATION, CONFIRMED_NORMAL, CANCELLED]
+    ReviewKind:
+      type: string
+      enum: [CONTEXT, KICK]
+    ReviewStatus:
+      type: string
+      description: 결정 상태. 실행 상태(ActionStatus)와 분리한다. 최종 결정이 저장될 때만 DECIDED.
+      enum: [PENDING, DECIDED]
+    ContextDecision:
+      type: string
+      description: DEFER는 공개 승인이 아니며 HELD를 유지한다.
+      enum: [CONFIRM_NORMAL, CONFIRM_VIOLATION, DEFER]
+    KickDecision:
+      type: string
+      enum: [APPROVE, REJECT]
+    ActionStatus:
+      type: string
+      description: 실행 상태. 결과 미확인은 Observation으로 구분한다.
+      enum: [PENDING, RUNNING, SUCCEEDED, FAILED]
+    Observation:
+      type: string
+      description: UNKNOWN이면 applied=null이고 실패로 단정하지 않는다.
+      enum: [CONFIRMED, UNKNOWN]
+    ModerationReasonCode:
+      type: string
+      description: |
+        작성자에게 보여 줄 처리 사유(A-3). PASS는 null.
+        PROFANITY_INCLUDED: 확실한 욕설 포함으로 숨김. 탐지 단어 자체는 다시 출력하지 않는다.
+        LINK_NOT_ALLOWED: 방송 내 링크 전송 금지. 피싱으로 검증했다는 주장을 넣지 않는다.
+        FLOOD_REPEATED: 같은 문장 반복(도배).
+        CONTEXT_PENDING: 문맥 확인 중(HELD).
+        PII_PENDING: 개인정보 확인 중(HELD). 안내에 원문과 탐지 값(전화번호·계좌·이메일 등)을 다시 노출하지 않는다(POLICY §4).
+      enum: [PROFANITY_INCLUDED, LINK_NOT_ALLOWED, FLOOD_REPEATED, CONTEXT_PENDING, PII_PENDING]
+    PolicyVersion:
+      type: string
+      description: 활성 정책 버전. v3.1 고정(TBD-08, 환경변수 LIVEGUARD_POLICY_VERSION).
+      const: v3.1
     MatchingTag:
       type: string
       description: |
+        v1.0 목표 값(ERD §6, E-8)은 UNOFFICIAL_URL을 공식 링크 포함 `LINK`로 바꾸고 `PII_PHONE`·`PII_ACCOUNT`·`PII_EMAIL`을 추가하는 것이다.
+        Java enum·필터·계약 테스트와 함께 contracts.enums PR에서 바꾸며, 그 전까지 아래 6종을 유지한다(A-15).
         1차 필터가 걸린 조건. 한 메시지에 여러 개가 붙을 수 있고, filterResult가 같아도 태그로 이유를 구분한다.
         ATTACK_TERM: 공격·비하 사전(애매한 표현, REVIEW).
         CERTAIN_PROFANITY: 확실한 욕설(HOLD).
@@ -911,6 +965,7 @@ components:
       enum: [ATTACK_TERM, CERTAIN_PROFANITY, OFFICIAL_CLAIM, CREDENTIAL_REQUEST, UNOFFICIAL_URL, REPEATED_TEXT]
     CaseStatus:
       type: string
+      description: 사건 처리 진행 상태(`cases.status`). 확정 여부는 ConfirmationStatus로 본다. 값 정리는 B2 확인 후(A-8).
       enum: [ANALYZING, NO_ACTION, HIDDEN, NEEDS_REVIEW, KICK_REVIEW_PENDING, CLOSED, FAILED]
     Verdict:
       type: string
@@ -920,17 +975,27 @@ components:
       enum: [PROFANITY, HARASSMENT, FLOOD, PHISHING, PII_EXPOSURE]
     KickReviewStatus:
       type: string
+      deprecated: true
+      description: v0.5 강퇴 검토 상태. ReviewStatus(결정)와 ActionStatus(실행)로 대체됐다. 레거시 KickResultResponse에서만 쓴다(A-12).
       enum: [PENDING, APPROVED, REJECTED, EXECUTED, FAILED]
     ErrorCode:
       type: string
       description: |
         INTERNAL_ERROR: 처리되지 않은 서버 오류. HTTP 500, retryable=false. 응답에 내부 정보는 담지 않는다.
         NOT_IMPLEMENTED: 계약 스텁이며 업무 로직을 실행하지 않는다. HTTP 501, retryable=false.
+        KICKED: 이 방송에서 강퇴됨(live ban). HTTP 403, retryable=false. 방송 종료까지 유효하므로 `until`을 보내지 않는다.
+        TIMED_OUT: TIMEOUT 중 전송 거부. HTTP 403, retryable=false, `until` = TIMEOUT 만료 시각.
+        429를 쓰지 않는다(클라이언트 Recovery가 429를 자동 재시도하므로, A-5).
+        LIVE_ENDED: 이미 끝난 방송에 대한 요청. HTTP 409, retryable=false.
+        LIVE_ALREADY_ACTIVE: 채널에 진행 중인 방송이 있는데 새 방송 시작. HTTP 409, retryable=false.
       enum:
         - VALIDATION_FAILED
         - UNAUTHENTICATED
         - FORBIDDEN
         - KICKED
+        - TIMED_OUT
+        - LIVE_ENDED
+        - LIVE_ALREADY_ACTIVE
         - NOT_FOUND
         - CASE_NOT_READY
         - STALE_VERSION
@@ -956,6 +1021,7 @@ components:
               type: boolean
             until:
               $ref: '#/components/schemas/Timestamp'
+              description: TIMED_OUT일 때만. TIMEOUT 만료 시각
             currentVersion:
               type: integer
         traceId:
@@ -1214,8 +1280,7 @@ components:
       additionalProperties: false
       properties:
         decision:
-          type: string
-          enum: [APPROVE, REJECT]
+          $ref: '#/components/schemas/KickDecision'
         reason:
           type: string
           minLength: 1
@@ -1362,12 +1427,9 @@ components:
           type: integer
           minimum: 1
         policyVersion:
-          type: string
-          minLength: 1
-          description: Nonblank policy version supplied by the current snapshot; no version value is settled here.
+          $ref: '#/components/schemas/PolicyVersion'
         handlingRoute:
-          type: string
-          enum: [PASS, RULE_CONFIRMED, CONTEXT_REVIEW, PII_INVESTIGATION, FLOOD_REVIEW]
+          $ref: '#/components/schemas/HandlingRoute'
         filterResult:
           $ref: '#/components/schemas/FilterResult'
         matchingTags:
@@ -1699,9 +1761,7 @@ components:
           type: integer
           minimum: 1
         policyVersion:
-          type: string
-          minLength: 1
-          description: Nonblank, without a settled or hard-coded policy version.
+          $ref: '#/components/schemas/PolicyVersion'
         idempotencyKey:
           type: string
           minLength: 1
@@ -1817,11 +1877,9 @@ components:
         type:
           $ref: '#/components/schemas/ActionType'
         status:
-          type: string
-          enum: [PENDING, RUNNING, SUCCEEDED, FAILED]
+          $ref: '#/components/schemas/ActionStatus'
         observation:
-          type: string
-          enum: [CONFIRMED, UNKNOWN]
+          $ref: '#/components/schemas/Observation'
         applied:
           type: [boolean, 'null']
         attemptCount:
