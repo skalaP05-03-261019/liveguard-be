@@ -1201,7 +1201,9 @@ components:
           $ref: '#/components/schemas/Timestamp'
     VisibilityChangedEvent:
       type: object
-      description: 이미 공개됐던 메시지를 가릴 때는 ID만, PUBLIC으로 복원할 때는 text 포함
+      description: |
+        이미 공개됐던 메시지를 가릴 때는 ID만, PUBLIC으로 복원할 때는 text·authorAlias·sentAt 포함.
+        복원 이벤트의 sentAt으로 화면의 시간순 자리에 끼워 넣는다.
       required: [messageId, visibility, version]
       properties:
         messageId:
@@ -1214,6 +1216,9 @@ components:
           type: string
         authorAlias:
           type: string
+        sentAt:
+          $ref: '#/components/schemas/Timestamp'
+          description: 복원(PUBLIC)일 때만 포함. 원래 전송 시각
     UserKickedEvent:
       type: object
       required: [until]
