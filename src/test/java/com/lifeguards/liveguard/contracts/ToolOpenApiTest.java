@@ -71,8 +71,8 @@ class ToolOpenApiTest {
 	void timeoutAndKickWindowsRemainSeparateAndReferencesResolve() throws IOException {
 		Map<?, ?> root = contract();
 		Map<?, ?> schemas = map(map(root, "components"), "schemas");
-		Map<?, ?> timeoutProperties = map(map(map(schemas, "UserHistoryResponse"), "properties"), "data");
-		assertTrue(!map(map(timeoutProperties, "properties"), "windowHours").containsKey("const"));
+		Map<?, ?> timeoutProperties = map(map(schemas, "UserHistory"), "properties");
+		assertTrue(!map(timeoutProperties, "windowHours").containsKey("const"));
 		assertEquals(24, map(map(map(schemas, "KickEligibility"), "properties"), "windowHours").get("const"));
 		validateReferences(root, root);
 	}
