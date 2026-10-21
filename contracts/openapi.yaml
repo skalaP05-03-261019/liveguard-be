@@ -145,7 +145,7 @@ paths:
       tags: [Lives]
       operationId: getCurrentLive
       summary: 채널의 진행 중 방송 (FE가 liveId를 얻는 곳)
-      description: 진행 중인 방송이 없으면 404 NOT_FOUND (A-2).
+      description: 그 채널의 회원만 조회한다(아니면 403). 진행 중인 방송이 없으면 404 NOT_FOUND (A-2).
       x-owner: B1
       responses:
         '200':
@@ -154,6 +154,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/LiveResponse'
+        '403':
+          $ref: '#/components/responses/Error'
         '404':
           $ref: '#/components/responses/Error'
 
@@ -195,9 +197,11 @@ paths:
         - live ban 중: 403 KICKED (until 없음, 방송 종료까지)
         - TIMEOUT 중: 403 TIMED_OUT + until (429 아님)
         - 끝난 방송: 409 LIVE_ENDED
+        - 없는 방송: 404 NOT_FOUND
         - 방송 채널의 멤버가 아니면 403 FORBIDDEN
         PASS는 PUBLIC. RULE_CONFIRMED는 HIDDEN. FLOOD_REVIEW·PII_INVESTIGATION·CONTEXT_REVIEW는 HELD(작성자·담당 운영자에게만 보임).
         같은 clientMessageId·같은 text는 최초 응답 반환, 다른 text는 409 IDEMPOTENCY_CONFLICT.
+        재전송 확인은 방송 종료 검사보다 먼저 한다. 종료 직전 저장됐는데 응답이 유실된 재전송은 첫 응답을 받는다(A-18).
       x-owner: B1
       requestBody:
         required: true
@@ -245,6 +249,90 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/MessagePageResponse'
+        '403':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+
+  /api/channels/{channelId}/messages:
+    parameters:
+      - $ref: '#/components/parameters/ChannelId'
+    post:
+      tags: [Messages]
+      operationId: sendMessageToChannel
+      summary: 채팅 전송 (기존 channel 경로)
+      deprecated: true
+      description: |
+        FE 호환용(A-18). `POST /api/lives/{liveId}/messages`로 대체 예정이다.
+        서버가 그 채널의 진행 중 방송으로 귀속한다. 진행 중 방송이 없으면 409 LIVE_ENDED.
+        그 밖의 검사·응답은 `POST /api/lives/{liveId}/messages`와 같다.
+      x-owner: B1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SendMessageRequest'
+      responses:
+        '201':
+          description: 저장 완료
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SendMessageResponse'
+        '400':
+          $ref: '#/components/responses/Error'
+        '403':
+          $ref: '#/components/responses/Error'
+        '409':
+          $ref: '#/components/responses/Error'
+    get:
+      tags: [Messages]
+      operationId: listChannelMessages
+      summary: 채팅 이력 (기존 channel 경로, 채널 전체)
+      deprecated: true
+      description: |
+        FE 호환용(A-18). 채널의 모든 방송과 방송 도입 전 메시지(liveId=null, A-17)를 함께 반환한다.
+        가시성 인가는 `GET /api/lives/{liveId}/messages`와 같다.
+      x-owner: B1
+      parameters:
+        - name: cursor
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+      responses:
+        '200':
+          description: 조회 성공
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessagePageResponse'
+        '403':
+          $ref: '#/components/responses/Error'
+
+  /api/channels/{channelId}/events:
+    parameters:
+      - $ref: '#/components/parameters/ChannelId'
+    get:
+      tags: [Streams]
+      operationId: subscribeChannel
+      summary: 채팅 SSE (기존 channel 경로)
+      deprecated: true
+      description: |
+        FE 호환용(A-18). `GET /api/lives/{liveId}/events`(SseEnvelope)로 대체 예정이며, 그 전까지 0.6 형태를 유지한다.
+        envelope 없이 data가 payload이고, 이벤트는 CHAT(ChatEvent), MESSAGE_VISIBILITY_CHANGED(복원 시 text·authorAlias·sentAt 포함),
+        USER_KICKED(대상 본인)다. HELD·HIDDEN 메시지의 CHAT은 작성자·담당 운영자에게만 보낸다. 15초 heartbeat.
+      x-owner: B1
+      responses:
+        '200':
+          $ref: '#/components/responses/EventStream'
         '403':
           $ref: '#/components/responses/Error'
 
@@ -1348,7 +1436,10 @@ components:
         messageId:
           $ref: '#/components/schemas/Uuid'
         liveId:
-          $ref: '#/components/schemas/Uuid'
+          description: 방송 도입 전에 저장된 메시지는 null(A-17). 새 메시지는 항상 값이 있다
+          oneOf:
+            - $ref: '#/components/schemas/Uuid'
+            - type: 'null'
         channelId:
           $ref: '#/components/schemas/Uuid'
         authorAlias:
