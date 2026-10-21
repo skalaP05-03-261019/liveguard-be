@@ -9,7 +9,7 @@ import com.lifeguards.liveguard.contracts.exception.InvalidContractException;
 import io.swagger.v3.oas.annotations.media.Schema;
 
 @Schema(description = """
-		Backend-confirmed distinct cases across all five categories for the same user/channel/live.
+		Backend-confirmed distinct cases across all five categories for the same user/live.
 		Includes the current case within the last 24 hours; excludes revoked and consumed cases.
 		TIMEOUT expiry does not revoke a violation. Pending review reservations must be checked
 		before creating a review. Eligibility is not operator approval or permission to execute KICK.
@@ -20,7 +20,7 @@ public record KickEligibility(
 		UUID liveId,
 		Instant asOf,
 		@Schema(allowableValues = "24") int windowHours,
-		int violationCount,
+		int count,
 		List<UUID> eligibleCaseIds) {
 
 	public KickEligibility {
@@ -35,8 +35,8 @@ public record KickEligibility(
 		if (eligibleCaseIds.stream().distinct().count() != eligibleCaseIds.size()) {
 			throw new InvalidContractException("eligibleCaseIds must contain distinct cases");
 		}
-		if (violationCount != eligibleCaseIds.size()) {
-			throw new InvalidContractException("violationCount must match eligibleCaseIds size");
+		if (count != eligibleCaseIds.size()) {
+			throw new InvalidContractException("count must match eligibleCaseIds size");
 		}
 	}
 }

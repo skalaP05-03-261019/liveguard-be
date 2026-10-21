@@ -32,6 +32,8 @@ import com.lifeguards.liveguard.TestcontainersConfiguration;
 import com.lifeguards.liveguard.support.CaseFixtures;
 import com.lifeguards.liveguard.contracts.dto.event.CaseEvent;
 import com.lifeguards.liveguard.contracts.enums.CaseStatus;
+import com.lifeguards.liveguard.contracts.enums.ConfirmationStatus;
+import com.lifeguards.liveguard.contracts.enums.HandlingRoute;
 import com.lifeguards.liveguard.platform.ChannelEventStreamTest.Client;
 import com.lifeguards.liveguard.platform.ChannelEventStreamTest.Lines;
 import com.lifeguards.liveguard.platform.port.GuardEventPublisher;
@@ -156,7 +158,8 @@ class GuardEventStreamTest {
 	}
 
 	private CaseEvent caseEvent(String seed) {
-		return new CaseEvent(UUID.nameUUIDFromBytes(seed.getBytes()), CaseStatus.ANALYZING, null, 1);
+		UUID id = UUID.nameUUIDFromBytes(seed.getBytes());
+		return new CaseEvent(id, id, CaseStatus.ANALYZING, HandlingRoute.CONTEXT_REVIEW, ConfirmationStatus.PENDING, null, 1);
 	}
 
 	private int postInternalEvent(String json) throws Exception {

@@ -11,8 +11,8 @@
 
 1. `docs/policy/{PROJECT,POLICY,CONTRACTS,ARCHITECTURE}.md`: 정책 원본 v3.1. **충돌 시 최우선**
 2. `docs/policy/TBD-decisions.md`: 원본의 미정 항목 결정
-3. `contracts/openapi.yaml`: 브라우저·내부 API 계약. 현재 v0.5, v1.0으로 개정 예정
-4. `docs/erd.md`: 테이블·제약·핵심 쿼리. 현재 v0.5, v1.0으로 개정 예정
+3. `contracts/openapi.yaml`: 브라우저·내부 API 계약 v1.0
+4. `docs/erd.md`: 테이블·제약·핵심 쿼리 v1.0
 5. `docs/live-guard/v0.3/`: 이전 기획. **구현 기준 아님.** `evaluation_cases.md`만 평가 사례로 참고
 
 - 계약과 다른 필드·경로가 필요하면 코드부터 바꾸지 말고 먼저 알려줄 것.

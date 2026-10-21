@@ -97,7 +97,7 @@ public class CaseQueryService {
 
 	public UserHistory userHistory(UUID caseId, Integer days) {
 		if (days != null && (days < 1 || days > Integer.MAX_VALUE / 24)) {
-			throw new InvalidContractException("days must be positive and representable as windowHours");
+			throw new InvalidContractException("days must be positive and representable in hours");
 		}
 		CaseRow current = requireCase(caseId);
 		if (days == null) {
@@ -105,7 +105,7 @@ public class CaseQueryService {
 		}
 		Instant asOf = clock.instant();
 		TimeoutHistory history = history(current, asOf.minus(days, ChronoUnit.DAYS), asOf);
-		return new UserHistory(history.violationCount(), Math.multiplyExact(days, 24), history.recentCases());
+		return new UserHistory(history.violationCount(), history.recentCases());
 	}
 
 	public KickBasis kickBasis(UUID channelId, UUID userId, UUID liveId, Instant asOf) {

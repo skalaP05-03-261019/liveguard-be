@@ -5,8 +5,8 @@ import java.util.List;
 import java.util.UUID;
 
 import com.lifeguards.liveguard.contracts.dto.response.ActionExecutionResult;
-import com.lifeguards.liveguard.contracts.dto.response.ActionExecutionResult.Observation;
-import com.lifeguards.liveguard.contracts.dto.response.ActionExecutionResult.Status;
+import com.lifeguards.liveguard.contracts.enums.Observation;
+import com.lifeguards.liveguard.contracts.enums.ActionStatus;
 import com.lifeguards.liveguard.contracts.dto.response.KickReviewBasis;
 import com.lifeguards.liveguard.contracts.dto.response.InternalCase;
 import com.lifeguards.liveguard.contracts.dto.response.MaskedMessage;
@@ -58,31 +58,31 @@ class ToolContractsTest {
 
 	@Test
 	void unknownObservationDoesNotClaimSuccessFailureOrApplication() {
-		assertDoesNotThrow(() -> result(Status.RUNNING, Observation.UNKNOWN, null, 1, 0, null));
+		assertDoesNotThrow(() -> result(ActionStatus.RUNNING, Observation.UNKNOWN, null, 1, 0, null));
 		assertThrows(InvalidContractException.class,
-				() -> result(Status.FAILED, Observation.UNKNOWN, null, 1, 0, null));
+				() -> result(ActionStatus.FAILED, Observation.UNKNOWN, null, 1, 0, null));
 		assertThrows(InvalidContractException.class,
-				() -> result(Status.RUNNING, Observation.UNKNOWN, false, 1, 0, null));
+				() -> result(ActionStatus.RUNNING, Observation.UNKNOWN, false, 1, 0, null));
 		assertThrows(InvalidContractException.class,
-				() -> result(Status.SUCCEEDED, Observation.CONFIRMED, false, 1, 0, null));
+				() -> result(ActionStatus.SUCCEEDED, Observation.CONFIRMED, false, 1, 0, null));
 	}
 
 	@Test
 	void unknownApplicationSerializesAsExplicitNullRatherThanFalse() {
-		var json = new JsonMapper().valueToTree(result(Status.RUNNING, Observation.UNKNOWN, null, 1, 0, null));
+		var json = new JsonMapper().valueToTree(result(ActionStatus.RUNNING, Observation.UNKNOWN, null, 1, 0, null));
 		assertTrue(json.has("applied"));
 		assertTrue(json.get("applied").isNull());
 	}
 
 	@Test
 	void kickRetryBudgetAndLifetimeAreNotResetOrFixedToTwentyFourHours() {
-		assertDoesNotThrow(() -> result(Status.FAILED, Observation.CONFIRMED, false, 3, 2, null));
+		assertDoesNotThrow(() -> result(ActionStatus.FAILED, Observation.CONFIRMED, false, 3, 2, null));
 		assertThrows(InvalidContractException.class,
-				() -> result(Status.FAILED, Observation.CONFIRMED, false, 4, 3, null));
+				() -> result(ActionStatus.FAILED, Observation.CONFIRMED, false, 4, 3, null));
 		assertThrows(InvalidContractException.class,
-				() -> result(Status.FAILED, Observation.CONFIRMED, false, 3, 0, null));
+				() -> result(ActionStatus.FAILED, Observation.CONFIRMED, false, 3, 0, null));
 		assertThrows(InvalidContractException.class,
-				() -> result(Status.SUCCEEDED, Observation.CONFIRMED, true, 1, 0, Instant.now()));
+				() -> result(ActionStatus.SUCCEEDED, Observation.CONFIRMED, true, 1, 0, Instant.now()));
 	}
 
 	@Test
@@ -106,7 +106,7 @@ class ToolContractsTest {
 				List.of(new MaskedMessage(ID, "U1", "masked evidence", Instant.now())), targets);
 	}
 
-	private ActionExecutionResult result(Status status, Observation observation, Boolean applied,
+	private ActionExecutionResult result(ActionStatus status, Observation observation, Boolean applied,
 			int attempts, int retries, Instant expiresAt) {
 		return new ActionExecutionResult(ID, ID, ID, ActionType.KICK, status, observation, applied,
 				attempts, retries, null, expiresAt, null);

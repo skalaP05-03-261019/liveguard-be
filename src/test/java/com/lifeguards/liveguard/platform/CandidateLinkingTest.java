@@ -111,7 +111,7 @@ class CandidateLinkingTest {
 		CandidateRequest hold = recording.requests.get(1);
 		assertEquals(FilterResult.HOLD, hold.filterResult());
 		assertEquals(List.of(MessageFilter.OFFICIAL_CLAIM, MessageFilter.CREDENTIAL_REQUEST,
-				MessageFilter.UNOFFICIAL_URL), hold.matchingTags());
+				MessageFilter.LINK), hold.matchingTags());
 		assertEquals(holdCase, caseIdOf(HOLD_TEXT));
 	}
 

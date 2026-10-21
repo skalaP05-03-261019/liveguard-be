@@ -38,7 +38,7 @@ class MatchingTagContractTest {
 				.stream().map(Object::toString).toList());
 		Set<String> inJava = Arrays.stream(MatchingTag.values()).map(Enum::name).collect(Collectors.toSet());
 		assertEquals(inContract, inJava);
-		assertEquals(6, inJava.size());
+		assertEquals(9, inJava.size());
 
 		Map<?, ?> items = (Map<?, ?>) ((Map<?, ?>) ((Map<?, ?>) ((Map<?, ?>) schemas.get("InternalCase"))
 				.get("properties")).get("matchingTags")).get("items");
@@ -51,7 +51,7 @@ class MatchingTagContractTest {
 		for (String text : List.of(
 				"무대 미쳤다",                                              // ATTACK_TERM
 				"씨발",                                                    // CERTAIN_PROFANITY
-				"공식 이벤트 evil.test 에서 로그인하세요",                     // OFFICIAL_CLAIM, CREDENTIAL_REQUEST, UNOFFICIAL_URL
+				"공식 이벤트 evil.test 에서 로그인하세요",                     // OFFICIAL_CLAIM, CREDENTIAL_REQUEST, LINK
 				"같은 말")) {
 			emitted.addAll(filter.classify(new FilterInput(text, TextNormalizer.normalize(text), Set.of(), 3))
 					.matchingTags());
@@ -59,7 +59,12 @@ class MatchingTagContractTest {
 
 		Set<String> valid = Arrays.stream(MatchingTag.values()).map(Enum::name).collect(Collectors.toSet());
 		assertTrue(valid.containsAll(emitted), "계약에 없는 태그: " + emitted);
-		assertEquals(valid, emitted, "enum의 모든 값이 실제로 만들어질 수 있어야 한다");
+		// PII 태그는 PII 필터(TBD-02 3순위) 구현 전이라 필터가 아직 만들지 않는다. 계약(openapi v1.0, E-8)에는
+		// 먼저 넣었으므로 "도달 가능" 검사에서만 뺀다. PII 필터를 구현하면 이 제외를 지우고 입력 예시를 추가한다.
+		Set<String> notYetEmitted = Set.of(
+				MatchingTag.PII_PHONE.name(), MatchingTag.PII_ACCOUNT.name(), MatchingTag.PII_EMAIL.name());
+		Set<String> reachable = valid.stream().filter(tag -> !notYetEmitted.contains(tag)).collect(Collectors.toSet());
+		assertEquals(reachable, emitted, "PII 태그를 뺀 enum의 모든 값이 실제로 만들어질 수 있어야 한다");
 	}
 
 }

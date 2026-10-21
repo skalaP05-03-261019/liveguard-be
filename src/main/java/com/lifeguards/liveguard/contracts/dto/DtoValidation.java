@@ -1,7 +1,11 @@
 package com.lifeguards.liveguard.contracts.dto;
 
+import java.util.Arrays;
 import java.util.List;
 
+import com.lifeguards.liveguard.contracts.enums.ContextDecision;
+import com.lifeguards.liveguard.contracts.enums.KickDecision;
+import com.lifeguards.liveguard.contracts.enums.ReviewKind;
 import com.lifeguards.liveguard.contracts.exception.InvalidContractException;
 
 public final class DtoValidation {
@@ -44,6 +48,20 @@ public final class DtoValidation {
 		if (values.isEmpty()) {
 			throw new InvalidContractException(name + " must contain at least one item");
 		}
+	}
+
+	/** 결정 값은 kind가 CONTEXT면 ContextDecision, KICK이면 KickDecision의 이름이어야 한다(openapi Decision.value). */
+	public static String requireDecisionValue(ReviewKind kind, String value) {
+		requireNonNull(kind, "kind");
+		requireText(value, "value");
+		boolean valid = switch (kind) {
+			case CONTEXT -> Arrays.stream(ContextDecision.values()).anyMatch(decision -> decision.name().equals(value));
+			case KICK -> Arrays.stream(KickDecision.values()).anyMatch(decision -> decision.name().equals(value));
+		};
+		if (!valid) {
+			throw new InvalidContractException("value is not a " + kind + " decision");
+		}
+		return value;
 	}
 
 	public static void requireMaxSize(List<?> values, int max, String name) {

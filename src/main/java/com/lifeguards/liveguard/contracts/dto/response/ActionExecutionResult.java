@@ -4,7 +4,9 @@ import java.time.Instant;
 import java.util.UUID;
 
 import com.lifeguards.liveguard.contracts.dto.DtoValidation;
+import com.lifeguards.liveguard.contracts.enums.ActionStatus;
 import com.lifeguards.liveguard.contracts.enums.ActionType;
+import com.lifeguards.liveguard.contracts.enums.Observation;
 import com.lifeguards.liveguard.contracts.exception.InvalidContractException;
 import io.swagger.v3.oas.annotations.media.Schema;
 
@@ -13,7 +15,7 @@ public record ActionExecutionResult(
 		UUID caseId,
 		UUID liveId,
 		ActionType type,
-		Status status,
+		ActionStatus status,
 		Observation observation,
 		@Schema(nullable = true, description = "null when observation is UNKNOWN") Boolean applied,
 		int attemptCount,
@@ -21,14 +23,6 @@ public record ActionExecutionResult(
 		Instant startedAt,
 		Instant expiresAt,
 		String errorCode) {
-
-	public enum Status {
-		PENDING, RUNNING, SUCCEEDED, FAILED
-	}
-
-	public enum Observation {
-		CONFIRMED, UNKNOWN
-	}
 
 	public ActionExecutionResult {
 		DtoValidation.requireNonNull(actionId, "actionId");
@@ -41,13 +35,13 @@ public record ActionExecutionResult(
 				|| (observation == Observation.CONFIRMED && applied == null)) {
 			throw new InvalidContractException("UNKNOWN requires applied=null; CONFIRMED requires applied");
 		}
-		if (observation == Observation.UNKNOWN && (status == Status.SUCCEEDED || status == Status.FAILED)) {
+		if (observation == Observation.UNKNOWN && (status == ActionStatus.SUCCEEDED || status == ActionStatus.FAILED)) {
 			throw new InvalidContractException("UNKNOWN must not claim terminal success or failure");
 		}
-		if (status == Status.SUCCEEDED && !Boolean.TRUE.equals(applied)) {
+		if (status == ActionStatus.SUCCEEDED && !Boolean.TRUE.equals(applied)) {
 			throw new InvalidContractException("SUCCEEDED requires applied=true");
 		}
-		if (status == Status.FAILED && !Boolean.FALSE.equals(applied)) {
+		if (status == ActionStatus.FAILED && !Boolean.FALSE.equals(applied)) {
 			throw new InvalidContractException("FAILED requires applied=false");
 		}
 		if (attemptCount < 0 || retryCount != Math.max(0, attemptCount - 1)

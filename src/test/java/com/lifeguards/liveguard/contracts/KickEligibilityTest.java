@@ -18,7 +18,7 @@ class KickEligibilityTest {
 	void previousTwoAndCurrentCaseAreThreeDistinctCases() {
 		List<UUID> cases = List.of(UUID.randomUUID(), UUID.randomUUID(), ID);
 		KickEligibility result = eligibility(24, 3, cases);
-		assertEquals(3, result.violationCount());
+		assertEquals(3, result.count());
 		assertEquals(cases, result.eligibleCaseIds());
 		assertThrows(UnsupportedOperationException.class, () -> result.eligibleCaseIds().add(ID));
 	}
@@ -32,7 +32,7 @@ class KickEligibilityTest {
 	void windowAndCountMustMatchContract() {
 		assertThrows(InvalidContractException.class, () -> eligibility(720, 0, List.of()));
 		assertThrows(InvalidContractException.class, () -> eligibility(24, 3, List.of(ID)));
-		assertEquals(0, eligibility(24, 0, List.of()).violationCount());
+		assertEquals(0, eligibility(24, 0, List.of()).count());
 	}
 
 	private KickEligibility eligibility(int hours, int count, List<UUID> cases) {

@@ -14,7 +14,7 @@ import com.lifeguards.liveguard.contracts.enums.MatchingTag;
  * 1차 필터 (docs/live-guard/v0.3/policies/classification-and-actions.md 3절).
  * <ul>
  * <li>HOLD: 피싱(공식 자칭 + 로그인·인증 요구 + 비공식 URL이 모두 있음) 또는 확실한 욕설.
- * 둘은 matchingTags(UNOFFICIAL_URL 등 / CERTAIN_PROFANITY)로 구분한다</li>
+ * 둘은 matchingTags(LINK 등 / CERTAIN_PROFANITY)로 구분한다. LINK는 아직 채널 공식 호스트에 없는 URL에만 붙인다</li>
  * <li>FLOOD: 같은 사용자·채널에서 10초 안에 같은 정규화 문장 3회 이상 (세 번째부터)</li>
  * <li>REVIEW: 공격·비하 사전 매칭 (애매한 표현)</li>
  * </ul>
@@ -29,7 +29,7 @@ public class MessageFilter {
 	public static final String CERTAIN_PROFANITY = MatchingTag.CERTAIN_PROFANITY.name();
 	public static final String OFFICIAL_CLAIM = MatchingTag.OFFICIAL_CLAIM.name();
 	public static final String CREDENTIAL_REQUEST = MatchingTag.CREDENTIAL_REQUEST.name();
-	public static final String UNOFFICIAL_URL = MatchingTag.UNOFFICIAL_URL.name();
+	public static final String LINK = MatchingTag.LINK.name();
 	public static final String REPEATED_TEXT = MatchingTag.REPEATED_TEXT.name();
 
 	private final FilterDictionary dictionary;
@@ -71,7 +71,7 @@ public class MessageFilter {
 			tags.add(CREDENTIAL_REQUEST);
 		}
 		if (unofficialUrl) {
-			tags.add(UNOFFICIAL_URL);
+			tags.add(LINK);
 		}
 		if (repeated) {
 			tags.add(REPEATED_TEXT);
