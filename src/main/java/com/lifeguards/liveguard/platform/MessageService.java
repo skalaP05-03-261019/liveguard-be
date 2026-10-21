@@ -90,6 +90,9 @@ class MessageService {
 		kickStatus.activeKickUntil(channelId, author.userId()).ifPresent(until -> {
 			throw new ApiException(ErrorCode.KICKED, "Kicked from this channel", until, null);
 		});
+		// 잠금 순서: 작성자·채널 advisory 잠금 → 재전송 조회 → 방송 행 FOR SHARE. 동시 재전송이 원본 전송의
+		// 커밋을 기다린 뒤 조회하게 해서, 원본이 커밋되고 방송이 종료돼도 첫 응답을 돌려준다(A-18)
+		messages.lockAuthorInChannel(channelId, author.userId());
 		// 재전송은 방송 종료 검사보다 먼저 확인한다. 종료 직전 저장됐는데 응답이 유실된 경우 첫 응답을 돌려준다(A-18)
 		var replayed = messages.find(channelId, author.userId(), request.clientMessageId());
 		if (replayed.isPresent()) {
@@ -106,7 +109,6 @@ class MessageService {
 		// timestamptz는 마이크로초 정밀도라 미리 잘라 재전송 응답의 sentAt이 최초와 같게 한다
 		Instant sentAt = clock.instant().truncatedTo(ChronoUnit.MICROS);
 		String normalizedText = TextNormalizer.normalize(request.text());
-		messages.lockAuthorInChannel(channelId, author.userId());
 		// 도배는 같은 사용자·방송 범위다. 이전 방송과 방송 도입 전(live_id NULL) 메시지는 세지 않는다
 		List<UUID> sameTextInWindow = messages.sameTextMessageIds(live.liveId(), author.userId(), normalizedText,
 				sentAt.minus(FLOOD_WINDOW));
