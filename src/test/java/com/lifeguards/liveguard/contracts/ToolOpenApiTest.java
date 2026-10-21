@@ -39,6 +39,9 @@ class ToolOpenApiTest {
 				KickEligibility.class, KickReviewBasis.class, ChannelUserRole.class, SecurityFacts.class, InternalCase.class)) {
 			Set<String> fields = Arrays.stream(type.getRecordComponents()).map(component -> component.getName())
 					.collect(Collectors.toSet());
+			if (type == InternalCase.class) {
+				fields.addAll(Set.of("targetMessageIds", "targetVersions"));
+			}
 			assertEquals(fields, map(map(schemas, type.getSimpleName()), "properties").keySet(), type.getSimpleName());
 		}
 	}

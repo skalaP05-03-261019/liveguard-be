@@ -8,7 +8,7 @@ import com.lifeguards.liveguard.contracts.dto.DtoValidation;
 import com.lifeguards.liveguard.contracts.enums.Category;
 import com.lifeguards.liveguard.contracts.exception.InvalidContractException;
 
-/** TIMEOUT history excludes the current case; kick consumption does not delete it. */
+/** Distinct-case count and case/category rows; excludes current case, not kick-consumed history. */
 public record UserHistory(int violationCount, int windowHours, List<RecentCase> recentCases) {
 	public UserHistory {
 		if (windowHours <= 0 || violationCount < 0) {

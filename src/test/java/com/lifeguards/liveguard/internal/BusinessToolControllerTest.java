@@ -32,8 +32,7 @@ class BusinessToolControllerTest {
 	private MockMvc mockMvc;
 
 	@ParameterizedTest
-	@ValueSource(strings = {"/internal/cases/" + ID, "/internal/cases/" + ID + "/user-history",
-			"/internal/cases/" + ID + "/history", "/internal/cases/" + ID + "/security-facts",
+	@ValueSource(strings = {"/internal/cases/" + ID + "/security-facts",
 			"/internal/cases/" + ID + "/kick-eligibility", "/internal/kick-reviews/" + ID + "/basis",
 			"/internal/actions/" + ID})
 	void readsRequireServiceTokenAndReturnExplicitStub(String path) throws Exception {
@@ -48,11 +47,24 @@ class BusinessToolControllerTest {
 	}
 
 	@ParameterizedTest
+	@ValueSource(strings = {"/internal/cases/" + ID, "/internal/cases/" + ID + "/user-history",
+			"/internal/cases/" + ID + "/history"})
+	void implementedReadsRequireServiceTokenAndReturnNotFound(String path) throws Exception {
+		mockMvc.perform(get(path)).andExpect(status().isForbidden());
+		mockMvc.perform(get(path).header("X-Service-Token", "wrong")).andExpect(status().isForbidden());
+		mockMvc.perform(internal(get(path)).header("X-Trace-Id", ID))
+				.andExpect(status().isNotFound())
+				.andExpect(jsonPath("$.error.code").value("NOT_FOUND"))
+				.andExpect(jsonPath("$.traceId").value(ID))
+				.andExpect(jsonPath("$.data").doesNotExist());
+	}
+
+	@ParameterizedTest
 	@ValueSource(strings = {"", "invalid-trace", "11111111-1111-4111-8111-111111111ABC"})
 	void traceNormalizationMatchesHeaderAndBody(String trace) throws Exception {
 		var response = mockMvc.perform(internal(get("/internal/cases/{id}", ID))
 						.header("X-Trace-Id", trace))
-				.andExpect(status().isNotImplemented()).andReturn().getResponse();
+				.andExpect(status().isNotFound()).andReturn().getResponse();
 		String bodyTrace = JsonPath.read(response.getContentAsString(), "$.traceId");
 		UUID.fromString(bodyTrace);
 		assertEquals(response.getHeader("X-Trace-Id"), bodyTrace);
@@ -97,7 +109,7 @@ class BusinessToolControllerTest {
 		mockMvc.perform(internal(get("/internal/cases/{id}/user-history", ID)).param("days", "0"))
 				.andExpect(status().isBadRequest());
 		mockMvc.perform(internal(get("/internal/cases/{id}/user-history", ID)).param("days", "31"))
-				.andExpect(status().isNotImplemented());
+				.andExpect(status().isNotFound());
 		mockMvc.perform(internal(get("/internal/cases/{id}/kick-eligibility", ID)).param("days", "30"))
 				.andExpect(status().isBadRequest());
 	}
@@ -135,6 +147,15 @@ class BusinessToolControllerTest {
 				.andExpect(jsonPath("$.components.schemas.KickReviewBasis").exists())
 				.andExpect(jsonPath("$.components.schemas.SecurityFacts").exists())
 				.andExpect(jsonPath("$.components.schemas.UserHistory").exists());
+	}
+
+	@Test
+	void generatedCaseSchemaIncludesCanonicalAndDerivedTargetFields() throws Exception {
+		mockMvc.perform(get("/v3/api-docs"))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.components.schemas.InternalCase.properties.targets").exists())
+				.andExpect(jsonPath("$.components.schemas.InternalCase.properties.targetMessageIds").exists())
+				.andExpect(jsonPath("$.components.schemas.InternalCase.properties.targetVersions").exists());
 	}
 
 	private MockHttpServletRequestBuilder internal(MockHttpServletRequestBuilder request) {

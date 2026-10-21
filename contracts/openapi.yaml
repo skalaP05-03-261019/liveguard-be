@@ -4,9 +4,10 @@ info:
   version: 0.6.0-draft
   description: |
     0.6.0-draft 계약. 내부 business-tool 중 `/context`, `/channel-info`, `/role`은 현재 조회 구현이며,
+    사건 조회는 필수 메타데이터가 있는 경우, 이력 조회는 명시한 days가 있는 경우에 구현된다.
     나머지 표시된 business-tool 스텁은 HTTP 501 `NOT_IMPLEMENTED` (retryable=false)이다.
     `x-implementation-status: planned`는 미래/레거시 계약일 뿐 현재 구현을 의미하지 않는다.
-    InternalCase DTO는 현재 기본 snapshot 필드만 포함하며, persistence 기반 snapshot 보강은 후속 작업이다.
+    사건 필수 정보 미준비는 409 CASE_NOT_READY다. 주변 문맥 snapshot 연결 및 최종 강퇴 자격은 후속 작업이다.
 
     공통 규칙
     - ID와 traceId는 UUID 문자열, 시각은 UTC ISO 8601. JSON은 camelCase.
@@ -19,12 +20,12 @@ info:
     MCP 도구 (내부 API를 감싼 어댑터)
     | 서버 | 도구 | 구분 | 내부 API |
     | --- | --- | --- | --- |
-    | business-mcp | get_moderation_case | 스텁 | GET /internal/cases/{caseId} |
+    | business-mcp | get_moderation_case | 조건부 구현 | GET /internal/cases/{caseId} |
     | business-mcp | get_chat_context | 구현된 조회 | GET /internal/cases/{caseId}/context |
     | business-mcp | get_channel_info, get_stream_info, get_official_links | 구현된 공유 조회 | GET /internal/cases/{caseId}/channel-info |
     | business-mcp | get_channel_user_role | 구현된 조회 | GET /internal/cases/{caseId}/role |
     | business-mcp | get_security_facts | 스텁 | GET /internal/cases/{caseId}/security-facts |
-    | business-mcp | get_user_history | 스텁 | GET /internal/cases/{caseId}/user-history |
+    | business-mcp | get_user_history | 명시 기간 조회 구현 | GET /internal/cases/{caseId}/user-history |
     | business-mcp | get_kick_eligibility | 스텁 | GET /internal/cases/{caseId}/kick-eligibility |
     | business-mcp | get_kick_review_basis | 스텁 | GET /internal/kick-reviews/{reviewId}/basis |
     | business-mcp | get_action_status | 스텁 | GET /internal/actions/{actionId} |
@@ -319,16 +320,32 @@ paths:
       tags: [Internal]
       operationId: internalGetCase
       summary: get_moderation_case
-      description: Contract stub. Current InternalCase fields only; persistence-backed snapshot enrichment is pending.
-      x-implementation-status: stub
+      description: |
+        Persistence-backed current case evidence and current target versions, read in one consistent transaction.
+        Missing case returns 404. Missing broadcast/policy/route, current evidence or targets returns
+        409 CASE_NOT_READY (retryable=false); metadata is never fabricated.
+        targets is canonical; targetMessageIds and targetVersions are derived compatibility projections.
+        This is not an immutable historical chat-context snapshot.
+      x-implementation-status: partial
       x-owner: B2
       security:
         - serviceToken: []
       responses:
+        '200':
+          description: Current case evidence and targets.
+          headers:
+            X-Trace-Id:
+              $ref: '#/components/headers/TraceId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InternalCaseResponse'
         '403':
           $ref: '#/components/responses/Error'
-        '501':
-          $ref: '#/components/responses/NotImplemented'
+        '404':
+          $ref: '#/components/responses/Error'
+        '409':
+          $ref: '#/components/responses/Error'
 
   /internal/cases/{caseId}/context:
     parameters:
@@ -342,6 +359,8 @@ paths:
         Implemented Backend query of masked case messages and surrounding chat; response has at most 20 messages.
         before and after each default to 10 and must be between 0 and 10. Missing case message is 404.
         Optional deprecated view accepts only `chatContext`; any other value is 400.
+        Snapshot/evidence version and message visibility enrichment required by the Agent loader
+        is deferred; this response alone does not satisfy the complete Agent context contract.
       x-owner: B1
       x-implementation-status: implemented
       security:
@@ -399,10 +418,15 @@ paths:
       operationId: internalGetUserHistory
       summary: get_user_history
       description: |
-        Contract stub (501). TIMEOUT history by category, excluding the current case.
-        Consumed kick-review cases remain in history. Optional positive `days` requests a range;
-        no default, maximum, or policy lookback is established. `windowHours` reports the resolved range.
-      x-implementation-status: stub
+        TIMEOUT history by category, excluding the current case. Only current, unrevoked Backend
+        confirmed VIOLATION findings count; proposals and NO_VIOLATION/NEEDS_REVIEW do not.
+        Consumed kick-review cases and expired TIMEOUTs remain in history.
+        Explicit positive days selects [server time - days, server time], inclusive by case occurrence time;
+        confirmations after the upper bound are excluded. This reads current revocation state, not historical replay.
+        violationCount counts distinct cases; recentCases contains one row per case/category.
+        No default policy period is approved: omitted days returns 501 for an existing case.
+        days * 24 must fit windowHours (integer); overflow returns 400, not a policy duration limit.
+      x-implementation-status: partial
       x-owner: B2
       security:
         - serviceToken: []
@@ -415,9 +439,17 @@ paths:
             type: integer
             minimum: 1
       responses:
+        '200':
+          description: Explicit-period confirmed history.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserHistoryResponse'
         '400':
           $ref: '#/components/responses/Error'
         '403':
+          $ref: '#/components/responses/Error'
+        '404':
           $ref: '#/components/responses/Error'
         '501':
           $ref: '#/components/responses/NotImplemented'
@@ -432,7 +464,7 @@ paths:
       summary: Legacy user-history alias
       description: Deprecated alias with the same TIMEOUT-only, excludes-current-case semantics as `/user-history`.
       deprecated: true
-      x-implementation-status: stub
+      x-implementation-status: partial
       x-owner: B2
       security:
         - serviceToken: []
@@ -445,9 +477,17 @@ paths:
             type: integer
             minimum: 1
       responses:
+        '200':
+          description: Same explicit-period history as /user-history.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserHistoryResponse'
         '400':
           $ref: '#/components/responses/Error'
         '403':
+          $ref: '#/components/responses/Error'
+        '404':
           $ref: '#/components/responses/Error'
         '501':
           $ref: '#/components/responses/NotImplemented'
@@ -892,6 +932,7 @@ components:
         - FORBIDDEN
         - KICKED
         - NOT_FOUND
+        - CASE_NOT_READY
         - STALE_VERSION
         - IDEMPOTENCY_CONFLICT
         - REVIEW_NOT_APPROVED
@@ -1306,8 +1347,8 @@ components:
           $ref: '#/components/schemas/Timestamp'
     InternalCase:
       type: object
-      description: Current basic DTO. Persistence-backed snapshot enrichment is pending; no additional fields are implied.
-      required: [caseId, channelId, liveId, snapshotId, evidenceVersion, policyVersion, handlingRoute, filterResult, matchingTags, version, messages, targets]
+      description: Current persisted evidence and current target state. Missing required metadata returns CASE_NOT_READY.
+      required: [caseId, channelId, liveId, snapshotId, evidenceVersion, policyVersion, handlingRoute, filterResult, matchingTags, version, messages, targets, targetMessageIds, targetVersions]
       properties:
         caseId:
           $ref: '#/components/schemas/Uuid'
@@ -1346,6 +1387,19 @@ components:
           description: Distinct targets; each messageId must reference a message in this snapshot.
           items:
             $ref: '#/components/schemas/InternalCaseTarget'
+        targetMessageIds:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          description: Derived from targets, in the same order; never supplied independently.
+          items:
+            $ref: '#/components/schemas/Uuid'
+        targetVersions:
+          type: object
+          description: Derived map of target message UUID to its current version.
+          additionalProperties:
+            type: integer
+            minimum: 1
     InternalCaseTarget:
       type: object
       required: [messageId, visibility, version]
@@ -1394,6 +1448,7 @@ components:
         violationCount:
           type: integer
           minimum: 0
+          description: Number of distinct cases, not the sum of category counts.
         windowHours:
           type: integer
           minimum: 1

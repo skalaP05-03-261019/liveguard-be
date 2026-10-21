@@ -1,7 +1,11 @@
 package com.lifeguards.liveguard.contracts.dto.response;
 
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
+import java.util.stream.Collectors;
+
+import com.fasterxml.jackson.annotation.JsonProperty;
 
 import com.lifeguards.liveguard.contracts.dto.DtoValidation;
 import com.lifeguards.liveguard.contracts.enums.FilterResult;
@@ -45,6 +49,16 @@ public record InternalCase(
 				throw new InvalidContractException("Target must reference a snapshot message");
 			}
 		}
+	}
+
+	@JsonProperty("targetMessageIds")
+	public List<UUID> targetMessageIds() {
+		return targets.stream().map(Target::messageId).toList();
+	}
+
+	@JsonProperty("targetVersions")
+	public Map<UUID, Integer> targetVersions() {
+		return targets.stream().collect(Collectors.toUnmodifiableMap(Target::messageId, Target::version));
 	}
 
 	public record Target(UUID messageId, Visibility visibility, int version) {

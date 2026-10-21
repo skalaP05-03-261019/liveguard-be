@@ -2,6 +2,8 @@ package com.lifeguards.liveguard.internal;
 
 import java.util.UUID;
 
+import com.lifeguards.liveguard.common.TraceIdFilter;
+import com.lifeguards.liveguard.guard.CaseQueryService;
 import com.lifeguards.liveguard.contracts.dto.response.ApiResponse;
 import com.lifeguards.liveguard.contracts.dto.response.InternalCase;
 import com.lifeguards.liveguard.contracts.dto.response.KickEligibility;
@@ -22,16 +24,22 @@ import org.springframework.web.bind.annotation.RestController;
 
 @RestController
 @RequestMapping("/internal")
-@Tag(name = "Business MCP Backend", description = "Agent HTTP adapter contracts; business operations are not implemented.")
+@Tag(name = "Business MCP Backend", description = "Agent read APIs and pending business action contracts.")
 @SecurityRequirement(name = "serviceToken")
 public class BusinessToolController {
 
+	private final CaseQueryService queries;
+
+	public BusinessToolController(CaseQueryService queries) {
+		this.queries = queries;
+	}
+
 	@GetMapping("/cases/{caseId}")
 	@Operation(summary = "get_moderation_case: get the Backend case snapshot",
-			description = "Contract only. Case persistence and policy/evidence snapshot enrichment are pending.")
+			description = "Persistence-backed current evidence and target versions. Missing case is 404; incomplete metadata/evidence is 409 CASE_NOT_READY.")
 	public ApiResponse<InternalCase> getModerationCase(
 			@PathVariable UUID caseId) {
-		throw new BusinessToolNotImplementedException();
+		return new ApiResponse<>(queries.moderationCase(caseId), TraceIdFilter.current());
 	}
 
 	@GetMapping("/cases/{caseId}/security-facts")
@@ -49,7 +57,9 @@ public class BusinessToolController {
 					Consumed kick-review cases remain in this history. This is not kick eligibility.
 					days is an optional positive requested range, not an approved policy window.
 					The default TIMEOUT lookback remains undecided; no 30-day default is applied.
-					windowHours describes the actual resolved query range.
+					Explicit days is implemented; omitted days returns 501 for an existing case.
+					windowHours describes the resolved query range and must fit an integer.
+					violationCount counts distinct cases; recentCases contains case/category rows.
 					""")
 	public ApiResponse<UserHistory> getUserHistory(
 			@PathVariable UUID caseId,
@@ -57,7 +67,7 @@ public class BusinessToolController {
 		if (days != null && days < 1) {
 			throw new IllegalArgumentException("days must be positive when provided");
 		}
-		throw new BusinessToolNotImplementedException();
+		return new ApiResponse<>(queries.userHistory(caseId, days), TraceIdFilter.current());
 	}
 
 	@GetMapping("/cases/{caseId}/history")
