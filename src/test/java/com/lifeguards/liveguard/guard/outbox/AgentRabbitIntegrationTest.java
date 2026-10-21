@@ -222,28 +222,20 @@ class AgentRabbitIntegrationTest {
 		assertEquals(java.util.List.of("POST", "POST"), METHODS);
 	}
 
-	@Test
-	void contendedHintIsAckedWithoutBudgetAndPeriodicNotificationRecoversIt() throws Exception {
-		assertTrue(transport.publishOne());
-		transactions.executeWithoutResult(transaction -> {
-			jdbc.queryForList("SELECT id FROM guard.agent_task_outbox WHERE id = ? FOR UPDATE", id);
-			listener.start();
-			try {
-				await(this::queueEmpty);
-			} catch (InterruptedException ex) {
-				Thread.currentThread().interrupt();
-				throw new AssertionError(ex);
-			} finally {
-				listener.stop();
-			}
-		});
-		assertEquals(0, attempts());
-		assertTrue(METHODS.isEmpty());
-		clock.advance(properties.recoveryInterval());
-		assertTrue(transport.publishOne());
-		listener.start();
-		await(() -> status().equals("ACCEPTED"));
-	}
+  @Test
+  void contendedHintWaitsForPublicationCommitThenDeliversWithoutRecoveryDelay() throws Exception {
+    assertTrue(transport.publishOne());
+    transactions.executeWithoutResult(tx->{
+      jdbc.queryForList("SELECT id FROM guard.agent_task_outbox WHERE id=? FOR UPDATE",id);
+      listener.start();
+      try {await(this::queueEmpty);} catch(InterruptedException ex){Thread.currentThread().interrupt();throw new AssertionError(ex);}
+      assertEquals(0,attempts());
+      assertTrue(METHODS.isEmpty());
+    });
+    await(()->status().equals("ACCEPTED"));
+    assertEquals(1,attempts());
+    assertEquals(java.util.List.of("POST"),METHODS);
+  }
 
 	private boolean queueEmpty() {
 		var info = admin.getQueueInfo(properties.queue());

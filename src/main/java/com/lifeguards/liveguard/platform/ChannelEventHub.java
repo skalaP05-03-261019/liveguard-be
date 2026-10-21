@@ -95,6 +95,18 @@ class ChannelEventHub implements ChannelEventPublisher {
 				"USER_KICKED", event, true));
 	}
 
+  @org.springframework.context.event.EventListener
+  void reauthenticated(com.lifeguards.liveguard.common.security.SessionReauthenticatedEvent event) { registry.closeSession(event.previousSessionId()); }
+
+  void integrated(UUID channelId,UUID author,boolean restricted,String event,java.util.Map<String,Object> data) {
+    if(event.equals("LIVE_ACCESS_BLOCKED")) {
+      registry.broadcast(channelId,s->s.userId().equals(author),"USER_KICKED",java.util.Collections.singletonMap("until",null),true);
+    } else if(java.util.Set.of("CHAT","MESSAGE_VISIBILITY_CHANGED","MESSAGE_RESTORED","LIVE_ENDED").contains(event)) {
+      String name=event.equals("MESSAGE_RESTORED")?"MESSAGE_VISIBILITY_CHANGED":event;
+      registry.broadcast(channelId,s->!restricted||s.operator()||s.userId().equals(author),name,data,event.equals("LIVE_ENDED"));
+    }
+  }
+
 	@PreDestroy
 	void shutdown() {
 		registry.shutdown();

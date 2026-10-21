@@ -12,7 +12,11 @@ public interface LiveGuardPort {
       String route,
       String policyVersion,
       List<String> tags,
-      Instant receivedAt);
+      Instant receivedAt, String normalizedText);
+
+  boolean floodRecurrence(UUID liveId, UUID userId, String normalizedText, Instant receivedAt);
+
+  Instant timeoutUntil(UUID liveId, UUID userId);
 
   void checkAccess(UUID liveId, UUID userId);
 

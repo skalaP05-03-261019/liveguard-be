@@ -10,6 +10,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 
 import org.junit.jupiter.api.AfterEach;
@@ -30,13 +31,17 @@ import org.springframework.test.web.servlet.MockMvc;
 
 import com.jayway.jsonpath.JsonPath;
 import com.lifeguards.liveguard.TestcontainersConfiguration;
+import com.lifeguards.liveguard.contracts.enums.FilterResult;
+import com.lifeguards.liveguard.platform.port.CandidateRequest;
+import com.lifeguards.liveguard.platform.port.CandidateSink;
+import com.lifeguards.liveguard.platform.port.RecordingCandidateSink;
 import com.lifeguards.liveguard.support.CaseFixtures;
 import com.lifeguards.liveguard.support.MutableClock;
 
 /** 방송 시작 → 채팅 → 후보까지 같은 liveId, 도배는 같은 사용자·방송 범위(이전 방송 제외). */
-@SpringBootTest(properties = { "LIVEGUARD_POLICY_VERSION=v3.1", "LIVEGUARD_TBD_FIXTURE_ENABLED=true" })
+@SpringBootTest
 @AutoConfigureMockMvc
-@ActiveProfiles("test")
+@ActiveProfiles({ "test", "recording-sink" })
 @Import({ TestcontainersConfiguration.class, LiveCandidateFloodTest.ClockConfig.class })
 class LiveCandidateFloodTest {
 
@@ -62,7 +67,11 @@ class LiveCandidateFloodTest {
 	private JdbcTemplate jdbc;
 	@Autowired
 	private Clock clock;
+	@Autowired
+	private CandidateSink sink;
+
 	private MutableClock mutableClock;
+	private RecordingCandidateSink recording;
 	private UUID channel;
 	private MockHttpSession viewer;
 	private MockHttpSession moderator;
@@ -71,6 +80,8 @@ class LiveCandidateFloodTest {
 	void setUp() throws Exception {
 		mutableClock = assertInstanceOf(MutableClock.class, clock);
 		mutableClock.setNow(T);
+		recording = assertInstanceOf(RecordingCandidateSink.class, sink);
+		recording.reset();
 		channel = UUID.randomUUID();
 		jdbc.update("INSERT INTO platform.channels (id, name) VALUES (?, 'live-flood')", channel);
 		jdbc.update("INSERT INTO platform.channel_members (channel_id, user_id, member_role) VALUES "
@@ -96,10 +107,11 @@ class LiveCandidateFloodTest {
 
 		assertEquals(liveId, jdbc.queryForObject("SELECT live_id FROM platform.messages WHERE id = ?", UUID.class,
 				messageId));
-		UUID caseId = jdbc.queryForObject("SELECT case_id FROM guard.candidates WHERE message_id = ?",
-				UUID.class, messageId);
-		assertEquals(liveId, jdbc.queryForObject("SELECT live_id FROM guard.cases WHERE id = ?", UUID.class, caseId));
-		assertEquals(channel, jdbc.queryForObject("SELECT channel_id FROM guard.cases WHERE id = ?", UUID.class, caseId));
+		assertEquals(1, recording.requests.size());
+		CandidateRequest request = recording.requests.getFirst();
+		assertEquals(liveId, request.liveId());
+		assertEquals(channel, request.channelId());
+		assertEquals(messageId, request.messageId());
 	}
 
 	@Test
@@ -116,17 +128,18 @@ class LiveCandidateFloodTest {
 		// 이전 방송의 두 번은 세지 않는다: 10초 안의 세 번째지만 새 방송의 첫 번째라 PASS
 		UUID secondFirst = send(second, TEXT);
 		assertEquals("PASS", filterResult(secondFirst));
+		assertEquals(0, recording.requests.size());
 
 		tick();
 		UUID secondSecond = send(second, TEXT);
 		tick();
 		UUID secondThird = send(second, TEXT);
 		assertEquals("FLOOD", filterResult(secondThird));
-		UUID caseId = jdbc.queryForObject("SELECT case_id FROM guard.candidates WHERE message_id = ?",
-				UUID.class, secondThird);
-		assertEquals(second, jdbc.queryForObject("SELECT live_id FROM guard.cases WHERE id = ?", UUID.class, caseId));
-		assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM guard.candidates WHERE case_id = ?", Integer.class,
-				caseId));
+		assertEquals(1, recording.requests.size());
+		CandidateRequest flood = recording.requests.getFirst();
+		assertEquals(FilterResult.FLOOD, flood.filterResult());
+		assertEquals(second, flood.liveId());
+		assertEquals(List.of(secondFirst, secondSecond), flood.relatedMessageIds());
 	}
 
 	@Test
@@ -139,10 +152,8 @@ class LiveCandidateFloodTest {
 		}
 		UUID liveId = startLive();
 
-		UUID messageId = send(liveId, TEXT);
-		assertEquals("PASS", filterResult(messageId));
-		assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM guard.candidates WHERE message_id = ?",
-				Integer.class, messageId));
+		assertEquals("PASS", filterResult(send(liveId, TEXT)));
+		assertEquals(0, recording.requests.size());
 	}
 
 	private void tick() {

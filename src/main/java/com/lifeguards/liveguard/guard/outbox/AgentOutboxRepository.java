@@ -24,10 +24,12 @@ public class AgentOutboxRepository {
 
 	private final JdbcClient jdbc;
 	private final JsonMapper mapper;
+	private final java.time.Clock clock;
 
-	public AgentOutboxRepository(JdbcClient jdbc, JsonMapper mapper) {
+	public AgentOutboxRepository(JdbcClient jdbc, JsonMapper mapper, java.time.Clock clock) {
 		this.jdbc = jdbc;
 		this.mapper = mapper;
+		this.clock=clock;
 	}
 
 	@Transactional(propagation = Propagation.MANDATORY)
@@ -59,13 +61,21 @@ public class AgentOutboxRepository {
 
 	@Transactional
 	public Optional<Delivery> claim(UUID id, Instant now, Instant leaseUntil) {
+        if(id!=null) {
+            // A Rabbit hint addresses one row: wait for the publisher's short update instead of
+            // acknowledging a skipped row. Calculate the lease after that wait, not before it.
+            var duration=java.time.Duration.between(now,leaseUntil);
+            if(jdbc.sql("SELECT id FROM guard.agent_task_outbox WHERE id=? FOR UPDATE")
+                    .param(id).query(UUID.class).optional().isEmpty())return Optional.empty();
+            now=clock.instant();leaseUntil=now.plus(duration);
+        }
 		return jdbc.sql("""
 				WITH ready AS (
 					SELECT id FROM guard.agent_task_outbox
 					WHERE (CAST(:id AS uuid) IS NULL OR id = :id)
 						AND ((status IN ('PENDING', 'RETRY') AND next_attempt_at <= :now)
 						OR (status = 'IN_FLIGHT' AND lease_until <= :now))
-					ORDER BY next_attempt_at, created_at, id FOR UPDATE SKIP LOCKED LIMIT 1
+					ORDER BY next_attempt_at, created_at, id FOR UPDATE %s LIMIT 1
 				)
 				UPDATE guard.agent_task_outbox o
 				SET status = 'IN_FLIGHT', attempt_count = attempt_count + 1,
@@ -74,7 +84,7 @@ public class AgentOutboxRepository {
 					lease_token = :token, lease_until = :leaseUntil, updated_at = :now
 				FROM ready WHERE o.id = ready.id
 				RETURNING o.id, o.payload::text, o.attempt_count, o.lease_token, o.delivery_uncertain
-				""").param("id", id).param("now", Timestamp.from(now)).param("token", UUID.randomUUID())
+				""".formatted(id == null ? "SKIP LOCKED" : "")).param("id", id).param("now", Timestamp.from(now)).param("token", UUID.randomUUID())
 				.param("leaseUntil", Timestamp.from(leaseUntil))
 				.query((rs, n) -> new Delivery(rs.getObject("id", UUID.class),
 						mapper.readValue(rs.getString("payload"), AgentTaskEnvelope.class),

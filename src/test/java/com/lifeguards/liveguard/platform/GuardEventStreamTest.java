@@ -157,6 +157,15 @@ class GuardEventStreamTest {
 		moderator.awaitEnd();
 	}
 
+	@Test
+	void successfulReauthenticationClosesOldPrivilegedStream() throws Exception {
+		Client client=Client.login(port,"moderator");Lines stream=subscribe(client,CHANNEL_A);
+		stream.await(": ping"::equals);
+		assertEquals(200,client.post("/api/auth/login","{\"username\":\"viewer\",\"password\":\"liveguard-local\"}").statusCode());
+		stream.awaitEnd();
+		assertEquals(403,client.get("/api/guard/events?channelId="+CHANNEL_A).statusCode());
+	}
+
 	private CaseEvent caseEvent(String seed) {
 		UUID id = UUID.nameUUIDFromBytes(seed.getBytes());
 		return new CaseEvent(id, id, CaseStatus.ANALYZING, HandlingRoute.CONTEXT_REVIEW, ConfirmationStatus.PENDING, null, 1);

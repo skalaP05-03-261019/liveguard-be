@@ -32,7 +32,7 @@ import com.lifeguards.liveguard.platform.port.LiveEndedEvent;
 import com.lifeguards.liveguard.platform.port.LiveQuery;
 
 /** 방송 시작·종료·현재 조회(A-1, A-2, A-19). 시드 채널 A·B의 방송은 건드리지 않도록 전용 채널을 쓴다. */
-@SpringBootTest(properties = { "LIVEGUARD_POLICY_VERSION=v3.1", "LIVEGUARD_TBD_FIXTURE_ENABLED=true" })
+@SpringBootTest
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
 @Import({ TestcontainersConfiguration.class, LiveLifecycleTest.EndedRecorder.class })

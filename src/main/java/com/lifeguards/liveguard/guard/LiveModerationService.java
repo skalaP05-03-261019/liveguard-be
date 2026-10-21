@@ -56,7 +56,14 @@ public class LiveModerationService implements LiveGuardPort {
     return new ApiException(c, m);
   }
 
-  private Map<String, Object> row(UUID c, boolean lock) {
+  Map<String, Object> row(UUID c, boolean lock) {
+    if(lock) {
+      var scope=db.sql("SELECT live_id,user_id FROM guard.cases WHERE id=?").param(c)
+        .query(new org.springframework.jdbc.core.ColumnMapRowMapper()).optional()
+        .orElseThrow(()->error(ErrorCode.NOT_FOUND,"Live case not found"));
+      platform.lockScope(id(scope.get("live_id")));
+      scopeLock(id(scope.get("live_id")),id(scope.get("user_id")));
+    }
     return db.sql(
             "SELECT"
                 + " c.*,s.task_id,s.thread_id,s.snapshot::text,s.confirmation_status,s.judgment::text,s.judgment_receipt::text,s.applied_result::text"
@@ -111,6 +118,12 @@ public class LiveModerationService implements LiveGuardPort {
           ErrorCode.TIMED_OUT, "Chat temporarily restricted", until.get().toInstant(), null);
   }
 
+  @Override public Instant timeoutUntil(UUID live,UUID user) {
+    var value=db.sql("SELECT max(expires_at) FROM guard.live_timeouts WHERE live_id=? AND user_id=? AND revoked_at IS NULL AND expires_at>?")
+      .params(live,user,now()).query((r,n)->r.getTimestamp(1)).optional();
+    return value.map(Timestamp::toInstant).orElse(null);
+  }
+
   @Override
   public UUID candidate(
       UUID live,
@@ -120,8 +133,21 @@ public class LiveModerationService implements LiveGuardPort {
       String route,
       String policy,
       List<String> tags,
-      Instant at) {
+      Instant at, String normalizedText) {
+    platform.lockScope(live);
     scopeLock(live, user);
+    if(route.equals("FLOOD_REVIEW")) {
+      var existing=db.sql("SELECT m.case_id FROM guard.flood_marks m WHERE m.live_id=? AND m.user_id=? AND m.text_hash=? AND m.last_sent_at>? AND EXISTS(SELECT 1 FROM guard.findings f WHERE f.case_id=m.case_id AND f.category='FLOOD' AND f.status='CONFIRMED') ORDER BY m.confirmed_at DESC LIMIT 1")
+        .params(live,user,textHash(normalizedText),Timestamp.from(at.minusSeconds(10))).query(UUID.class).optional();
+      if(existing.isPresent()) {
+        UUID owner=existing.get();platform.bindCase(message,owner,route);
+        db.sql("INSERT INTO guard.case_messages(case_id,message_id,owned,is_target) VALUES(?,?,true,true)").params(owner,message).update();
+        db.sql("INSERT INTO guard.candidates(message_id,case_id,filter_result,matching_tags,filter_version,related_message_ids,sent_at,snapshot_id,evidence_version) VALUES(?,?,'FLOOD',ARRAY['REPEATED_TEXT'],'norm-v1+dict-v2','{}',?,?,1)")
+          .params(message,owner,Timestamp.from(at),UUID.randomUUID()).update();
+        db.sql("UPDATE guard.flood_marks SET last_sent_at=? WHERE case_id=?").params(Timestamp.from(at),owner).update();
+        platform.visibility(owner,"HIDDEN");return owner;
+      }
+    }
     UUID c = UUID.randomUUID(), snapshot = UUID.randomUUID(), task = UUID.randomUUID();
     String thread = "case:" + c + ":analysis:1";
     db.sql(
@@ -148,6 +174,7 @@ public class LiveModerationService implements LiveGuardPort {
                 + " VALUES(?,?,true,true)")
         .params(c, message)
         .update();
+    platform.bindCase(message,c,route);
     var messages = platform.snapshot(live, message, user);
     Map<String, Object> frozen = new LinkedHashMap<>();
     frozen.put("caseId", c);
@@ -183,31 +210,33 @@ public class LiveModerationService implements LiveGuardPort {
                 + " VALUES(?,?,?,?::jsonb)")
         .params(c, task, thread, encode(frozen))
         .update();
-    if (route.equals("RULE_CONFIRMED")) {
-      confirm(
-          row(c, true),
-          tags.contains("LINK") ? List.of("PHISHING") : List.of("PROFANITY"),
-          "rule:" + message);
+    if(route.equals("FLOOD_REVIEW")) {
+      confirm(row(c,true),List.of("FLOOD"),"rule:flood:"+message);
+      db.sql("INSERT INTO guard.flood_marks(live_id,user_id,text_hash,case_id,confirmed_at,last_sent_at) VALUES(?,?,?,?,?,?)")
+        .params(live,user,textHash(normalizedText),c,now(),Timestamp.from(at)).update();
+      if(Boolean.TRUE.equals(ensureKick(c).get("required")))enqueue(row(c,false),null,null,null);
+    } else if (route.equals("RULE_CONFIRMED")) {
+      List<String> ruleCategories=new ArrayList<>();
+      if(tags.contains("CERTAIN_PROFANITY"))ruleCategories.add("PROFANITY");
+      if(tags.contains("LINK"))ruleCategories.add("PHISHING");
+      if(ruleCategories.isEmpty())throw error(ErrorCode.VALIDATION_FAILED,"Rule evidence required");
+      confirm(row(c,true),ruleCategories,"rule:"+message);
       var kick = ensureKick(c);
       if (Boolean.TRUE.equals(kick.get("required"))) enqueue(row(c, false), null, null, null);
     } else if (route.equals("CONTEXT_REVIEW") || route.equals("PII_INVESTIGATION")) {
       enqueue(row(c, false), null, null, null);
     }
-    platform.emit(
-        live,
-        "CASE_CREATED",
-        Map.of(
-            "caseId",
-            c,
-            "liveId",
-            live,
-            "handlingRoute",
-            route,
-            "confirmationStatus",
-            row(c, false).get("confirmation_status")),
-        null,
-        true);
+    platform.emit(live,"CASE_CREATED",caseEvent(c),null,true);
     return c;
+  }
+
+  private String textHash(String text) {
+    try{return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(text.getBytes(java.nio.charset.StandardCharsets.UTF_8)));}
+    catch(java.security.NoSuchAlgorithmException impossible){throw new IllegalStateException(impossible);}
+  }
+  @Override public boolean floodRecurrence(UUID live,UUID user,String text,Instant at) {
+    return db.sql("SELECT count(*) FROM guard.flood_marks m WHERE m.live_id=? AND m.user_id=? AND m.text_hash=? AND m.confirmed_at>? AND m.last_sent_at<=? AND EXISTS(SELECT 1 FROM guard.findings f WHERE f.case_id=m.case_id AND f.category='FLOOD' AND f.status='CONFIRMED')")
+      .params(live,user,textHash(text),Timestamp.from(at.minusSeconds(86400)),Timestamp.from(at.minusSeconds(10))).query(Integer.class).single()>0;
   }
 
   private void enqueue(Map<String, Object> c, UUID review, UUID decision, String kind) {
@@ -297,6 +326,13 @@ public class LiveModerationService implements LiveGuardPort {
         s.messages(), false, c, s.snapshotId(), s.evidenceVersion());
   }
 
+  public com.lifeguards.liveguard.contracts.dto.response.UserHistory userHistory(UUID id) {
+    var c=row(id,false);
+    var items=db.sql("SELECT c.id,f.category,f.confirmed_at FROM guard.cases c JOIN guard.findings f ON f.case_id=c.id WHERE c.live_id=? AND c.user_id=? AND c.id<>? AND f.source='BACKEND' AND f.status='CONFIRMED' AND f.verdict='VIOLATION' ORDER BY f.confirmed_at,c.id,f.category")
+      .params(c.get("live_id"),c.get("user_id"),id).query((r,n)->new com.lifeguards.liveguard.contracts.dto.response.UserHistory.RecentCase(r.getObject(1,UUID.class),Category.valueOf(r.getString(2)),r.getTimestamp(3).toInstant())).list();
+    return new com.lifeguards.liveguard.contracts.dto.response.UserHistory((int)items.stream().map(x->x.caseId()).distinct().count(),items);
+  }
+
   public Map<String, Object> actionStatus(UUID a) {
     var result =
         db.sql("SELECT result::text FROM guard.live_actions WHERE id=?")
@@ -335,13 +371,34 @@ public class LiveModerationService implements LiveGuardPort {
     platform.authorize(id(current.get("live_id")), user.userId(), true);
     var data = new LinkedHashMap<>(snapshot(c));
     data.put("status", current.get("status"));
+    data.put("version",current.get("version"));
+    data.put("confirmedFindings",db.sql("SELECT id,category,status,confirmed_at,revoked_at FROM guard.findings WHERE case_id=? AND source='BACKEND' ORDER BY created_at,id")
+      .param(c).query((r,n)->{
+        Map<String,Object> f=new LinkedHashMap<>();f.put("findingId",r.getObject("id"));f.put("category",r.getString("category"));
+        f.put("status",r.getString("status"));f.put("confirmedAt",r.getTimestamp("confirmed_at"));f.put("revokedAt",r.getTimestamp("revoked_at"));return f;
+      }).list());
     data.put("occurredAt", current.get("occurred_at"));
+    data.put("createdAt",current.get("created_at"));data.put("userAlias","U1");
+    data.put("reason",null);data.put("policySnapshots",List.of());
+    data.put("evidenceMessageIds",data.get("targetMessageIds"));data.put("violationCount",userHistory(c).violationCount());
+    List<Map<String,Object>> browserMessages=new ArrayList<>();
+    for(var m:(List<Map<String,Object>>)data.get("messages")){
+      var copy=new LinkedHashMap<>(m);copy.put("channelId",current.get("channel_id"));copy.put("liveId",current.get("live_id"));
+      copy.put("isMine",user.userId().equals(current.get("user_id"))&&m.get("authorAlias").equals("U1"));browserMessages.add(copy);
+    }
+    data.put("messages",browserMessages);
+
     data.put(
         "findings",
         current.get("judgment") == null
             ? List.of()
             : parse(current.get("judgment").toString()).get("messageFindings"));
     return data;
+  }
+
+  Map<String,Object> caseEvent(UUID id) {
+    var c=row(id,false);
+    return Map.of("caseId",id,"liveId",c.get("live_id"),"status",c.get("status"),"handlingRoute",c.get("handling_route"),"confirmationStatus",c.get("confirmation_status"),"version",c.get("version"));
   }
 
   public void progress(UUID c, String event, Object data) {
@@ -435,6 +492,7 @@ public class LiveModerationService implements LiveGuardPort {
     if (input.get("handlingRoute").equals("PII_INVESTIGATION") && violation && !uncertain)
       throw error(
           ErrorCode.REVIEW_NOT_APPROVED, "Verified PII facts unavailable; NEEDS_REVIEW required");
+    db.sql("UPDATE guard.live_case_state SET judgment=?::jsonb WHERE case_id=?").params(encode(input),c).update();
     Map<String, Object> receipt = new LinkedHashMap<>();
     if (input.get("handlingRoute").equals("CONTEXT_REVIEW") || uncertain) {
       UUID review = createReview(c, "CONTEXT", List.of());
@@ -485,16 +543,19 @@ public class LiveModerationService implements LiveGuardPort {
             now())
         .update();
     var current = row(c, false);
-    platform.emit(
-        id(current.get("live_id")),
-        kind + "_REVIEW_REQUIRED",
-        Map.of("reviewId", r, "caseId", c, "liveId", current.get("live_id")),
-        null,
-        true);
+    Map<String,Object> event=new LinkedHashMap<>();event.put("reviewId",r);event.put("caseId",c);event.put("liveId",current.get("live_id"));
+    if(kind.equals("CONTEXT"))event.put("aiVerdict",((List<Map<String,Object>>)parse(current.get("judgment").toString()).get("messageFindings")).getFirst().get("verdict"));
+    else {event.put("summary","서로 다른 확정 사건 3건에 대한 별도 강퇴 승인 요청");event.put("basisCaseIds",basis);}
+    platform.emit(id(current.get("live_id")),kind+"_REVIEW_REQUIRED",event,null,true);
     return r;
   }
 
   private Map<String, Object> review(UUID id, boolean lock) {
+    if(lock) {
+      UUID owner=db.sql("SELECT case_id FROM guard.reviews WHERE id=?").param(id).query(UUID.class).optional()
+        .orElseThrow(()->error(ErrorCode.NOT_FOUND,"Review not found"));
+      row(owner,true);
+    }
     return db.sql("SELECT * FROM guard.reviews WHERE id=?" + (lock ? " FOR UPDATE" : ""))
         .param(id)
         .query(new org.springframework.jdbc.core.ColumnMapRowMapper())
@@ -746,18 +807,7 @@ public class LiveModerationService implements LiveGuardPort {
     db.sql("UPDATE guard.live_case_state SET applied_result=?::jsonb WHERE case_id=?")
         .params(encode(result), cId)
         .update();
-    platform.emit(
-        id(c.get("live_id")),
-        "CASE_UPDATED",
-        Map.of(
-            "caseId",
-            cId,
-            "liveId",
-            c.get("live_id"),
-            "confirmationStatus",
-            violation ? "CONFIRMED_VIOLATION" : "CONFIRMED_NORMAL"),
-        null,
-        true);
+    platform.emit(id(c.get("live_id")),"CASE_UPDATED",caseEvent(cId),null,true);
     return parse(encode(result));
   }
 
@@ -808,13 +858,7 @@ public class LiveModerationService implements LiveGuardPort {
               .params(live, user, caseId, cat)
               .query(Integer.class)
               .single();
-      int[] durations =
-          switch (cat) {
-            case "HARASSMENT" -> new int[] {600, 86400, 86400};
-            case "PHISHING" -> new int[] {600, 600, 86400};
-            default -> new int[] {0, 600, 86400};
-          };
-      seconds = Math.max(seconds, durations[Math.min(previous, 2)]);
+      seconds=Math.max(seconds,TimeoutPolicy.seconds(cat,previous));
       storeFinding(c, cat, "VIOLATION", "BACKEND", "CONFIRMED", reference);
     }
     db.sql(
@@ -826,6 +870,7 @@ public class LiveModerationService implements LiveGuardPort {
         .params(now(), caseId)
         .update();
     platform.visibility(caseId, "HIDDEN");
+    bumpTarget(live,user);
     if (seconds > 0) {
       UUID action = UUID.randomUUID();
       db.sql(
@@ -847,6 +892,15 @@ public class LiveModerationService implements LiveGuardPort {
     }
   }
 
+  private int targetVersion(UUID live,UUID user) {
+    db.sql("INSERT INTO guard.live_user_state(live_id,user_id) VALUES(?,?) ON CONFLICT DO NOTHING").params(live,user).update();
+    return db.sql("SELECT version FROM guard.live_user_state WHERE live_id=? AND user_id=? FOR UPDATE").params(live,user).query(Integer.class).single();
+  }
+  void bumpTarget(UUID live,UUID user) {
+    targetVersion(live,user);
+    db.sql("UPDATE guard.live_user_state SET version=version+1 WHERE live_id=? AND user_id=?").params(live,user).update();
+  }
+
   private Map<String, Object> ensureKick(UUID cId) {
     var c = row(cId, false);
     scopeLock(id(c.get("live_id")), id(c.get("user_id")));
@@ -857,7 +911,7 @@ public class LiveModerationService implements LiveGuardPort {
                 "SELECT c.id FROM guard.cases c WHERE c.live_id=? AND c.user_id=? AND EXISTS(SELECT"
                     + " 1 FROM guard.findings f WHERE f.case_id=c.id AND f.source='BACKEND' AND"
                     + " f.status='CONFIRMED' AND f.verdict='VIOLATION' AND f.confirmed_at>?) AND"
-                    + " NOT EXISTS(SELECT 1 FROM guard.live_reservations r WHERE r.case_id=c.id)"
+                    + " NOT EXISTS(SELECT 1 FROM guard.live_reservations r WHERE r.case_id=c.id AND r.state IN ('RESERVED','CONSUMED'))"
                     + " ORDER BY c.judged_at,c.id LIMIT 3")
             .params(
                 c.get("live_id"),
@@ -868,7 +922,7 @@ public class LiveModerationService implements LiveGuardPort {
     if (candidates.size() < 3) return Map.of("required", false);
     UUID review = createReview(cId, "KICK", candidates);
     for (UUID basis : candidates)
-      db.sql("INSERT INTO guard.live_reservations(case_id,review_id,state) VALUES(?,?,'RESERVED')")
+      db.sql("INSERT INTO guard.live_reservations(case_id,review_id,state) VALUES(?,?,'RESERVED') ON CONFLICT(case_id) DO UPDATE SET review_id=EXCLUDED.review_id,state='RESERVED' WHERE guard.live_reservations.state='RELEASED'")
           .params(basis, review)
           .update();
     return kickFor(cId);
@@ -892,6 +946,7 @@ public class LiveModerationService implements LiveGuardPort {
     active(c);
     var d = decision(r, decision, true);
     var result = new LinkedHashMap<>(refs(c));
+    result.put("valid",false);result.put("validationRef",null);result.put("basisCaseIds",basis(rev));
     result.put("reviewId", r);
     result.put("decisionId", decision);
     if (!rev.get("kind").equals("KICK") || !d.get("decision").equals("APPROVE")) {
@@ -901,6 +956,7 @@ public class LiveModerationService implements LiveGuardPort {
     platform.authorize(id(c.get("live_id")), id(d.get("operatorId")), true);
     if (!validBasis(r, c)) {
       result.put("status", "INVALID");
+      db.sql("UPDATE guard.reviews SET status='INVALIDATED',version=version+1 WHERE id=?").param(r).update();
       return parse(encode(result));
     }
     var old =
@@ -909,7 +965,13 @@ public class LiveModerationService implements LiveGuardPort {
             .query(String.class)
             .optional();
     Map<String, Object> command;
-    if (old.isPresent()) command = parse(old.get());
+    if (old.isPresent()) {
+      command=parse(old.get());
+      if(((Number)command.get("expectedTargetVersion")).intValue()!=targetVersion(id(c.get("live_id")),id(c.get("user_id")))) {
+        db.sql("UPDATE guard.reviews SET status='INVALIDATED',version=version+1 WHERE id=?").param(r).update();
+        result.put("status","INVALID");return parse(encode(result));
+      }
+    }
     else {
       UUID action = UUID.randomUUID();
       command = new LinkedHashMap<>();
@@ -920,7 +982,7 @@ public class LiveModerationService implements LiveGuardPort {
       command.put("type", "KICK");
       command.put("targetId", c.get("user_id"));
       command.put("expectedEvidenceVersion", c.get("evidence_version"));
-      command.put("expectedTargetVersion", 1);
+      command.put("expectedTargetVersion", targetVersion(id(c.get("live_id")),id(c.get("user_id"))));
       command.put("policyVersion", c.get("policy_version"));
       command.put("idempotencyKey", action.toString());
       command.put("decisionId", decision);
@@ -948,7 +1010,7 @@ public class LiveModerationService implements LiveGuardPort {
       int valid =
           db.sql(
                   "SELECT count(*) FROM guard.live_reservations res JOIN guard.cases c ON"
-                      + " c.id=res.case_id WHERE res.review_id=? AND res.case_id=? AND c.live_id=?"
+                      + " c.id=res.case_id WHERE res.state='CONSUMED' AND res.review_id=? AND res.case_id=? AND c.live_id=?"
                       + " AND c.user_id=? AND EXISTS(SELECT 1 FROM guard.findings f WHERE"
                       + " f.case_id=c.id AND f.status='CONFIRMED' AND f.source='BACKEND' AND"
                       + " f.verdict='VIOLATION' AND f.confirmed_at>?)")
@@ -966,6 +1028,9 @@ public class LiveModerationService implements LiveGuardPort {
   }
 
   public Map<String, Object> execute(UUID a, Map<String, Object> command) {
+    UUID owner=db.sql("SELECT case_id FROM guard.live_actions WHERE id=?").param(a).query(UUID.class).optional()
+      .orElseThrow(()->error(ErrorCode.NOT_FOUND,"Action not found"));
+    row(owner,true);
     var stored =
         db.sql("SELECT * FROM guard.live_actions WHERE id=? FOR UPDATE")
             .param(a)
@@ -978,12 +1043,16 @@ public class LiveModerationService implements LiveGuardPort {
     var c = row(id(stored.get("case_id")), true);
     active(c);
     UUID r = id(command.get("reviewId")), d = id(command.get("decisionId"));
-    if (!decision(r, d, true).get("decision").equals("APPROVE") || !validBasis(r, c))
+    var approvedDecision=decision(r,d,true);
+    platform.authorize(id(c.get("live_id")),id(approvedDecision.get("operatorId")),true);
+    if (!approvedDecision.get("decision").equals("APPROVE") || !validBasis(r, c))
       throw error(ErrorCode.REVIEW_NOT_APPROVED, "Kick no longer approved");
     scopeLock(id(c.get("live_id")), id(c.get("user_id")));
+    if(((Number)command.get("expectedTargetVersion")).intValue()!=targetVersion(id(c.get("live_id")),id(c.get("user_id"))))
+      throw error(ErrorCode.STALE_VERSION,"Target moderation state changed");
     db.sql(
             "INSERT INTO guard.live_kicks(live_id,user_id,review_id,action_id) VALUES(?,?,?,?) ON"
-                + " CONFLICT(live_id,user_id) DO NOTHING")
+                + " CONFLICT(review_id) DO NOTHING")
         .params(c.get("live_id"), c.get("user_id"), r, a)
         .update();
     var result = new LinkedHashMap<String, Object>();

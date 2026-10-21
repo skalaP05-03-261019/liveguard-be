@@ -972,6 +972,7 @@ paths:
       x-owner: B2
       security:
         - serviceToken: []
+      requestBody: {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/KickRevalidationRequest"}}}}
       responses:
         '200':
           description: 재검증 결과
@@ -1101,6 +1102,10 @@ paths:
           $ref: '#/components/responses/Error'
         '404':
           $ref: '#/components/responses/Error'
+
+  /internal/reviews/{reviewId}/decisions/{decisionId}: {"get": {"tags": ["Internal"], "operationId": "internalReadStoredDecision", "security": [{"serviceToken": []}], "parameters": [{"name": "reviewId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/Uuid"}}, {"name": "decisionId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/Uuid"}}], "responses": {"200": {"description": "Success", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/InternalDecisionResponse"}}}}, "403": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}}}}
+  /internal/reviews/{reviewId}/apply: {"post": {"tags": ["Internal"], "operationId": "internalApplyStoredContextDecision", "description": "Idempotent by stored final review/decision. Validates case/live/snapshot/evidence/policy/task/thread and actor. DEFER cannot apply.", "security": [{"serviceToken": []}], "parameters": [{"name": "reviewId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/Uuid"}}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/InternalApplyRequest"}}}}, "responses": {"200": {"description": "Success", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/InternalApplyResponse"}}}}, "403": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}, "422": {"$ref": "#/components/responses/Error"}}}}
+  /api/findings/{findingId}/revoke: {"post": {"tags": ["Reviews"], "operationId": "revokeConfirmedFinding", "description": "담당 MODERATOR의 오판 취소. 기록·소진 이력은 보존하고 자기 hold 원인과 남은 유형별 TIMEOUT 및 강퇴 기준을 재검증한다. 다른 hold 원인이 있으면 공개하지 않는다.", "parameters": [{"name": "findingId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/Uuid"}}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RevokeFindingRequest"}}}}, "responses": {"200": {"description": "Success", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RevokeFindingResponse"}}}}, "403": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}}}}
 
 components:
   securitySchemes:
@@ -1609,13 +1614,13 @@ components:
           $ref: '#/components/schemas/Timestamp'
     Review:
       oneOf:
-        - $ref: '#/components/schemas/ContextReview'
-        - $ref: '#/components/schemas/KickReview'
+        - $ref: '#/components/schemas/ContextReviewCard'
+        - $ref: '#/components/schemas/KickReviewCard'
       discriminator:
         propertyName: kind
         mapping:
-          CONTEXT: '#/components/schemas/ContextReview'
-          KICK: '#/components/schemas/KickReview'
+          CONTEXT: '#/components/schemas/ContextReviewCard'
+          KICK: '#/components/schemas/KickReviewCard'
     ReviewListResponse:
       type: object
       required: [data, traceId]
@@ -1674,6 +1679,10 @@ components:
               type: array
               items:
                 $ref: '#/components/schemas/PolicySnapshot'
+            confirmedFindings:
+              type: array
+              items:
+                $ref: '#/components/schemas/ConfirmedFinding'
             violationCount:
               type: integer
               description: 판정 시점의 최근 24시간 누적 위반 사건 수
@@ -2630,7 +2639,7 @@ components:
       required: [data, traceId]
       properties:
         data:
-          $ref: '#/components/schemas/KickRevalidation'
+          $ref: '#/components/schemas/IssuedKickRevalidation'
         traceId:
           type: string
           format: uuid
@@ -2666,3 +2675,18 @@ components:
           enum: [TOOL_START, TOOL_END, TASK_FAILED]
         payload:
           type: object
+
+    InternalApplyRequest: {"type": "object", "additionalProperties": false, "required": ["caseId", "liveId", "snapshotId", "evidenceVersion", "policyVersion", "reviewId", "decisionId", "taskId", "threadId"], "properties": {"caseId": {"$ref": "#/components/schemas/Uuid"}, "liveId": {"$ref": "#/components/schemas/Uuid"}, "snapshotId": {"$ref": "#/components/schemas/Uuid"}, "evidenceVersion": {"type": "integer", "minimum": 1}, "policyVersion": {"type": "string"}, "reviewId": {"$ref": "#/components/schemas/Uuid"}, "decisionId": {"$ref": "#/components/schemas/Uuid"}, "taskId": {"$ref": "#/components/schemas/Uuid"}, "threadId": {"type": "string"}}}
+    InternalApplyResult: {"type": "object", "required": ["caseId", "liveId", "snapshotId", "evidenceVersion", "policyVersion", "status", "observation", "kickReview"], "properties": {"caseId": {"$ref": "#/components/schemas/Uuid"}, "liveId": {"$ref": "#/components/schemas/Uuid"}, "snapshotId": {"$ref": "#/components/schemas/Uuid"}, "evidenceVersion": {"type": "integer", "minimum": 1}, "policyVersion": {"type": "string"}, "status": {"enum": ["APPLIED", "NO_ACTION"]}, "observation": {"const": "CONFIRMED"}, "kickReview": {"type": "object", "required": ["required"], "properties": {"required": {"type": "boolean"}, "reviewId": {"$ref": "#/components/schemas/Uuid"}, "basisCaseIds": {"type": "array", "items": {"$ref": "#/components/schemas/Uuid"}}}}}}
+    InternalStoredDecision: {"allOf": [{"$ref": "#/components/schemas/Decision"}, {"type": "object", "required": ["caseId", "liveId", "snapshotId", "evidenceVersion", "policyVersion", "reviewId", "decisionId", "operatorId", "threadId", "status", "decision", "categories"], "properties": {"caseId": {"$ref": "#/components/schemas/Uuid"}, "liveId": {"$ref": "#/components/schemas/Uuid"}, "snapshotId": {"$ref": "#/components/schemas/Uuid"}, "evidenceVersion": {"type": "integer", "minimum": 1}, "policyVersion": {"type": "string"}, "reviewId": {"$ref": "#/components/schemas/Uuid"}, "decisionId": {"$ref": "#/components/schemas/Uuid"}, "operatorId": {"$ref": "#/components/schemas/Uuid"}, "threadId": {"type": "string"}, "status": {"const": "DECIDED"}, "decision": {"type": "string"}, "categories": {"type": "array", "items": {"$ref": "#/components/schemas/Category"}}}}]}
+    KickRevalidationRequest: {"type": "object", "additionalProperties": false, "required": ["decisionId"], "properties": {"decisionId": {"$ref": "#/components/schemas/Uuid"}}}
+    RevokeFindingRequest: {"type": "object", "additionalProperties": false, "required": ["clientRequestId", "expectedCaseVersion", "reason"], "properties": {"clientRequestId": {"$ref": "#/components/schemas/Uuid"}, "expectedCaseVersion": {"type": "integer", "minimum": 1}, "reason": {"type": "string", "minLength": 1, "maxLength": 500}}}
+    RevokeFindingResult: {"type": "object", "required": ["findingId", "caseId", "liveId", "revoked", "caseVersion", "confirmationStatus"], "properties": {"findingId": {"$ref": "#/components/schemas/Uuid"}, "caseId": {"$ref": "#/components/schemas/Uuid"}, "liveId": {"$ref": "#/components/schemas/Uuid"}, "revoked": {"const": true}, "caseVersion": {"type": "integer"}, "confirmationStatus": {"$ref": "#/components/schemas/ConfirmationStatus"}}}
+    ConfirmedFinding: {"type": "object", "required": ["findingId", "category", "status"], "properties": {"findingId": {"$ref": "#/components/schemas/Uuid"}, "category": {"$ref": "#/components/schemas/Category"}, "status": {"enum": ["CONFIRMED", "REVOKED"]}, "confirmedAt": {"$ref": "#/components/schemas/Timestamp"}, "revokedAt": {"type": ["string", "null"], "format": "date-time"}}}
+    InternalDecisionResponse: {"type": "object", "required": ["data", "traceId"], "properties": {"data": {"$ref": "#/components/schemas/InternalStoredDecision"}, "traceId": {"$ref": "#/components/schemas/Uuid"}}}
+    InternalApplyResponse: {"type": "object", "required": ["data", "traceId"], "properties": {"data": {"$ref": "#/components/schemas/InternalApplyResult"}, "traceId": {"$ref": "#/components/schemas/Uuid"}}}
+    RevokeFindingResponse: {"type": "object", "required": ["data", "traceId"], "properties": {"data": {"$ref": "#/components/schemas/RevokeFindingResult"}, "traceId": {"$ref": "#/components/schemas/Uuid"}}}
+
+    ContextReviewCard: {"allOf": [{"$ref": "#/components/schemas/ContextReview"}, {"type": "object", "properties": {"findings": {"type": "array", "items": {"$ref": "#/components/schemas/MessageFinding"}}, "messages": {"type": "array", "items": {"$ref": "#/components/schemas/MaskedMessage"}}, "targetMessageIds": {"type": "array", "items": {"$ref": "#/components/schemas/Uuid"}}, "summary": {"type": "string"}}}]}
+    KickReviewCard: {"allOf": [{"$ref": "#/components/schemas/KickReview"}, {"type": "object", "properties": {"findings": {"type": "array", "items": {"$ref": "#/components/schemas/MessageFinding"}}, "messages": {"type": "array", "items": {"$ref": "#/components/schemas/MaskedMessage"}}, "targetMessageIds": {"type": "array", "items": {"$ref": "#/components/schemas/Uuid"}}, "caseId": {"$ref": "#/components/schemas/Uuid"}, "evidenceVersion": {"type": "integer"}, "aiVerdict": {"$ref": "#/components/schemas/Verdict"}}}]}
+    IssuedKickRevalidation: {"allOf": [{"$ref": "#/components/schemas/KickRevalidation"}, {"type": "object", "properties": {"caseId": {"$ref": "#/components/schemas/Uuid"}, "liveId": {"$ref": "#/components/schemas/Uuid"}, "snapshotId": {"$ref": "#/components/schemas/Uuid"}, "evidenceVersion": {"type": "integer", "minimum": 1}, "policyVersion": {"type": "string"}, "status": {"type": "string", "enum": ["APPROVED", "REJECTED", "INVALID"]}, "actionCommand": {"$ref": "#/components/schemas/BusinessActionCommand"}}}]}

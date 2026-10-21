@@ -128,6 +128,29 @@ class AgentOutboxTest {
 		CaseFixtures.deleteCases(jdbc);
 	}
 
+  @Test
+  void addressedNotificationWaitsForPublicationRowLockInsteadOfAcknowledgingUndeliveredWork() throws Exception {
+    UUID id=enqueue(task);
+    var locked=new java.util.concurrent.CountDownLatch(1);
+    var release=new java.util.concurrent.CountDownLatch(1);
+    try(var pool=Executors.newFixedThreadPool(2)) {
+      var holder=pool.submit(()->transactions.executeWithoutResult(tx->{
+        jdbc.queryForObject("SELECT id FROM guard.agent_task_outbox WHERE id=? FOR UPDATE",UUID.class,id);
+        locked.countDown();
+        try {if(!release.await(5,java.util.concurrent.TimeUnit.SECONDS))throw new AssertionError("Lock release timed out");}
+        catch(InterruptedException e){Thread.currentThread().interrupt();throw new AssertionError(e);}
+      }));
+      assertTrue(locked.await(5,java.util.concurrent.TimeUnit.SECONDS));
+      var delivered=pool.submit(()->worker.deliver(id));
+      try {
+        assertThrows(java.util.concurrent.TimeoutException.class,()->delivered.get(150,java.util.concurrent.TimeUnit.MILLISECONDS));
+      } finally {time.advance(Duration.ofSeconds(60));release.countDown();holder.get(5,java.util.concurrent.TimeUnit.SECONDS);}
+      assertTrue(delivered.get(5,java.util.concurrent.TimeUnit.SECONDS));
+      assertEquals("ACCEPTED",status(task));
+      assertEquals(1,methods.size());
+    }
+  }
+
 	@Test
 	void enqueueRequiresABusinessTransactionAndRollsBackWithIt() {
 		assertThrows(IllegalTransactionStateException.class, () -> outbox.enqueue(task));

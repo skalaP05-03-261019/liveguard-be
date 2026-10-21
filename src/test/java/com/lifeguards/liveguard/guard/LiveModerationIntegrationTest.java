@@ -26,6 +26,7 @@ class LiveModerationIntegrationTest {
   @Autowired org.springframework.security.crypto.password.PasswordEncoder passwordEncoder;
   @Autowired LiveService lives;
   @Autowired LiveModerationService guard;
+  @Autowired LiveFindingRecovery recovery;
   @Autowired JdbcTemplate db;
   UUID channel, user, operator, other;
   AuthenticatedUser viewer, moderator, second;
@@ -132,17 +133,97 @@ class LiveModerationIntegrationTest {
   }
 
   @Test
-  void integrationModeCannotBypassLiveRestrictionsThroughDeprecatedChannelRoutes() throws Exception {
-    db.update("UPDATE platform.users SET password_hash=? WHERE id=?", passwordEncoder.encode("liveguard-local"), user);
-    var session = com.lifeguards.liveguard.support.LoginSupport.login(mvc, user.toString());
-    var base = "/api/channels/" + channel;
+  void legacyChannelSendUsesSameLiveAndSanctions() throws Exception {
+    var live=lives.start(channel,moderator);
+    db.update("UPDATE platform.users SET password_hash=? WHERE id=?",passwordEncoder.encode("liveguard-local"),user);
+    var session=com.lifeguards.liveguard.support.LoginSupport.login(mvc,user.toString());
+    String path="/api/channels/"+channel+"/messages";
     mvc.perform(com.lifeguards.liveguard.support.LoginSupport.withXsrf(mvc,
-        org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post(base + "/messages").session(session))
-        .contentType("application/json").content("{\"clientMessageId\":\""+UUID.randomUUID()+"\",\"text\":\"bypass\"}"))
-        .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isConflict());
-    for (String route : List.of("/messages", "/events"))
-      mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get(base+route).session(session))
-          .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isConflict());
+      org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post(path).session(session))
+      .contentType("application/json").content("{\"clientMessageId\":\""+UUID.randomUUID()+"\",\"text\":\"hello\"}"))
+      .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isCreated())
+      .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.liveId").value(live.liveId().toString()));
+    UUID c=candidate(live.liveId(),"너 꺼져");UUID r=proposal(c,"VIOLATION");apply(c,r,decide(r,"CONFIRM_VIOLATION",1));
+    mvc.perform(com.lifeguards.liveguard.support.LoginSupport.withXsrf(mvc,
+      org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post(path).session(session))
+      .contentType("application/json").content("{\"clientMessageId\":\""+UUID.randomUUID()+"\",\"text\":\"bypass\"}"))
+      .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isForbidden())
+      .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.error.code").value("TIMED_OUT"));
+  }
+
+  UUID confirmedFinding(UUID c) {
+    return db.queryForObject("SELECT id FROM guard.findings WHERE case_id=? AND source='BACKEND' AND status='CONFIRMED' ORDER BY created_at LIMIT 1",UUID.class,c);
+  }
+  com.lifeguards.liveguard.contracts.dto.request.RevokeFindingRequest revokeRequest(UUID c) {
+    return new com.lifeguards.liveguard.contracts.dto.request.RevokeFindingRequest(UUID.randomUUID(),db.queryForObject("SELECT version FROM guard.cases WHERE id=?",Integer.class,c),"운영자가 문맥을 다시 확인하여 오판을 취소합니다.");
+  }
+  @Test void cancellationRestoresOnlyOwnHoldAndRecomputesLaterTimeoutHistory() {
+    UUID live=lives.start(channel,moderator).liveId();
+    UUID first=candidate(live,"너 꺼져 첫번째"),secondCase=candidate(live,"너 꺼져 두번째");
+    UUID r1=proposal(first,"VIOLATION"),r2=proposal(secondCase,"VIOLATION");
+    apply(first,r1,decide(r1,"CONFIRM_VIOLATION",1));apply(secondCase,r2,decide(r2,"CONFIRM_VIOLATION",1));
+    UUID f1=confirmedFinding(first);var request=revokeRequest(first);
+    assertEquals(ErrorCode.FORBIDDEN,assertThrows(ApiException.class,()->recovery.revoke(f1,request,viewer)).code());
+    var result=recovery.revoke(f1,request,moderator);assertEquals(result,recovery.revoke(f1,request,moderator));
+    assertEquals("CANCELLED",result.get("confirmationStatus"));
+    assertEquals("PUBLIC",db.queryForObject("SELECT visibility FROM platform.messages WHERE case_id=?",String.class,first));
+    assertEquals(600,db.queryForObject("SELECT EXTRACT(EPOCH FROM (t.expires_at-a.created_at))::integer FROM guard.live_timeouts t JOIN guard.live_actions a ON a.id=t.action_id WHERE t.case_id=?",Integer.class,secondCase));
+    UUID message=db.queryForObject("SELECT id FROM platform.messages WHERE case_id=?",UUID.class,secondCase);
+    db.update("INSERT INTO platform.message_hold_reasons(message_id,case_id,reason,created_at) VALUES(?,?,'OTHER',current_timestamp)",message,UUID.randomUUID());
+    recovery.revoke(confirmedFinding(secondCase),revokeRequest(secondCase),moderator);
+    assertEquals("HIDDEN",db.queryForObject("SELECT visibility FROM platform.messages WHERE id=?",String.class,message));
+    assertDoesNotThrow(()->lives.send(live,viewer,new SendMessageRequest(UUID.randomUUID(),"restriction restored")));
+  }
+  @Test void floodBurstCountsOneCaseAndRecurrenceIsLiveScoped() {
+    UUID live=lives.start(channel,moderator).liveId();
+    for(int i=0;i<4;i++)lives.send(live,viewer,new SendMessageRequest(UUID.randomUUID(),"같은 응원"));
+    assertEquals(1,db.queryForObject("SELECT count(*) FROM guard.cases WHERE live_id=?",Integer.class,live));
+    assertEquals(2,db.queryForObject("SELECT count(*) FROM platform.messages WHERE live_id=? AND visibility='PUBLIC'",Integer.class,live));
+    assertEquals(2,db.queryForObject("SELECT count(*) FROM platform.messages WHERE live_id=? AND visibility='HIDDEN'",Integer.class,live));
+    assertEquals(0,db.queryForObject("SELECT count(*) FROM guard.live_timeouts WHERE live_id=?",Integer.class,live));
+    db.update("UPDATE guard.flood_marks SET last_sent_at=current_timestamp-interval '11 seconds' WHERE live_id=?",live);
+    db.update("UPDATE platform.messages SET sent_at=current_timestamp-interval '11 seconds' WHERE live_id=?",live);
+    var recurring=lives.send(live,viewer,new SendMessageRequest(UUID.randomUUID(),"같은 응원"));
+    assertEquals("HIDDEN",recurring.get("visibility"));
+    assertEquals(2,db.queryForObject("SELECT count(*) FROM guard.cases WHERE live_id=?",Integer.class,live));
+    assertEquals(ErrorCode.TIMED_OUT,assertThrows(ApiException.class,()->lives.send(live,viewer,new SendMessageRequest(UUID.randomUUID(),"new"))).code());
+    lives.end(live,moderator);UUID next=lives.start(channel,moderator).liveId();
+    assertEquals("PUBLIC",lives.send(next,viewer,new SendMessageRequest(UUID.randomUUID(),"같은 응원")).get("visibility"));
+  }
+  @Test void independentKickReasonsSurviveCancellationOfAnotherReview() {
+    UUID live=lives.start(channel,moderator).liveId();List<UUID> cs=new ArrayList<>(),rs=new ArrayList<>();
+    for(int i=0;i<6;i++){UUID c=candidate(live,"너 꺼져 별도사건 "+i);cs.add(c);rs.add(proposal(c,"VIOLATION"));}
+    List<UUID> kicks=new ArrayList<>();
+    for(int i=0;i<6;i++){var result=apply(cs.get(i),rs.get(i),decide(rs.get(i),"CONFIRM_VIOLATION",1));var k=(Map<String,Object>)result.get("kickReview");if(Boolean.TRUE.equals(k.get("required")))kicks.add(UUID.fromString(k.get("reviewId").toString()));}
+    assertEquals(2,kicks.size());
+    for(UUID review:kicks){var d=decide(review,"APPROVE",1);var command=(Map<String,Object>)guard.revalidate(review,UUID.fromString(d.get("decisionId").toString())).get("actionCommand");guard.execute(UUID.fromString(command.get("actionId").toString()),command);}
+    assertEquals(2,db.queryForObject("SELECT count(*) FROM guard.live_kicks WHERE live_id=?",Integer.class,live));
+    recovery.revoke(confirmedFinding(cs.getFirst()),revokeRequest(cs.getFirst()),moderator);
+    assertEquals(1,db.queryForObject("SELECT count(*) FROM guard.live_kicks WHERE live_id=?",Integer.class,live));
+    assertEquals(ErrorCode.KICKED,assertThrows(ApiException.class,()->lives.history(live,viewer)).code());
+  }
+  @Test void releasedPendingReservationsCanBeSafelyReservedByAnotherReview() {
+    UUID live=lives.start(channel,moderator).liveId();List<UUID> cs=new ArrayList<>(),rs=new ArrayList<>();
+    for(int i=0;i<4;i++){UUID c=candidate(live,"너 꺼져 예약 "+i);cs.add(c);rs.add(proposal(c,"VIOLATION"));}
+    for(int i=0;i<3;i++)apply(cs.get(i),rs.get(i),decide(rs.get(i),"CONFIRM_VIOLATION",1));
+    recovery.revoke(confirmedFinding(cs.getFirst()),revokeRequest(cs.getFirst()),moderator);
+    var result=apply(cs.get(3),rs.get(3),decide(rs.get(3),"CONFIRM_VIOLATION",1));
+    assertEquals(true,((Map<String,Object>)result.get("kickReview")).get("required"));
+    assertEquals(3,db.queryForObject("SELECT count(*) FROM guard.live_reservations WHERE state='RESERVED'",Integer.class));
+  }
+
+  @Test void streamerLifecycleDoesNotGrantPrivateModerationAccessAndHistoryPaginates() {
+    UUID live=lives.start(channel,moderator).liveId();
+    db.update("UPDATE platform.channel_members SET member_role='STREAMER' WHERE channel_id=? AND user_id=?",channel,other);
+    UUID c=candidate(live,"너 꺼져");
+    assertEquals(ErrorCode.FORBIDDEN,assertThrows(ApiException.class,()->guard.reviews(live,second)).code());
+    assertEquals(0,((List<?>)lives.history(live,second).get("items")).size());
+    for(int i=0;i<12;i++)lives.send(live,viewer,new SendMessageRequest(UUID.randomUUID(),"인사 "+i));
+    var first=lives.history(live,second,null,5);
+    assertEquals(5,((List<?>)first.get("items")).size());assertNotNull(first.get("nextCursor"));
+    var next=lives.history(live,second,first.get("nextCursor").toString(),5);
+    assertEquals(5,((List<?>)next.get("items")).size());
+    assertDoesNotThrow(()->lives.end(live,second));
   }
 
   @Test
@@ -271,6 +352,28 @@ class LiveModerationIntegrationTest {
   }
 
   @Test
+  void issuedKickCommandRejectsRevokedOperatorAuthority() {
+    UUID live=lives.start(channel,moderator).liveId();List<UUID> cs=new ArrayList<>(),rs=new ArrayList<>();
+    for(int i=0;i<3;i++){UUID c=candidate(live,"너 꺼져 권한 확인 "+i);cs.add(c);rs.add(proposal(c,"VIOLATION"));}
+    Map<String,Object> result=Map.of();for(int i=0;i<3;i++)result=apply(cs.get(i),rs.get(i),decide(rs.get(i),"CONFIRM_VIOLATION",1));
+    UUID r=UUID.fromString(((Map<?,?>)result.get("kickReview")).get("reviewId").toString());
+    UUID d=UUID.fromString(decide(r,"APPROVE",1).get("decisionId").toString());
+    var command=(Map<String,Object>)guard.revalidate(r,d).get("actionCommand");
+    db.update("UPDATE platform.channel_members SET member_role='VIEWER' WHERE channel_id=? AND user_id=?",channel,operator);
+    assertEquals(ErrorCode.FORBIDDEN,assertThrows(ApiException.class,()->guard.execute(UUID.fromString(command.get("actionId").toString()),command)).code());
+    assertEquals(0,db.queryForObject("SELECT count(*) FROM guard.live_kicks WHERE live_id=?",Integer.class,live));
+  }
+
+  @Test
+  void legacyReplaySurvivesEndAndHistoryKeepsPriorBroadcast() {
+    UUID live=lives.start(channel,moderator).liveId();UUID request=UUID.randomUUID();
+    var first=lives.sendToChannel(channel,viewer,new SendMessageRequest(request,"legacy replay"));
+    lives.end(live,moderator);
+    assertEquals(first,lives.sendToChannel(channel,viewer,new SendMessageRequest(request,"legacy replay")));
+    assertEquals(ErrorCode.LIVE_ENDED,assertThrows(ApiException.class,()->lives.sendToChannel(channel,viewer,new SendMessageRequest(UUID.randomUUID(),"fresh"))).code());
+  }
+
+  @Test
   void threeConfirmedCasesRequireSeparateKickApprovalAndIdempotentExecution() {
     UUID live = lives.start(channel, moderator).liveId();
     List<UUID> cases = new ArrayList<>();
@@ -304,6 +407,10 @@ class LiveModerationIntegrationTest {
         ErrorCode.KICKED,
         assertThrows(ApiException.class, () -> lives.history(live, viewer)).code());
     assertEquals(1, db.queryForObject("SELECT count(*) FROM guard.live_kicks", Integer.class));
+    recovery.revoke(confirmedFinding(cases.getFirst()),revokeRequest(cases.getFirst()),moderator);
+    assertEquals(0,db.queryForObject("SELECT count(*) FROM guard.live_kicks",Integer.class));
+    assertEquals(3,db.queryForObject("SELECT count(*) FROM guard.live_reservations WHERE state='CONSUMED'",Integer.class));
+    assertDoesNotThrow(()->lives.history(live,viewer));
     lives.end(live, moderator);
     UUID next = lives.start(channel, moderator).liveId();
     assertDoesNotThrow(

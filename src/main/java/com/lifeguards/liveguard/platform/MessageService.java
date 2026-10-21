@@ -55,10 +55,12 @@ class MessageService {
 	private final ApplicationEventPublisher events;
 	private final PolicyProperties policy;
 	private final Clock clock;
+	private final LiveService moderation;
+	private final tools.jackson.databind.json.JsonMapper mapper;
 
 	MessageService(MessageRepository messages, JdbcLiveQuery lives, JdbcChannelMembershipQuery memberships,
 			MessageFilter filter, CandidateSink candidateSink, KickStatusQuery kickStatus, ApplicationEventPublisher events,
-			PolicyProperties policy, Clock clock) {
+            PolicyProperties policy, Clock clock, LiveService moderation, tools.jackson.databind.json.JsonMapper mapper) {
 		this.messages = messages;
 		this.lives = lives;
 		this.memberships = memberships;
@@ -68,12 +70,15 @@ class MessageService {
 		this.events = events;
 		this.policy = policy;
 		this.clock = clock;
+		this.moderation=moderation;
+		this.mapper=mapper;
 	}
 
 	/** 이 방송으로 전송한다. 없는 방송은 404. */
 	@Transactional
 	Message sendToLive(UUID liveId, AuthenticatedUser author, SendMessageRequest request) {
 		requireStorable(request.text());
+		if(moderation.integrationEnabled()) return mapper.convertValue(moderation.send(liveId,author,request),Message.class);
 		Live live = lives.find(liveId).orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND, "Live not found"));
 		return send(live.channelId(), liveId, author, request);
 	}
@@ -82,6 +87,9 @@ class MessageService {
 	@Transactional
 	Message sendToChannel(UUID channelId, AuthenticatedUser author, SendMessageRequest request) {
 		requireStorable(request.text());
+		if(moderation.integrationEnabled()) {
+			return mapper.convertValue(moderation.sendToChannel(channelId,author,request),Message.class);
+		}
 		return send(channelId, null, author, request);
 	}
 
@@ -168,6 +176,7 @@ class MessageService {
 	/** 이 방송의 이력. 없는 방송은 404. */
 	@Transactional(readOnly = true)
 	MessagePage historyOfLive(UUID liveId, AuthenticatedUser viewer, String cursor, int limit) {
+		if(moderation.integrationEnabled()) return mapper.convertValue(moderation.history(liveId,viewer,cursor,limit),MessagePage.class);
 		Live live = lives.find(liveId).orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND, "Live not found"));
 		return history(live.channelId(), liveId, viewer, cursor, limit);
 	}

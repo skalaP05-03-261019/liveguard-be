@@ -72,7 +72,7 @@ public class BusinessToolController {
 		if (days != null && days < 1) {
 			throw new IllegalArgumentException("days must be positive when provided");
 		}
-		return new ApiResponse<>(queries.userHistory(caseId, days), TraceIdFilter.current());
+		return new ApiResponse<>(live.owns(caseId)?live.userHistory(caseId):queries.userHistory(caseId, days), TraceIdFilter.current());
 	}
 
 	@GetMapping("/cases/{caseId}/history")
