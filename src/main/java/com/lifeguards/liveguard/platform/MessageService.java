@@ -109,7 +109,7 @@ class MessageService {
 		UUID caseId;
 		try {
 			caseId = candidateSink.open(new CandidateRequest(channelId, author.userId(), stored.id(),
-					decision.result(), decision.matchingTags(), stored.sentAt(), related));
+					decision.result(), decision.matchingTags(), MessageFilter.version(), stored.sentAt(), related));
 		} catch (ApiException ex) {
 			throw ex;
 		} catch (RuntimeException ex) {

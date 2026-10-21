@@ -100,6 +100,8 @@ class CandidateLinkingTest {
 		assertEquals(FilterResult.REVIEW, review.filterResult());
 		assertEquals(List.of(MessageFilter.ATTACK_TERM), review.matchingTags());
 		assertEquals(List.of(), review.relatedMessageIds());
+		assertEquals(MessageFilter.version(), review.filterVersion());
+		assertEquals("norm-v1+dict-v2", review.filterVersion());
 		assertEquals(reviewCase, caseIdOf("무대 미쳤다ㅋㅋ"));
 		assertEquals(review.messageId(), idOf("무대 미쳤다ㅋㅋ"));
 		assertEquals(sentAtOf("무대 미쳤다ㅋㅋ"), review.sentAt());
