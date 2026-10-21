@@ -1,6 +1,7 @@
 package com.lifeguards.liveguard.platform;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -154,6 +155,58 @@ class ChannelEventStreamTest {
 		assertTrue(moderatorLines.await(line -> line.startsWith("data:")).contains("HELD-TEXT"));
 		// viewer2가 처음 받는 CHAT은 PUBLIC 메시지여야 한다 (HELD 원문을 받지 않음)
 		assertTrue(viewer2Lines.await(line -> line.startsWith("data:")).contains("public text"));
+	}
+
+	/** 규칙 확정으로 처음부터 HIDDEN인 메시지는 HELD와 같은 범위(작성자·담당 운영자)로만 나간다. */
+	@Test
+	void hiddenOnArrivalReachesOnlyAuthorAndModeratorOnPublishHistoryAndReconnect() throws Exception {
+		Client author = Client.login(port, "viewer");
+		Client viewer2 = Client.login(port, "viewer2");
+		Client moderator = Client.login(port, "moderator");
+		Lines authorLines = subscribe(author, CHANNEL_A);
+		Lines viewer2Lines = subscribe(viewer2, CHANNEL_A);
+		Lines moderatorLines = subscribe(moderator, CHANNEL_A);
+		for (Lines lines : List.of(authorLines, viewer2Lines, moderatorLines)) {
+			lines.await(":connected"::equals);
+		}
+
+		String profanity = "씨발 진짜";
+		String link = "여기 https://evil.test/login 접속";
+		for (String hidden : List.of(profanity, link)) {
+			HttpResponse<String> sent = author.sendMessage(CHANNEL_A, hidden);
+			assertEquals(201, sent.statusCode());
+			assertTrue(sent.body().contains("\"visibility\":\"HIDDEN\""));
+		}
+		assertEquals(201, author.sendMessage(CHANNEL_A, "public after").statusCode());
+
+		// 최초 발행: 작성자·운영자는 HIDDEN 원문을 받고, 다른 시청자의 첫 CHAT은 공개 메시지다
+		for (Lines lines : List.of(authorLines, moderatorLines)) {
+			for (String hidden : List.of(profanity, link)) {
+				String data = lines.await(line -> line.startsWith("data:"));
+				assertTrue(data.contains(hidden) && data.contains("\"visibility\":\"HIDDEN\""), data);
+			}
+		}
+		String viewer2First = viewer2Lines.await(line -> line.startsWith("data:"));
+		assertTrue(viewer2First.contains("public after"), viewer2First);
+		assertFalse(viewer2First.contains("씨발") || viewer2First.contains("evil.test"));
+
+		// 이력: 다른 시청자 응답에는 원문이 없고 작성자·운영자에게는 있다
+		String viewer2History = viewer2.get("/api/channels/" + CHANNEL_A + "/messages").body();
+		assertFalse(viewer2History.contains("씨발") || viewer2History.contains("evil.test"));
+		assertTrue(viewer2History.contains("public after"));
+		for (Client privileged : List.of(author, moderator)) {
+			String history = privileged.get("/api/channels/" + CHANNEL_A + "/messages").body();
+			assertTrue(history.contains("씨발 진짜") && history.contains("evil.test"));
+		}
+
+		// 재접속: 새 구독은 지난 이벤트를 다시 받지 않는다. 이어서 오는 공개 메시지만 받는다
+		Lines reconnected = subscribe(Client.login(port, "viewer2"), CHANNEL_A);
+		reconnected.await(":connected"::equals);
+		assertEquals(201, author.sendMessage(CHANNEL_A, "public later").statusCode());
+		String afterReconnect = reconnected.await(line -> line.startsWith("data:"));
+		assertTrue(afterReconnect.contains("public later"), afterReconnect);
+		assertTrue(reconnected.drainFor(Duration.ofMillis(300)).stream()
+				.noneMatch(line -> line.contains("씨발") || line.contains("evil.test")));
 	}
 
 	@Test

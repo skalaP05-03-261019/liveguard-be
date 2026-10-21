@@ -1268,8 +1268,7 @@ components:
         ATTACK_TERM: 공격·비하 사전(애매한 표현).
         CERTAIN_PROFANITY: 확실한 욕설.
         OFFICIAL_CLAIM: 공식 주체 자칭. CREDENTIAL_REQUEST: 로그인·인증 요구.
-        LINK: URL 포함. v3.1은 공식 링크도 전송 금지 대상이다. v0.6의 UNOFFICIAL_URL을 대체한다.
-        현재 필터는 아직 채널 공식 호스트에 없는 URL에만 붙인다(필터 변경은 후속 작업).
+        LINK: 공식 링크 포함 모든 URL. v3.1은 방송 내 링크를 예외 없이 금지한다. v0.6의 UNOFFICIAL_URL을 대체한다.
         REPEATED_TEXT: 10초 안에 같은 정규화 문장 3회 이상(FLOOD).
         PII_PHONE·PII_ACCOUNT·PII_EMAIL: 전화번호·계좌·이메일 형식 후보(PII_INVESTIGATION). PII 필터 구현 전이라 아직 만들지 않는다.
         저장된 값은 데이터 마이그레이션 없이 바뀐다(A-15).

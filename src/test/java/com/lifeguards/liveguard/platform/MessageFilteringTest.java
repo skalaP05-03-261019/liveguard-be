@@ -131,14 +131,14 @@ class MessageFilteringTest {
 	}
 
 	@Test
-	void holdMessageIsHeldAndHiddenFromOtherViewersHistory() throws Exception {
+	void linkMessageIsHiddenAndNotInOtherViewersHistory() throws Exception {
 		mockMvc.perform(send(CHANNEL_A, UUID.randomUUID(), D07, login(mockMvc, "moderator")))
 				.andExpect(status().isCreated())
-				.andExpect(jsonPath("$.data.visibility").value("HELD"))
+				.andExpect(jsonPath("$.data.visibility").value("HIDDEN"))
 				.andExpect(jsonPath("$.data.text").value(D07));
 
 		assertEquals("HOLD", jdbc.queryForObject("SELECT filter_result FROM platform.messages", String.class));
-		assertEquals(Visibility.HELD, recorder.events.getLast().chat().visibility());
+		assertEquals(Visibility.HIDDEN, recorder.events.getLast().chat().visibility());
 		String viewerHistory = mockMvc.perform(get("/api/channels/" + CHANNEL_A + "/messages")
 				.session(login(mockMvc, "viewer")))
 				.andExpect(status().isOk())
@@ -147,17 +147,17 @@ class MessageFilteringTest {
 	}
 
 	@Test
-	void reviewIsStoredButStaysPublic() throws Exception {
+	void attackTermIsContextReviewHeldNotReview() throws Exception {
 		mockMvc.perform(send(CHANNEL_A, UUID.randomUUID(), "무대 미쳤다ㅋㅋ", login(mockMvc, "viewer")))
 				.andExpect(status().isCreated())
-				.andExpect(jsonPath("$.data.visibility").value("PUBLIC"));
+				.andExpect(jsonPath("$.data.visibility").value("HELD"));
 
-		assertEquals("REVIEW", jdbc.queryForObject("SELECT filter_result FROM platform.messages", String.class));
-		assertEquals(Visibility.PUBLIC, recorder.events.getLast().chat().visibility());
+		assertEquals("HOLD", jdbc.queryForObject("SELECT filter_result FROM platform.messages", String.class));
+		assertEquals(Visibility.HELD, recorder.events.getLast().chat().visibility());
 	}
 
 	@Test
-	void certainProfanityIsHoldHeldAndHiddenFromOtherViewers() throws Exception {
+	void certainProfanityIsHiddenOnArrivalAndNotShownToOtherViewers() throws Exception {
 		UUID otherViewer = UUID.randomUUID();
 		jdbc.update("INSERT INTO platform.users (id, username, password_hash, nickname, role) SELECT ?, "
 				+ "'profanity-viewer2', password_hash, '시청자2', 'VIEWER' FROM platform.users WHERE username = 'viewer'",
@@ -167,12 +167,12 @@ class MessageFilteringTest {
 		try {
 			mockMvc.perform(send(CHANNEL_A, UUID.randomUUID(), "씨발 진짜", login(mockMvc, "viewer")))
 					.andExpect(status().isCreated())
-					.andExpect(jsonPath("$.data.visibility").value("HELD"))
+					.andExpect(jsonPath("$.data.visibility").value("HIDDEN"))
 					.andExpect(jsonPath("$.data.text").value("씨발 진짜"));
 
 			assertEquals("HOLD", jdbc.queryForObject("SELECT filter_result FROM platform.messages", String.class));
-			assertEquals("HELD", jdbc.queryForObject("SELECT visibility FROM platform.messages", String.class));
-			assertEquals(Visibility.HELD, recorder.events.getLast().chat().visibility());
+			assertEquals("HIDDEN", jdbc.queryForObject("SELECT visibility FROM platform.messages", String.class));
+			assertEquals(Visibility.HIDDEN, recorder.events.getLast().chat().visibility());
 			assertTrue(history("moderator").contains("씨발 진짜"), "담당 운영자는 원문을 본다");
 			assertTrue(history("viewer").contains("씨발 진짜"), "작성자는 원문을 본다");
 			assertFalse(history("profanity-viewer2").contains("씨발"), "다른 시청자 이력에는 없다");
@@ -184,19 +184,11 @@ class MessageFilteringTest {
 	}
 
 	@Test
-	void ambiguousAttackTermIsStillReviewAndPublic() throws Exception {
-		mockMvc.perform(send(CHANNEL_A, UUID.randomUUID(), "무대 미쳤다ㅋㅋ", login(mockMvc, "viewer")))
-				.andExpect(jsonPath("$.data.visibility").value("PUBLIC"));
-
-		assertEquals("REVIEW", jdbc.queryForObject("SELECT filter_result FROM platform.messages", String.class));
-	}
-
-	@Test
 	void repeatedCertainProfanityStaysHoldNotFlood() throws Exception {
 		MockHttpSession viewer = login(mockMvc, "viewer");
 		for (int i = 0; i < 3; i++) {
 			mockMvc.perform(send(CHANNEL_A, UUID.randomUUID(), "시발", viewer))
-					.andExpect(jsonPath("$.data.visibility").value("HELD"));
+					.andExpect(jsonPath("$.data.visibility").value("HIDDEN"));
 		}
 
 		assertEquals(List.of("HOLD", "HOLD", "HOLD"), jdbc.queryForList(
@@ -204,17 +196,17 @@ class MessageFilteringTest {
 	}
 
 	@Test
-	void officialHostsComeFromTheChannel() throws Exception {
+	void officialLinkIsHiddenOnEveryChannel() throws Exception {
 		String text = "[공식] 이벤트는 https://live-a.example.com/event 에서 로그인 후 참여하세요";
 		MockHttpSession viewer = login(mockMvc, "viewer");
 
+		// 채널 A의 공식 호스트라도 링크는 예외 없이 막는다 (v3.1). 채널 B도 같다
 		mockMvc.perform(send(CHANNEL_A, UUID.randomUUID(), text, viewer))
-				.andExpect(jsonPath("$.data.visibility").value("PUBLIC"));
-		// 채널 B의 공식 호스트에는 live-a.example.com이 없다
+				.andExpect(jsonPath("$.data.visibility").value("HIDDEN"));
 		mockMvc.perform(send(CHANNEL_B, UUID.randomUUID(), text, viewer))
-				.andExpect(jsonPath("$.data.visibility").value("HELD"));
+				.andExpect(jsonPath("$.data.visibility").value("HIDDEN"));
 
-		assertEquals(List.of("PASS", "HOLD"),
+		assertEquals(List.of("HOLD", "HOLD"),
 				jdbc.queryForList("SELECT filter_result FROM platform.messages ORDER BY sent_at", String.class));
 	}
 

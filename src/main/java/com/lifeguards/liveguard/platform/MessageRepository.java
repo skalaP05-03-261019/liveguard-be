@@ -6,10 +6,8 @@ import java.sql.Timestamp;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.util.Comparator;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Optional;
-import java.util.Set;
 import java.util.UUID;
 
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -114,14 +112,6 @@ class MessageRepository {
 				.param("channelId", channelId)
 				.param("authorId", authorId)
 				.update();
-	}
-
-	Set<String> officialHosts(UUID channelId) {
-		return new LinkedHashSet<>(jdbc.sql(
-				"SELECT jsonb_array_elements_text(official_hosts) FROM platform.channels WHERE id = ?")
-				.param(channelId)
-				.query(String.class)
-				.list());
 	}
 
 	/** 같은 (채널, 작성자, clientMessageId)가 이미 있으면 저장하지 않고 empty를 돌려준다. */

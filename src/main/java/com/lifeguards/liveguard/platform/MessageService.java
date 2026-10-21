@@ -112,8 +112,8 @@ class MessageService {
 		// 도배는 같은 사용자·방송 범위다. 이전 방송과 방송 도입 전(live_id NULL) 메시지는 세지 않는다
 		List<UUID> sameTextInWindow = messages.sameTextMessageIds(live.liveId(), author.userId(), normalizedText,
 				sentAt.minus(FLOOD_WINDOW));
-		FilterDecision decision = filter.classify(new FilterInput(request.text(), normalizedText,
-				messages.officialHosts(channelId), sameTextInWindow.size() + 1));
+		FilterDecision decision = filter.classify(
+				new FilterInput(request.text(), normalizedText, sameTextInWindow.size() + 1));
 		// 동시 재전송이면 아래 INSERT가 무시되고 저장된 결과를 돌려주므로 이번 판정은 쓰이지 않는다
 		var inserted = messages.insertIfAbsent(channelId, live.liveId(), author.userId(), request.clientMessageId(),
 				request.text(), normalizedText, decision.result(), decision.visibility(), sentAt);

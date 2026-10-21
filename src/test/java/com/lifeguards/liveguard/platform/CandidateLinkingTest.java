@@ -86,11 +86,11 @@ class CandidateLinkingTest {
 	}
 
 	@Test
-	void reviewAndHoldOpenACaseAndStoreItsId() throws Exception {
+	void contextAndRuleCandidatesOpenACaseAndStoreItsId() throws Exception {
 		MockHttpSession viewer = login(mockMvc, "viewer");
 		UUID reviewCase = UUID.randomUUID();
 		UUID holdCase = UUID.randomUUID();
-		recording.behavior = request -> request.filterResult() == FilterResult.HOLD ? holdCase : reviewCase;
+		recording.behavior = request -> request.matchingTags().contains(MessageFilter.LINK) ? holdCase : reviewCase;
 
 		send("무대 미쳤다ㅋㅋ", viewer).andExpect(status().isCreated());
 		send(HOLD_TEXT, viewer).andExpect(status().isCreated());
@@ -99,7 +99,7 @@ class CandidateLinkingTest {
 		CandidateRequest review = recording.requests.get(0);
 		assertEquals(CHANNEL_A, review.channelId());
 		assertEquals(VIEWER, review.userId());
-		assertEquals(FilterResult.REVIEW, review.filterResult());
+		assertEquals(FilterResult.HOLD, review.filterResult());
 		assertEquals(List.of(MessageFilter.ATTACK_TERM), review.matchingTags());
 		assertEquals(List.of(), review.relatedMessageIds());
 		assertEquals(MessageFilter.version(), review.filterVersion());
