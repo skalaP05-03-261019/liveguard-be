@@ -4,9 +4,13 @@ import java.time.Instant;
 import java.util.UUID;
 
 import com.lifeguards.liveguard.contracts.dto.DtoValidation;
+import com.lifeguards.liveguard.contracts.enums.ModerationReasonCode;
 import com.lifeguards.liveguard.contracts.enums.Visibility;
 
-/** liveId는 방송 도입 전에 저장된 메시지면 null이다(A-17). */
+/**
+ * liveId는 방송 도입 전에 저장된 메시지면 null이다(A-17). moderationReasonCode는 작성자 본인에게 보내는 응답에서
+ * HELD·HIDDEN일 때만 채우고, 그 외에는 null이다(PASS·복구된 PUBLIC 포함).
+ */
 public record Message(
 		UUID messageId,
 		UUID liveId,
@@ -16,7 +20,8 @@ public record Message(
 		Visibility visibility,
 		int version,
 		Instant sentAt,
-		boolean isMine) {
+		boolean isMine,
+		ModerationReasonCode moderationReasonCode) {
 	public Message {
 		DtoValidation.requireNonNull(messageId, "messageId");
 		DtoValidation.requireNonNull(channelId, "channelId");

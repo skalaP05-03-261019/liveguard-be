@@ -2,122 +2,165 @@ package com.lifeguards.liveguard.filter;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
-import java.util.Set;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import com.lifeguards.liveguard.contracts.enums.FilterResult;
+import com.lifeguards.liveguard.contracts.enums.HandlingRoute;
+import com.lifeguards.liveguard.contracts.enums.ModerationReasonCode;
 import com.lifeguards.liveguard.contracts.enums.Visibility;
+import com.lifeguards.liveguard.contracts.exception.InvalidContractException;
 
 class MessageFilterTest {
 
-	private static final Set<String> CHANNEL_A_HOSTS = Set.of("live-a.example.com");
-
 	private final MessageFilter filter = new MessageFilter(FilterDictionary.loadDefault());
 
-	// 평가 사례 (docs/live-guard/v0.3/policies/evaluation_cases.md). D01만 원문이 있고 D03·D06·D07은 설명에 맞춰 작성
+	// 평가 사례 (docs/live-guard/v0.3/policies/evaluation_cases.md). D01만 원문이 있고 D03·D06·D07은 설명에 맞춰 작성.
+	// 기대값은 v3.1 기준이다(v0.3과 다름): 공격어는 HELD, 링크는 공식 링크 포함 HIDDEN
 
 	@Test
-	void d01PositiveExaggerationIsReviewAndStaysPublic() {
+	void d01PositiveExaggerationIsContextReviewAndHeld() {
 		FilterDecision decision = classify("무대 미쳤다ㅋㅋ");
 
-		assertEquals(FilterResult.REVIEW, decision.result());
-		assertEquals(Visibility.PUBLIC, decision.visibility());
+		assertEquals(HandlingRoute.CONTEXT_REVIEW, decision.handlingRoute());
+		assertEquals(FilterResult.HOLD, decision.result());
+		assertEquals(Visibility.HELD, decision.visibility());
+		assertNull(decision.ruleId());
 		assertEquals(List.of(MessageFilter.ATTACK_TERM), decision.matchingTags());
 	}
 
 	@Test
-	void d03OfficialNoticeWithOfficialHostIsPassEvenWithLoginWord() {
+	void d03OfficialLinkIsBlockedLikeAnyOtherLink() {
 		FilterDecision decision = classify("[공식] 신규 가입 이벤트는 https://live-a.example.com/event 에서 로그인 후 참여하세요");
 
-		assertEquals(FilterResult.PASS, decision.result());
-		assertEquals(Visibility.PUBLIC, decision.visibility());
-		assertEquals(List.of(MessageFilter.OFFICIAL_CLAIM, MessageFilter.CREDENTIAL_REQUEST), decision.matchingTags());
+		assertEquals(HandlingRoute.RULE_CONFIRMED, decision.handlingRoute());
+		assertEquals(MessageFilter.RULE_LINK_BLOCKED, decision.ruleId());
+		assertEquals(Visibility.HIDDEN, decision.visibility());
+		assertEquals(List.of(MessageFilter.OFFICIAL_CLAIM, MessageFilter.CREDENTIAL_REQUEST, MessageFilter.LINK),
+				decision.matchingTags());
 	}
 
 	@Test
-	void d06ExternalNewsLinkAloneIsPass() {
+	void d06ExternalNewsLinkAloneIsRuleConfirmed() {
 		FilterDecision decision = classify("오늘 기사 떴네요 https://news.example.org/article/123");
 
-		assertEquals(FilterResult.PASS, decision.result());
+		assertEquals(HandlingRoute.RULE_CONFIRMED, decision.handlingRoute());
+		assertEquals(MessageFilter.RULE_LINK_BLOCKED, decision.ruleId());
+		assertEquals(FilterResult.HOLD, decision.result());
+		assertEquals(Visibility.HIDDEN, decision.visibility());
 		assertEquals(List.of(MessageFilter.LINK), decision.matchingTags());
 	}
 
 	@Test
-	void d07QuotedScamWarningIsHoldAndHeld() {
+	void d07QuotedScamWarningWithLinkIsRuleConfirmedAndHidden() {
 		FilterDecision decision = classify(
 				"주의! \"공식 이벤트 당첨, http://live-a-event.evil.test 에서 로그인하세요\" 이런 메시지는 사기입니다");
 
-		assertEquals(FilterResult.HOLD, decision.result());
-		assertEquals(Visibility.HELD, decision.visibility());
+		assertEquals(HandlingRoute.RULE_CONFIRMED, decision.handlingRoute());
+		assertEquals(Visibility.HIDDEN, decision.visibility());
 		assertEquals(List.of(MessageFilter.OFFICIAL_CLAIM, MessageFilter.CREDENTIAL_REQUEST,
 				MessageFilter.LINK), decision.matchingTags());
 	}
 
 	@Test
-	void holdNeedsAllThreeConditions() {
-		assertEquals(FilterResult.PASS, classify("공식 이벤트 http://evil.test 참여").result());
-		assertEquals(FilterResult.PASS, classify("이 사이트 로그인 http://evil.test").result());
-		assertEquals(FilterResult.PASS, classify("공식 이벤트입니다 로그인하세요").result());
-		assertEquals(FilterResult.HOLD, classify("공식 이벤트입니다 evil.test/login 에서 로그인하세요").result());
+	void officialClaimWithCredentialRequestAndNoLinkIsContextReview() {
+		FilterDecision decision = classify("공식 이벤트입니다 로그인하세요");
+
+		assertEquals(HandlingRoute.CONTEXT_REVIEW, decision.handlingRoute());
+		assertEquals(FilterResult.HOLD, decision.result());
+		assertEquals(Visibility.HELD, decision.visibility());
+		assertEquals(List.of(MessageFilter.OFFICIAL_CLAIM, MessageFilter.CREDENTIAL_REQUEST), decision.matchingTags());
 	}
 
 	@Test
-	void hostIsComparedExactlyAgainstOfficialHosts() {
-		String template = "공식 안내: %s 에서 로그인하세요";
-
-		assertEquals(FilterResult.PASS, classify(template.formatted("https://live-a.example.com/x")).result());
-		assertEquals(FilterResult.PASS, classify(template.formatted("https://LIVE-A.example.com./x")).result());
-		assertEquals(FilterResult.HOLD, classify(template.formatted("https://live-a.example.com.evil.test")).result());
-		assertEquals(FilterResult.HOLD, classify(template.formatted("https://www.live-a.example.com")).result());
-		assertEquals(FilterResult.HOLD, classify(template.formatted("https://user@evil.test:8443/a")).result());
+	void officialClaimOrCredentialRequestAloneIsPass() {
+		assertEquals(HandlingRoute.PASS, classify("공식 이벤트입니다").handlingRoute());
+		assertEquals(HandlingRoute.PASS, classify("로그인하세요").handlingRoute());
 	}
 
-	@Test
-	void hostIsParsedFromOriginalTextNotFromNormalizedText() {
-		// 정규화하면 wwwww → ww로 줄지만 호스트는 원문 그대로 비교해야 한다
-		FilterDecision decision = filter.classify(new FilterInput("공식 로그인 https://wwwww.example.com",
-				TextNormalizer.normalize("공식 로그인 https://wwwww.example.com"), Set.of("wwwww.example.com"), 1));
+	@ParameterizedTest
+	@ValueSource(strings = { "https://live-a.example.com/x", "https://LIVE-A.example.com./x",
+			"https://live-a.example.com.evil.test", "https://www.live-a.example.com", "https://user@evil.test:8443/a",
+			"http://evil.test", "evil.test/login" })
+	void everyLinkIsBlockedRegardlessOfHost(String url) {
+		FilterDecision decision = classify("공식 안내: " + url + " 에서 확인하세요");
 
-		assertEquals(FilterResult.PASS, decision.result());
+		assertEquals(HandlingRoute.RULE_CONFIRMED, decision.handlingRoute(), url);
+		assertEquals(MessageFilter.RULE_LINK_BLOCKED, decision.ruleId(), url);
+		assertTrue(decision.matchingTags().contains(MessageFilter.LINK), url);
 	}
 
 	@Test
 	void fullwidthUrlIsStillDetected() {
-		assertEquals(FilterResult.HOLD, classify("공식 이벤트 ｅｖｉｌ．ｔｅｓｔ 에서 로그인").result());
+		FilterDecision decision = classify("공식 이벤트 ｅｖｉｌ．ｔｅｓｔ 에서 로그인");
+
+		assertEquals(HandlingRoute.RULE_CONFIRMED, decision.handlingRoute());
+		assertTrue(decision.matchingTags().contains(MessageFilter.LINK));
 	}
 
 	@Test
-	void urlAloneOrPhoneOrAccountPatternAloneIsPass() {
-		assertEquals(FilterResult.PASS, classify("http://evil.test").result());
-		assertEquals(FilterResult.PASS, classify("연락주세요 010-1234-5678").result());
-		assertEquals(FilterResult.PASS, classify("국민 123456-78-901234 입금").result());
+	void phoneOrAccountPatternAloneIsPassBecauseThePiiFilterIsNotThereYet() {
+		assertEquals(HandlingRoute.PASS, classify("연락주세요 010-1234-5678").handlingRoute());
+		assertEquals(HandlingRoute.PASS, classify("국민 123456-78-901234 입금").handlingRoute());
 	}
 
 	@Test
 	void floodStartsAtTheThirdSameTextWithinWindow() {
-		assertEquals(FilterResult.PASS, classify("같은 말", 1).result());
-		assertEquals(FilterResult.PASS, classify("같은 말", 2).result());
+		assertEquals(HandlingRoute.PASS, classify("같은 말", 1).handlingRoute());
+		assertEquals(HandlingRoute.PASS, classify("같은 말", 2).handlingRoute());
 		FilterDecision third = classify("같은 말", 3);
+		assertEquals(HandlingRoute.FLOOD_REVIEW, third.handlingRoute());
 		assertEquals(FilterResult.FLOOD, third.result());
 		assertEquals(Visibility.HELD, third.visibility());
+		assertNull(third.ruleId());
 		assertEquals(List.of(MessageFilter.REPEATED_TEXT), third.matchingTags());
 	}
 
 	@Test
-	void precedenceIsHoldThenFloodThenReview() {
-		FilterDecision holdAndFlood = classify("공식 로그인 http://evil.test 꺼져", 5);
-		assertEquals(FilterResult.HOLD, holdAndFlood.result());
-		assertTrue(holdAndFlood.matchingTags().containsAll(List.of(MessageFilter.ATTACK_TERM,
+	void precedenceIsRuleThenFloodThenContext() {
+		FilterDecision ruleAndFlood = classify("공식 로그인 http://evil.test 꺼져", 5);
+		assertEquals(HandlingRoute.RULE_CONFIRMED, ruleAndFlood.handlingRoute());
+		assertTrue(ruleAndFlood.matchingTags().containsAll(List.of(MessageFilter.ATTACK_TERM,
 				MessageFilter.REPEATED_TEXT, MessageFilter.LINK)));
 
-		assertEquals(FilterResult.FLOOD, classify("꺼져", 3).result());
-		assertEquals(FilterResult.REVIEW, classify("꺼져", 2).result());
+		assertEquals(HandlingRoute.FLOOD_REVIEW, classify("꺼져", 3).handlingRoute());
+		assertEquals(HandlingRoute.CONTEXT_REVIEW, classify("꺼져", 2).handlingRoute());
+	}
+
+	@Test
+	void moderationReasonCodeFollowsRouteAndRule() {
+		assertEquals(ModerationReasonCode.PROFANITY_INCLUDED, classify("씨발").moderationReasonCode());
+		assertEquals(ModerationReasonCode.LINK_NOT_ALLOWED, classify("https://a.test").moderationReasonCode());
+		// 욕설과 링크가 같이 걸리면 욕설 규칙이 근거다
+		assertEquals(ModerationReasonCode.PROFANITY_INCLUDED, classify("씨발 https://a.test").moderationReasonCode());
+		assertEquals(ModerationReasonCode.FLOOD_REPEATED, classify("같은 말", 3).moderationReasonCode());
+		assertEquals(ModerationReasonCode.CONTEXT_PENDING, classify("꺼져").moderationReasonCode());
+		assertEquals(ModerationReasonCode.CONTEXT_PENDING, classify("공식 로그인").moderationReasonCode());
+		assertNull(classify("오늘 무대 좋았어요").moderationReasonCode());
+	}
+
+	@Test
+	void filterNeverEmitsReviewOrPiiRoute() {
+		for (String text : List.of("꺼져", "씨발", "https://a.test", "공식 로그인", "같은 말", "010-1234-5678", "안녕")) {
+			FilterDecision decision = classify(text, 3);
+			assertTrue(decision.result() != FilterResult.REVIEW, text);
+			assertTrue(decision.handlingRoute() != HandlingRoute.PII_INVESTIGATION, text);
+		}
+	}
+
+	@Test
+	void ruleIdIsRequiredExactlyForRuleConfirmed() {
+		assertThrows(InvalidContractException.class,
+				() -> new FilterDecision(HandlingRoute.RULE_CONFIRMED, null, List.of()));
+		assertThrows(InvalidContractException.class,
+				() -> new FilterDecision(HandlingRoute.CONTEXT_REVIEW, "RULE_LINK_BLOCKED", List.of()));
 	}
 
 	@ParameterizedTest
@@ -144,21 +187,14 @@ class MessageFilterTest {
 	@ParameterizedTest
 	@ValueSource(strings = { "시발", "너 진짜 씨발 ㅋㅋ", "ㅅㅂ", "ㅅㅂㅅㅂ", "진짜  ㅂㅅ  같네", "ㅆㅂ", "개새끼야", "시발발발발", "ㅅㅂㅂㅂㅂ",
 			"느금마", "좆같네" })
-	void certainProfanityIsHoldAndHeld(String text) {
+	void certainProfanityIsRuleConfirmedAndHidden(String text) {
 		FilterDecision decision = classify(text);
 
+		assertEquals(HandlingRoute.RULE_CONFIRMED, decision.handlingRoute(), text);
+		assertEquals(MessageFilter.RULE_CERTAIN_PROFANITY, decision.ruleId());
 		assertEquals(FilterResult.HOLD, decision.result(), text);
-		assertEquals(Visibility.HELD, decision.visibility());
+		assertEquals(Visibility.HIDDEN, decision.visibility());
 		assertEquals(List.of(MessageFilter.CERTAIN_PROFANITY), decision.matchingTags());
-	}
-
-	@Test
-	void d01StaysReviewBecauseItIsOnlyAnAmbiguousAttackTerm() {
-		FilterDecision decision = classify("무대 미쳤다ㅋㅋ");
-
-		assertEquals(FilterResult.REVIEW, decision.result());
-		assertEquals(Visibility.PUBLIC, decision.visibility());
-		assertEquals(List.of(MessageFilter.ATTACK_TERM), decision.matchingTags());
 	}
 
 	@ParameterizedTest
@@ -171,7 +207,7 @@ class MessageFilterTest {
 	void exceptionWordDoesNotShieldRealProfanityInTheSameMessage() {
 		FilterDecision decision = classify("시발점 가는 버스 씨발");
 
-		assertEquals(FilterResult.HOLD, decision.result());
+		assertEquals(HandlingRoute.RULE_CONFIRMED, decision.handlingRoute());
 		assertEquals(List.of(MessageFilter.CERTAIN_PROFANITY), decision.matchingTags());
 	}
 
@@ -179,15 +215,16 @@ class MessageFilterTest {
 	void certainProfanityAndAmbiguousAttackKeepBothTags() {
 		FilterDecision decision = classify("씨발 꺼져");
 
-		assertEquals(FilterResult.HOLD, decision.result());
+		assertEquals(HandlingRoute.RULE_CONFIRMED, decision.handlingRoute());
 		assertEquals(List.of(MessageFilter.ATTACK_TERM, MessageFilter.CERTAIN_PROFANITY), decision.matchingTags());
 	}
 
 	@Test
-	void certainProfanityAndPhishingAreOneHoldWithBothTags() {
+	void certainProfanityAndLinkAreOneRuleWithBothTagsAndProfanityFirst() {
 		FilterDecision decision = classify("공식 이벤트 씨발 evil.test 에서 로그인하세요");
 
-		assertEquals(FilterResult.HOLD, decision.result());
+		assertEquals(HandlingRoute.RULE_CONFIRMED, decision.handlingRoute());
+		assertEquals(MessageFilter.RULE_CERTAIN_PROFANITY, decision.ruleId());
 		assertEquals(List.of(MessageFilter.CERTAIN_PROFANITY, MessageFilter.OFFICIAL_CLAIM,
 				MessageFilter.CREDENTIAL_REQUEST, MessageFilter.LINK), decision.matchingTags());
 	}
@@ -196,16 +233,16 @@ class MessageFilterTest {
 	void certainProfanityBeatsFloodAndKeepsTheRepeatedTag() {
 		FilterDecision decision = classify("씨발", 3);
 
-		assertEquals(FilterResult.HOLD, decision.result());
+		assertEquals(HandlingRoute.RULE_CONFIRMED, decision.handlingRoute());
 		assertEquals(List.of(MessageFilter.CERTAIN_PROFANITY, MessageFilter.REPEATED_TEXT), decision.matchingTags());
-		assertEquals(FilterResult.HOLD, classify("씨발", 1).result());
+		assertEquals(HandlingRoute.RULE_CONFIRMED, classify("씨발", 1).handlingRoute());
 	}
 
 	@Test
-	void phishingHoldStillCarriesNoProfanityTag() {
+	void linkRuleCarriesNoProfanityTag() {
 		FilterDecision decision = classify("공식 이벤트 evil.test 에서 로그인하세요");
 
-		assertEquals(FilterResult.HOLD, decision.result());
+		assertEquals(MessageFilter.RULE_LINK_BLOCKED, decision.ruleId());
 		assertFalse(decision.matchingTags().contains(MessageFilter.CERTAIN_PROFANITY));
 		assertTrue(decision.matchingTags().contains(MessageFilter.LINK));
 	}
@@ -216,11 +253,25 @@ class MessageFilterTest {
 		assertEquals("norm-v1+dict-v2", MessageFilter.version());
 	}
 
+	@ParameterizedTest
+	@ValueSource(strings = { "first.last@example.com", "a.b.c+tag@sub.example.co.kr" })
+	void emailIsNotALinkEvenWithDottedLocalPart(String text) {
+		FilterDecision decision = classify(text);
+
+		assertEquals(HandlingRoute.PASS, decision.handlingRoute(), text);
+		assertEquals(Visibility.PUBLIC, decision.visibility(), text);
+		assertNull(decision.ruleId(), text);
+		assertFalse(decision.matchingTags().contains(MessageFilter.LINK), text);
+	}
+
 	@Test
 	void plainChatIsPass() {
 		FilterDecision decision = classify("오늘 무대 좋았어요");
 
+		assertEquals(HandlingRoute.PASS, decision.handlingRoute());
 		assertEquals(FilterResult.PASS, decision.result());
+		assertEquals(Visibility.PUBLIC, decision.visibility());
+		assertNull(decision.ruleId());
 		assertEquals(List.of(), decision.matchingTags());
 	}
 
@@ -229,7 +280,7 @@ class MessageFilterTest {
 	}
 
 	private FilterDecision classify(String text, int sameTextCount) {
-		return filter.classify(new FilterInput(text, TextNormalizer.normalize(text), CHANNEL_A_HOSTS, sameTextCount));
+		return filter.classify(new FilterInput(text, TextNormalizer.normalize(text), sameTextCount));
 	}
 
 }

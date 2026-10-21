@@ -53,7 +53,7 @@ class MatchingTagContractTest {
 				"씨발",                                                    // CERTAIN_PROFANITY
 				"공식 이벤트 evil.test 에서 로그인하세요",                     // OFFICIAL_CLAIM, CREDENTIAL_REQUEST, LINK
 				"같은 말")) {
-			emitted.addAll(filter.classify(new FilterInput(text, TextNormalizer.normalize(text), Set.of(), 3))
+			emitted.addAll(filter.classify(new FilterInput(text, TextNormalizer.normalize(text), 3))
 					.matchingTags());
 		}
 
