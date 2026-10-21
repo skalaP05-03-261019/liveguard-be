@@ -127,8 +127,9 @@ public class CaseContextQuery {
 				+ "FROM platform.channels c, jsonb_array_elements(c.official_events) e WHERE c.id = ?")
 				.param(first.channelId())
 				.query((rs, n) -> new EventInfo(rs.getString("title"), rs.getString("summary"))).list();
-		// 채널을 떠난 작성자는 일반 시청자로 본다
-		AuthorRole authorRole = memberships.memberRole(first.channelId(), first.authorId()).orElse(AuthorRole.VIEWER);
+		// 현재 역할이다(사건 당시 역할이 아니다). 멤버십을 확인할 수 없으면 VIEWER로 추정하지 않고 UNKNOWN이며,
+		// isOfficialOperator=false는 공식 운영자로 확인되지 않았다는 뜻일 뿐 시청자로 확인됐다는 뜻이 아니다
+		AuthorRole authorRole = memberships.memberRole(first.channelId(), first.authorId()).orElse(AuthorRole.UNKNOWN);
 
 		Set<String> official = officialHosts.stream().map(UrlHosts::normalizeHost).collect(Collectors.toSet());
 		List<ObservedLink> observedLinks = new ArrayList<>();

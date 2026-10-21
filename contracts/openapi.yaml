@@ -818,7 +818,10 @@ paths:
       tags: [Internal]
       operationId: internalGetChannelUserRole
       summary: get_channel_user_role
-      description: Implemented query of the current case author's channel role; this is not historical or verified identity.
+      description: |
+        Implemented query of the current case author's channel role (current role, not the role at the time
+        of the case); this is not historical or verified identity. An author whose membership cannot be
+        confirmed (e.g. a former member) is `UNKNOWN` with `isOfficialOperator=false`.
       x-implementation-status: implemented
       x-owner: B1
       security:
@@ -2097,6 +2100,7 @@ components:
           $ref: '#/components/schemas/AuthorRole'
         isOfficialOperator:
           type: boolean
+          description: True only for a confirmed STREAMER, OFFICIAL_STAFF or MODERATOR. False means "not confirmed as official", not "confirmed as a viewer" (UNKNOWN is also false).
         observedLinks:
           type: array
           items:
@@ -2129,7 +2133,11 @@ components:
           format: uuid
     AuthorRole:
       type: string
-      enum: [VIEWER, STREAMER, OFFICIAL_STAFF, MODERATOR]
+      description: |
+        Current channel role of the case author. UNKNOWN means the current membership cannot be confirmed
+        (e.g. the author left the channel). Consumers must not treat UNKNOWN as an official operator nor as
+        a VIEWER.
+      enum: [VIEWER, STREAMER, OFFICIAL_STAFF, MODERATOR, UNKNOWN]
     ChannelUserRole:
       type: object
       required: [authorRole, isOfficialOperator]
@@ -2138,6 +2146,7 @@ components:
           $ref: '#/components/schemas/AuthorRole'
         isOfficialOperator:
           type: boolean
+          description: True only for a confirmed STREAMER, OFFICIAL_STAFF or MODERATOR. False means "not confirmed as official", not "confirmed as a viewer" (UNKNOWN is also false).
     ChannelUserRoleResponse:
       type: object
       required: [data, traceId]
