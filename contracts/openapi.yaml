@@ -247,25 +247,38 @@ paths:
         '403':
           $ref: '#/components/responses/Error'
 
-  /api/channels/{channelId}/events:
+  /api/lives/{liveId}/events:
     parameters:
-      - $ref: '#/components/parameters/ChannelId'
+      - $ref: '#/components/parameters/LiveId'
     get:
       tags: [Streams]
-      operationId: subscribeChannel
-      summary: 채팅 SSE
+      operationId: subscribeLive
+      summary: 채팅 SSE (이 방송)
       description: |
-        이벤트: CHAT, MESSAGE_VISIBILITY_CHANGED, USER_KICKED(대상 본인에게만).
-        HELD·HIDDEN 메시지의 CHAT은 작성자·담당 운영자에게만 보낸다. 15초 heartbeat. 강퇴되면 서버가 연결을 닫는다.
+        모든 이벤트의 data는 SseEnvelope이고, x-sse-events는 그 payload schema다.
+        - CHAT: HELD·HIDDEN 메시지는 작성자·담당 운영자에게만. HELD 원문을 PUBLIC 이벤트로 먼저 보내지 않는다.
+        - MESSAGE_VISIBILITY_CHANGED: messageId·visibility·version만(원문 없음).
+        - MESSAGE_RESTORED: 실제 PUBLIC이 된 메시지. sentAt으로 화면의 시간순 자리에 넣는다.
+        - LIVE_ACCESS_BLOCKED: 강퇴 대상 본인에게만. 보낸 뒤 서버가 연결을 닫고 권한을 무효화한다(UI만 닫는 방식 아님).
+        - ACTION_APPLIED·ACTION_FAILED: 작성자 본인에게 자기 메시지·계정에 대한 실행 결과.
+        이 방송에서 live ban 중이면 403 KICKED(재입장 거부), 끝난 방송이면 409 LIVE_ENDED. 15초 heartbeat.
+        중복(eventId)과 오래된 entityVersion은 클라이언트가 무시한다.
       x-owner: B1
       x-sse-events:
         CHAT: '#/components/schemas/ChatEvent'
         MESSAGE_VISIBILITY_CHANGED: '#/components/schemas/VisibilityChangedEvent'
-        USER_KICKED: '#/components/schemas/UserKickedEvent'
+        MESSAGE_RESTORED: '#/components/schemas/ChatEvent'
+        LIVE_ACCESS_BLOCKED: '#/components/schemas/LiveAccessBlockedEvent'
+        ACTION_APPLIED: '#/components/schemas/ActionEvent'
+        ACTION_FAILED: '#/components/schemas/ActionEvent'
       responses:
         '200':
           $ref: '#/components/responses/EventStream'
         '403':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+        '409':
           $ref: '#/components/responses/Error'
 
   /api/guard/events:
@@ -274,19 +287,25 @@ paths:
       operationId: subscribeGuard
       summary: 관제 SSE (담당 운영자)
       description: |
-        이벤트: CASE_CREATED, CASE_UPDATED, TOOL_START, TOOL_END, KICK_REVIEW_REQUIRED, KICK_APPLIED, TASK_FAILED.
+        모든 이벤트의 data는 SseEnvelope이고, x-sse-events는 그 payload schema다.
         TOOL_START·TOOL_END는 Agent 진행 이벤트(평가 항목 "진행 이벤트")로, 원문 인자는 넣지 않는다.
+        CONTEXT_REVIEW_REQUIRED와 KICK_REVIEW_REQUIRED는 화면에서 따로 보여 준다.
+        REVIEW_DECIDED는 결정 저장을 알릴 뿐이고, 강퇴 완료는 ACTION_APPLIED(type=KICK)로만 표시한다.
+        v0.6의 KICK_APPLIED는 ACTION_APPLIED로 대체됐다(A-14).
       x-owner: B1 (연결), B2 (발행)
       x-sse-events:
         CASE_CREATED: '#/components/schemas/CaseEvent'
         CASE_UPDATED: '#/components/schemas/CaseEvent'
         TOOL_START: '#/components/schemas/ToolEvent'
         TOOL_END: '#/components/schemas/ToolEvent'
-        KICK_REVIEW_REQUIRED: '#/components/schemas/KickReviewEvent'
-        KICK_APPLIED: '#/components/schemas/KickReviewEvent'
         TASK_FAILED: '#/components/schemas/TaskFailedEvent'
+        CONTEXT_REVIEW_REQUIRED: '#/components/schemas/ContextReviewRequiredEvent'
+        KICK_REVIEW_REQUIRED: '#/components/schemas/KickReviewRequiredEvent'
+        REVIEW_DECIDED: '#/components/schemas/ReviewDecidedEvent'
+        ACTION_APPLIED: '#/components/schemas/ActionEvent'
+        ACTION_FAILED: '#/components/schemas/ActionEvent'
       parameters:
-        - name: channelId
+        - name: liveId
           in: query
           required: true
           schema:
@@ -1068,15 +1087,15 @@ components:
           schema:
             $ref: '#/components/schemas/NotImplementedErrorResponse'
     EventStream:
-      description: SSE. 각 이벤트는 `id`, `event`, `data`(JSON)로 구성된다.
+      description: SSE. 각 이벤트는 `id`, `event`, `data`로 구성되고 `data`는 SseEnvelope(JSON)다. `id`는 envelope의 eventId와 같다.
       content:
         text/event-stream:
           schema:
             type: string
           example: |
-            id: 42
+            id: 0d5b7c1e-8f2a-4c3b-9e1d-2a6f4b8c9d01
             event: MESSAGE_VISIBILITY_CHANGED
-            data: {"messageId":"33333333-3333-4333-8333-333333333333","visibility":"HIDDEN","version":2}
+            data: {"eventId":"0d5b7c1e-8f2a-4c3b-9e1d-2a6f4b8c9d01","occurredAt":"2026-10-21T03:00:00Z","entityVersion":2,"payload":{"messageId":"33333333-3333-4333-8333-333333333333","visibility":"HIDDEN","version":2}}
 
             : ping
 
@@ -1642,11 +1661,28 @@ components:
           maxLength: 500
 
     # ----- SSE payload -----
+    SseEnvelope:
+      type: object
+      description: 모든 SSE 이벤트 data의 공통 형태(CONTRACTS §12). payload는 이벤트 이름별 schema(x-sse-events).
+      required: [eventId, occurredAt, entityVersion, payload]
+      properties:
+        eventId:
+          $ref: '#/components/schemas/Uuid'
+        occurredAt:
+          $ref: '#/components/schemas/Timestamp'
+        entityVersion:
+          type: [integer, 'null']
+          description: 대상 엔티티(메시지·사건·검토·action)의 version. 버전이 없는 이벤트(TOOL_*, LIVE_ACCESS_BLOCKED 등)는 null
+        payload:
+          type: object
     ChatEvent:
       type: object
-      required: [messageId, authorAlias, text, visibility, version, sentAt]
+      description: CHAT과 MESSAGE_RESTORED의 payload
+      required: [messageId, liveId, authorAlias, text, visibility, version, sentAt]
       properties:
         messageId:
+          $ref: '#/components/schemas/Uuid'
+        liveId:
           $ref: '#/components/schemas/Uuid'
         authorAlias:
           type: string
@@ -1660,10 +1696,9 @@ components:
           $ref: '#/components/schemas/Timestamp'
     VisibilityChangedEvent:
       type: object
-      description: |
-        이미 공개됐던 메시지를 가릴 때는 ID만, PUBLIC으로 복원할 때는 text·authorAlias·sentAt 포함.
-        복원 이벤트의 sentAt으로 화면의 시간순 자리에 끼워 넣는다.
+      description: 원문 없이 ID만. PUBLIC 복원은 MESSAGE_RESTORED(ChatEvent)로 보낸다.
       required: [messageId, visibility, version]
+      additionalProperties: false
       properties:
         messageId:
           $ref: '#/components/schemas/Uuid'
@@ -1671,27 +1706,45 @@ components:
           $ref: '#/components/schemas/Visibility'
         version:
           type: integer
-        text:
-          type: string
-        authorAlias:
-          type: string
-        sentAt:
-          $ref: '#/components/schemas/Timestamp'
-          description: 복원(PUBLIC)일 때만 포함. 원래 전송 시각
-    UserKickedEvent:
+    LiveAccessBlockedEvent:
       type: object
-      required: [until]
+      description: 이 방송에서 강퇴됨. 방송 종료까지 입장·채팅 금지이며 만료 시각이 없다. 안내 문구는 FE가 표시한다(A-14).
+      required: [liveId, activeUntilLiveEnd]
       properties:
-        until:
-          $ref: '#/components/schemas/Timestamp'
+        liveId:
+          $ref: '#/components/schemas/Uuid'
+        activeUntilLiveEnd:
+          type: boolean
+          const: true
+    ActionEvent:
+      type: object
+      description: ACTION_APPLIED·ACTION_FAILED의 payload. observation=UNKNOWN이면 결과 미확인이며 실패로 표시하지 않는다.
+      required: [actionId, liveId, type, status, observation]
+      properties:
+        actionId:
+          $ref: '#/components/schemas/Uuid'
+        liveId:
+          $ref: '#/components/schemas/Uuid'
+        type:
+          $ref: '#/components/schemas/ActionType'
+        status:
+          $ref: '#/components/schemas/ActionStatus'
+        observation:
+          $ref: '#/components/schemas/Observation'
     CaseEvent:
       type: object
-      required: [caseId, status, version]
+      required: [caseId, liveId, status, handlingRoute, confirmationStatus, version]
       properties:
         caseId:
           $ref: '#/components/schemas/Uuid'
+        liveId:
+          $ref: '#/components/schemas/Uuid'
         status:
           $ref: '#/components/schemas/CaseStatus'
+        handlingRoute:
+          $ref: '#/components/schemas/HandlingRoute'
+        confirmationStatus:
+          $ref: '#/components/schemas/ConfirmationStatus'
         filterResult:
           $ref: '#/components/schemas/FilterResult'
         version:
@@ -1713,18 +1766,42 @@ components:
         elapsedMs:
           type: integer
           description: TOOL_END에만
-    KickReviewEvent:
+    ContextReviewRequiredEvent:
       type: object
-      required: [reviewId, caseId, status]
+      description: 담당 운영자에게. AI 정상 제안이어도 결정이 필요하다.
+      required: [reviewId, caseId, aiVerdict]
       properties:
         reviewId:
           $ref: '#/components/schemas/Uuid'
         caseId:
           $ref: '#/components/schemas/Uuid'
-        status:
-          $ref: '#/components/schemas/KickReviewStatus'
-        kickExpiresAt:
-          $ref: '#/components/schemas/Timestamp'
+        aiVerdict:
+          $ref: '#/components/schemas/Verdict'
+    KickReviewRequiredEvent:
+      type: object
+      description: 강퇴 승인 운영자에게. count는 통합 사건 수(다섯 유형 통합, 현재 포함).
+      required: [reviewId, count]
+      properties:
+        reviewId:
+          $ref: '#/components/schemas/Uuid'
+        count:
+          type: integer
+          minimum: 3
+    ReviewDecidedEvent:
+      type: object
+      description: 결정 저장 알림. 강퇴 완료를 뜻하지 않는다.
+      required: [reviewId, reviewKind, decisionId, value]
+      properties:
+        reviewId:
+          $ref: '#/components/schemas/Uuid'
+        reviewKind:
+          $ref: '#/components/schemas/ReviewKind'
+        decisionId:
+          $ref: '#/components/schemas/Uuid'
+        value:
+          oneOf:
+            - $ref: '#/components/schemas/ContextDecision'
+            - $ref: '#/components/schemas/KickDecision'
     TaskFailedEvent:
       type: object
       required: [caseId, stage, errorCode]
