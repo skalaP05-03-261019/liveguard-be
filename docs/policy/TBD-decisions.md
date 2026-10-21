@@ -26,7 +26,7 @@
 | 05 시간 경계 | 구조 | 서버 수신 시각, 마이크로초, 하한 제외 | #16 테스트 | B2 |
 | 06 기준 사건 선택 | 구조 | 확정 시각이 가장 오래된 3건, 유효기간은 방송 종료까지 | 없음 | B2 |
 | 07 kick 오류 | 설정 | 429·503·연결 실패만 재시도, 1초·2초 간격, 응답 유실은 UNKNOWN 후 상태 조회 | 멱등 키 | AI |
-| 08 정책 버전 | 구조 | `v3.0` 고정, BE·Agent·RAG가 공유, filterVersion 별도 기록 | filterVersion | AI |
+| 08 정책 버전 | 구조 | `v3.1` 고정, BE·Agent·RAG가 공유, filterVersion 별도 기록 | filterVersion | AI |
 | 09 TIMEOUT 중첩 | 설정 | 새 만료가 더 늦을 때만 교체, 합산 없음 | 없음 | B2 |
 | 10 검토 대기 만료 | 보류 | 만료·재배정 기능 없음 (자동 공개 없음 유지) | 없음 | FE |
 | 11 도배 확정 주체 | 구조 | BE 규칙(10초 3회)로 확정, BE가 못 거른 반복만 Agent 판정, 재적발 창은 확정 시각부터 24시간 | 필터 FLOOD | B2 |
@@ -88,9 +88,9 @@
 
 ### TBD-08 정책 버전과 RAG 색인
 
-활성 정책 버전은 `v3.0`으로 고정하고, 환경변수 하나를 BE·Agent·RAG가 같이 읽는다.
+활성 정책 버전은 `v3.1`으로 고정하고, 환경변수 하나를 BE·Agent·RAG가 같이 읽는다.
 
-- 값: `v3.0` 고정 (환경변수 `LIVEGUARD_POLICY_VERSION`). 사건·판정·강퇴 실행에 이 값을 기록한다.
+- 값: `v3.1` 고정 (환경변수 `LIVEGUARD_POLICY_VERSION`). 사건·판정·강퇴 실행에 이 값을 기록한다.
 - RAG: 색인 청크마다 policyVersion을 기록하고, search_policy는 같은 버전만 반환한다. v0.3 정책 문서는 색인하지 않는다.
 - 불일치 처리: Agent가 받은 버전과 RAG 버전이 다르면 작업을 FAILED로 끝낸다.
 - 필터 버전(`filterVersion`, 예: norm-v1+dict-v2)은 별도로 사건에 기록한다. v0.5 PR #16에서 이미 구현됐다.
@@ -154,3 +154,18 @@
 
 - 만료와 재배정 기능은 만들지 않는다. 만들지 않는 것 자체가 문서의 "자동 공개 없음"을 지킨다.
 - 보류(DEFER) 건은 검토 목록에 남는다. 화면 세부는 FE가 정한다.
+
+## ERD v1.0 구현 결정
+
+2026-10-21 · 결정: 함형민(B1). 정책 원본과 위 TBD 결정에 이름이 없는 테이블·컬럼·값을 [docs/erd.md](../erd.md) v1.0을 위해 정한다. 정책의 의미는 바꾸지 않는다.
+
+| # | 항목 | 결정 | 근거 | 담당 |
+| --- | --- | --- | --- | --- |
+| E-1 | 방송(`lives`) | 컬럼 `started_at`, `ended_at`(null = 방송 중). 상태 컬럼 없음. 채널당 진행 중 방송 1개(`ended_at IS NULL` 부분 유일). 시작·종료는 운영자 API(openapi v1.0에서 정의). 시드에 진행 중 방송 1개 | PROJECT §2, POLICY §10 | B1 |
+| E-2 | 보류 원인(`holdReasons`) | 별도 테이블 `message_hold_reasons(message_id, case_id, reason, created_at, released_at)`. `reason`은 handlingRoute 값. 미해제 원인이 남아 있으면 PUBLIC으로 되돌리지 않는다(자기 원인만 해제) | CONTRACTS §3(Message), POLICY §4 | B1 |
+| E-3 | 사건 확정 상태 | `cases.status`는 처리 진행 상태로 유지하고 `confirmation_status`(PENDING, CONFIRMED_VIOLATION, CONFIRMED_NORMAL, CANCELLED)를 추가한다. DEFER는 `decisions`에만 기록하며 상태는 PENDING으로 둔다 | CONTRACTS §3(Case), POLICY §5 | B2 |
+| E-4 | 예약 상태 | `reservations.state`: RESERVED, CONSUMED, RELEASED | POLICY §8·§9 | B2 |
+| E-5 | 결정 중복 방지 | 최종 결정(DEFER가 아닌 값)만 검토당 1건: `UNIQUE(review_id) WHERE value <> 'DEFER'`. 요청 멱등은 `UNIQUE(review_id, client_request_id)`. DEFER는 최종 결정이 아니므로 `decisions`에 이력으로 남고 검토는 PENDING으로 유지되며, 이후 최종 결정을 저장할 수 있다. 같은 요청의 재전송은 저장된 같은 결과를 돌려주고, 최종 결정이 저장된 뒤 들어온 다른 요청은 409다. 검토 요청은 공통 부모 `reviews`(CONTEXT·KICK)가 식별하고 `decisions.review_id`는 `reviews`를 참조한다 | CONTRACTS §8, TBD-04·10 | B2 |
+| E-6 | TIMEOUT 저장 | `timeouts(live_id, user_id, action_id, starts_at, expires_at)`. 활성 TIMEOUT 교체는 TBD-09(새 만료가 더 늦을 때만)를 따르되 기록은 모두 남긴다 | CONTRACTS §4(timeoutUntil), TBD-09 | B2 |
+| E-7 | 도배 재적발 상태 | `flood_marks(live_id, user_id, text_hash, case_id, confirmed_at, notice_event_id)`. `text_hash`는 norm-v1 정규화 문장의 SHA-256, `notice_event_id`는 nullable. 재적발 창은 `confirmed_at + 24시간` | ARCHITECTURE §4, POLICY §7, TBD-05·TBD-11 | B1·B2 |
+| E-8 | PII 태그 | MatchingTag에 `PII_PHONE`, `PII_ACCOUNT`, `PII_EMAIL` 추가 | TBD-02(3순위), POLICY §2 | B1 |

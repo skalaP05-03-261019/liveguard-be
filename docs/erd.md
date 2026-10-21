@@ -1,227 +1,252 @@
-# LIVE:GUARD ERD v0.5
+# LIVE:GUARD ERD v1.0
 
-작성: Backend 1 · 상태: **구현 기준안 (팀 확정 필요 항목은 6절)**
+작성: Backend 1 · 기준: [정책 원본 v3.1](policy/README.md)(PROJECT·POLICY·CONTRACTS·ARCHITECTURE)과 [TBD-decisions](policy/TBD-decisions.md)(ERD v1.0 구현 결정 E-1~E-8 포함)
 
-## 1. 구조 요약
+- 출발점은 B2가 만든 `V200__guard_cases_and_findings.sql`이다. CONTRACTS §3의 저장 객체에 맞춰 컬럼을 보완하고 테이블을 추가했다.
+- 문서에 이름이 있는 필드만 snake_case로 옮겼다. 상세 DDL(타입 세부, 인덱스 이름)은 마이그레이션에서 정한다.
+- **모든 정책 범위(집계, 도배, 재적발, TIMEOUT, 강퇴)는 `live_id`다.** `channel_id`는 고정 채널 식별자로만 쓰고 정책 범위를 대체하지 않는다(PROJECT §2).
+- 담당: **B1** = `platform` 스키마(Flyway `V1xx`), **B2** = `guard` 스키마(`V2xx`). 이미 머지된 마이그레이션은 고치지 않고 새 버전으로 추가한다.
+
+## 1. 처리 흐름
 
 ```
-채팅 POST → 1차 필터 ─ PASS ──────────────────────────────► PUBLIC
-                      └ REVIEW/HOLD/FLOOD → 사건 생성 (HOLD·FLOOD는 즉시 HELD)
-                                               ↓
-                        Agent 조사 (MCP 조회 도구 + RAG 검색)
-                                               ↓
-                        판정 제출 → Backend 업무 규칙
-                          ├ VIOLATION     → 메시지 HIDDEN, 누적 횟수 계산
-                          ├ NO_VIOLATION  → HELD였으면 PUBLIC 복원
-                          └ NEEDS_REVIEW  → 상태 유지, 운영자 검토 목록
-                                               ↓
-                        누적 3회 도달 → 강퇴 검토 생성
-                          → Agent가 kick_user 앞에서 interrupt (checkpointer 저장)
-                          → 운영자 APPROVE / REJECT → 같은 thread_id로 재개
-                          → APPROVE면 kick_user 실행 (destructiveHint)
+채팅 POST (liveId) → 활성 live ban·TIMEOUT 검사(차단이면 거부, 메시지·사건 생성 없음)
+                   → 1차 필터 → handlingRoute 1개 + matchingTags 전부
+  ├ PASS              → PUBLIC, Agent 미호출
+  ├ RULE_CONFIRMED    → 확실한 욕설·링크: BE가 같은 처리 안에서 위반 확정 → HIDDEN + 유형별 표
+  ├ FLOOD_REVIEW      → 같은 userId·liveId 10초 안 같은 문장 3회째부터 HELD → BE 규칙으로 확정(TBD-11) → 중복 HIDE (+표)
+  ├ PII_INVESTIGATION → HELD → AI 조사 → 정상은 자기 원인 해제 / 위반은 BE 검증 후 확정 / 부족하면 HELD 유지
+  └ CONTEXT_REVIEW    → HELD → AI 조사 → 판정과 무관하게 운영자 결정(interrupt) → 정상 확정 시 해제 / 위반 확정 시 HIDE + 표
+확정 사건 저장 → 같은 userId·liveId 최근 24시간 통합 사건 3건 이상 → 강퇴 심사(예약, interrupt)
+             → 운영자 승인·거절(결정 + 소진) → 같은 thread_id 재개 → 승인이면 재검증 후 kick_user → 방송 종료까지 live ban
 ```
 
-- 메시지 가림·복원은 **Backend 업무 규칙**이다. Agent는 판정만 제출하고 변경 도구를 호출하지 않는다.
-- Agent의 변경 도구는 `kick_user` 하나이며 반드시 interrupt로 멈춘다 (강의자료 표 6-3 Guardrails 최소 기준).
-- 운영자의 오탐 해제는 사람이 직접 하는 Backend 기능이다 (Agent 도구 아님).
+- 사람 승인이 없는 경로의 가림·제한은 BE 업무 규칙이 실행한다. Agent의 MCP 변경 도구는 사람 승인 interrupt 뒤에서만 호출한다(TBD-12).
+- AI 제안(`findings.source = AI_PROPOSAL`)은 집계하지 않는다. BE 확정(`source = BACKEND`, `status = CONFIRMED`)만 집계한다.
 
 ## 2. 관계도
 
 ```mermaid
 erDiagram
-    USERS ||--o{ CHANNEL_MEMBERS : joins
+    CHANNELS ||--o{ LIVES : hosts
     CHANNELS ||--o{ CHANNEL_MEMBERS : has
-    CHANNELS ||--o{ MESSAGES : contains
+    USERS ||--o{ CHANNEL_MEMBERS : joins
+    LIVES ||--o{ MESSAGES : contains
     USERS ||--o{ MESSAGES : writes
-    CASES ||--o{ MESSAGES : groups
-    CASES }o--o| KICK_REVIEWS : "counted in"
-    KICK_REVIEWS ||--o| KICKS : executes
-
-    USERS {
-        uuid id PK
-        text username UK
-        text password_hash
-        text nickname
-        text role "VIEWER MODERATOR PLATFORM_ADMIN"
-    }
-    CHANNELS {
-        uuid id PK
-        text name
-        jsonb official_hosts "normalized hosts"
-        jsonb official_events
-    }
-    CHANNEL_MEMBERS {
-        uuid channel_id PK, FK
-        uuid user_id PK, FK
-        text member_role "VIEWER STREAMER OFFICIAL_STAFF MODERATOR"
-    }
-    MESSAGES {
-        uuid id PK
-        uuid channel_id FK
-        uuid author_id FK
-        uuid client_message_id
-        text text "1..500"
-        text normalized_text
-        text filter_result "PASS REVIEW HOLD FLOOD"
-        text visibility "PUBLIC HELD HIDDEN"
-        uuid case_id FK
-        int version
-        timestamptz sent_at
-    }
-    CASES {
-        uuid id PK
-        uuid channel_id FK
-        uuid user_id FK
-        text filter_result "REVIEW HOLD FLOOD"
-        jsonb matching_tags "1차 필터 매칭 태그 (InternalCase.matchingTags)"
-        text status "ANALYZING NO_ACTION HIDDEN NEEDS_REVIEW KICK_REVIEW_PENDING CLOSED FAILED"
-        text verdict "VIOLATION NO_VIOLATION NEEDS_REVIEW"
-        text category "PROFANITY HARASSMENT FLOOD PHISHING"
-        text reason
-        jsonb evidence_message_ids
-        jsonb policy_snapshots
-        bool counted "counts toward kick"
-        uuid kick_review_id FK
-        timestamptz released_at
-        uuid released_by
-        text thread_id
-        uuid trace_id
-        int version
-        timestamptz created_at
-        timestamptz judged_at
-    }
-    KICK_REVIEWS {
-        uuid id PK
-        uuid channel_id FK
-        uuid user_id FK
-        uuid trigger_case_id FK
-        text summary "agent summary for moderator"
-        text status "PENDING APPROVED REJECTED EXECUTED FAILED"
-        uuid decided_by
-        text decision_reason
-        uuid client_request_id
-        int version
-        timestamptz created_at
-        timestamptz decided_at
-    }
-    KICKS {
-        uuid id PK
-        uuid review_id UK
-        uuid channel_id FK
-        uuid user_id FK
-        text idempotency_key UK
-        timestamptz starts_at
-        timestamptz expires_at
-        timestamptz revoked_at
-    }
+    MESSAGES ||--o{ MESSAGE_HOLD_REASONS : "held by"
+    CASES ||--o{ MESSAGE_HOLD_REASONS : causes
+    LIVES ||--o{ CASES : scopes
+    CASES ||--o{ CANDIDATES : "opened by"
+    CASES ||--o{ CASE_MESSAGES : groups
+    MESSAGES ||--o{ CASE_MESSAGES : "linked as"
+    CASES ||--o{ FINDINGS : records
+    FINDINGS ||--o{ FINDING_EVENTS : audits
+    LIVES ||--o{ REVIEWS : scopes
+    CASES ||--o{ REVIEWS : "context target"
+    REVIEWS ||--o| CONTEXT_REVIEWS : "kind CONTEXT"
+    REVIEWS ||--o| KICK_REVIEWS : "kind KICK"
+    REVIEWS ||--o{ REVIEW_BASIS : freezes
+    CASES ||--o{ REVIEW_BASIS : "referenced by"
+    REVIEWS ||--o{ RESERVATIONS : reserves
+    CASES ||--o{ RESERVATIONS : "reserved as"
+    REVIEWS ||--o{ DECISIONS : receives
+    REVIEWS ||--o{ CONSUMPTIONS : consumes
+    DECISIONS ||--o{ CONSUMPTIONS : "recorded by"
+    CASES ||--o{ CONSUMPTIONS : "consumed as"
+    DECISIONS ||--o{ ACTIONS : authorizes
+    ACTIONS ||--o| LIVE_BANS : creates
+    ACTIONS ||--o| TIMEOUTS : creates
+    LIVES ||--o{ LIVE_BANS : restricts
+    LIVES ||--o{ TIMEOUTS : limits
+    LIVES ||--o{ FLOOD_MARKS : tracks
+    CASES ||--o| FLOOD_MARKS : "confirmed as"
 ```
 
-Python 쪽: `rag.policy_chunks`(rag-mcp), LangGraph checkpointer(Agent). Flyway는 `platform`·`guard` 스키마만 관리한다.
+검토 요청은 공통 부모 `reviews`(`kind`로 CONTEXT·KICK 구분)가 식별한다. `context_reviews`·`kick_reviews`는 `review_id`를 PK이자 `reviews` FK로 갖는 1:1 하위 테이블이고, `decisions`·`consumptions`·`reservations`·`review_basis`는 `reviews`만 참조한다(종류별 테이블에 FK를 나눠 걸지 않는다). Python 쪽 `rag.policy_chunks`(rag-mcp)와 LangGraph checkpointer는 Flyway 관리 대상이 아니다.
 
-v0.4 대비 삭제: tenants, holds·visibility_reasons, case_messages(→ `messages.case_id`), case_snapshots, message_judgments, findings 4종, action_plans, actions, appeals, review_decisions, tasks(lease·fence), outbox, processed_events, notifications, stream_events, policy_sets, client_requests, security_facts. **25개 → 7개.**
+## 3. 테이블
 
-## 3. 제약·인덱스
+### platform (B1)
+
+| 테이블 | 컬럼 | 비고 |
+| --- | --- | --- |
+| `users` | `id` PK, `username` UK, `password_hash`, `nickname`, `role`(VIEWER, MODERATOR, PLATFORM_ADMIN) | v0.5 유지 |
+| `channels` | `id` PK, `name`, `official_hosts` jsonb, `official_events` jsonb | v0.5 유지. `official_hosts`는 **링크 허용 예외가 아니다.** 사칭 조사 참고 자료로만 쓴다(POLICY §2, CONTRACTS §7) |
+| `channel_members` | `channel_id`·`user_id` PK, `member_role`(VIEWER, STREAMER, OFFICIAL_STAFF, MODERATOR) | v0.5 유지. 담당 운영자 = 그 채널의 MODERATOR. liveId 범위 권한은 방송의 `channel_id`로 확인 |
+| **`lives`** | `id` PK(liveId), `channel_id` FK, `started_at`, `ended_at`(null = 방송 중) | **신규(E-1).** 상태 컬럼 없음. 채널당 진행 중 방송 1개. 시작·종료는 운영자 API(openapi v1.0) |
+| `messages` | `id` PK, **`live_id` FK**, `channel_id` FK, `author_id` FK, `client_message_id`, `text`(1..500), `normalized_text`(norm-v1), `filter_result`, `visibility`(PUBLIC, HELD, HIDDEN), `case_id` FK(소유 사건), `version`, `sent_at` | `live_id` 추가. `filter_result`의 REVIEW는 v3.1 경로에서 쓰지 않는다 |
+| **`message_hold_reasons`** | `message_id` FK, `case_id` FK, `reason`(handlingRoute 값), `created_at`, `released_at` | **신규(E-2).** 해제는 자기 원인만. 미해제 원인이 남아 있으면 PUBLIC으로 되돌리지 않는다 |
+
+### guard (B2)
+
+| 테이블 | 컬럼 | 비고 |
+| --- | --- | --- |
+| `cases` | `id` PK, `channel_id` FK, `user_id` FK, **`live_id` FK NOT NULL**, **`policy_version` NOT NULL**, `handling_route`, `status`, **`confirmation_status`**, `snapshot_id`, `evidence_version`, `version`, `judged_at`, `occurred_at`, `created_at` | V200 기준. `live_id`·`policy_version`은 NOT NULL로, `confirmation_status`(PENDING, CONFIRMED_VIOLATION, CONFIRMED_NORMAL, CANCELLED, E-3) 추가. `status`는 처리 진행 상태로 유지. DEFER는 `decisions`에만 기록하고 PENDING 유지 |
+| `candidates` | `message_id` PK·FK, `case_id` FK, `filter_result`, `matching_tags`, `filter_version`, `related_message_ids`, `sent_at`, `snapshot_id` UK, `evidence_version` | V200 유지. 1차 필터 입력 스냅샷(`filter_version` 예: `norm-v1+dict-v2`, TBD-08) |
+| `case_messages` | `case_id`·`message_id` PK, `owned`, `is_target` | V200 유지. `is_target` = 제재 대상(TARGET), 아니면 증거. 메시지는 한 사건만 소유(`owned`) |
+| `findings` | `id` PK, `case_id` FK, `category`(5종), `source`(AI_PROPOSAL, BACKEND), `verdict`, `status`(PROPOSED, CONFIRMED, REVOKED), `policy_version`, `evidence_reference`, `evidence_version`, `created_at`, **`confirmed_at`**, **`revoked_at`** | V200 기준. `confirmed_at`·`revoked_at` 추가. 부분 유형 취소는 finding 단위. 유효 finding이 0개면 사건 취소(TBD-04) |
+| `finding_events` | `id` PK, `finding_id` FK, `event_type`, `decision_reference`, `reason`, `created_at` | V200 유지. 감사 이력 |
+| **`reviews`** | `review_id` PK, `kind`(ReviewKind), `live_id` FK, `case_id` FK(nullable), `thread_id`, `status`(ReviewStatus) | **신규. 검토 요청의 공통 부모.** `case_id`는 CONTEXT에서 검토 대상 사건이고 KICK에서는 비워 둔다(기준 사건은 `review_basis`). `status`는 최종 결정이 저장될 때만 DECIDED가 된다(DEFER는 PENDING 유지) |
+| **`context_reviews`** | `review_id` PK·FK(`reviews`), `ai_verdict`, `evidence_version` | **신규.** `reviews.kind = CONTEXT`인 검토의 1:1 하위. AI 정상 제안이어도 결정 대기 |
+| **`kick_reviews`** | `review_id` PK·FK(`reviews`), `basis_snapshot_id`, `version` | **신규.** `reviews.kind = KICK`인 검토의 1:1 하위. 실제 심사 기준 집합은 `review_basis`로 고정 |
+| **`review_basis`** | `review_id` FK(`reviews`), `case_id` FK | **신규.** `basisCaseIds`(KICK 검토). 3건 초과 시 확정 시각이 가장 오래된 3건(TBD-06) |
+| **`reservations`** | `review_id` FK(`reviews`), `case_id` FK, `state`(RESERVED, CONSUMED, RELEASED) | **신규(E-4).** 대기 중 다른 심사가 같은 사건을 쓰지 못하게 함 |
+| **`decisions`** | `decision_id` PK, `review_id` FK(`reviews`), `value`(ContextDecision 또는 KickDecision), `operator_id`, `decided_at`, `client_request_id` | **신규(E-5).** 한 검토에 DEFER 이력이 여러 건일 수 있고 최종 결정은 1건. 종류(ReviewKind)는 `reviews.kind`로 조회 |
+| **`consumptions`** | `case_id` FK, `review_id` FK(`reviews`), `decision_id` FK, `consumed_at` | **신규.** 승인·거절 모두 기록. 위반 사실과 TIMEOUT 이력은 지우지 않음 |
+| **`actions`** | `action_id` PK, `type`(HIDE, TIMEOUT, RELEASE_HELD, KICK), `live_id` FK, `user_id` FK, `decision_id` FK(nullable, 규칙 경로는 없음), `status`(ActionStatus), `observation`(CONFIRMED, UNKNOWN), `idempotency_key` UK, `attempt_count`, `retry_count` | **신규.** 승인 사실과 실행 결과 분리. KICK은 최초 + 재시도 최대 2회 |
+| **`timeouts`** | `live_id` FK, `user_id` FK, `action_id` FK, `starts_at`, `expires_at` | **신규(E-6).** 교체는 새 만료가 더 늦을 때만(TBD-09), 기록은 모두 남김 |
+| **`live_bans`** | `live_id` FK, `user_id` FK, `action_id` FK, `active_until_live_end` | **신규.** 방송 종료까지 입장·채팅 금지. 24시간 만료 없음, 새 liveId에 승계 안 함 |
+| **`flood_marks`** | `live_id` FK, `user_id` FK, `text_hash`, `case_id` FK, `confirmed_at`, `notice_event_id`(nullable) | **신규(E-7).** `text_hash` = norm-v1 정규화 문장의 SHA-256. 재적발 창 = `confirmed_at + 24시간` |
+
+**v0.5 대비 삭제**: `kicks`(→ `actions` KICK + `live_bans`, 86400초 상한 제거), v0.5 ERD에만 있던 `cases`의 `verdict`·`category`·`reason`·`evidence_message_ids`·`policy_snapshots`·`counted`·`kick_review_id`·`released_at`·`released_by`·`thread_id`·`trace_id`(→ `findings`, `reviews`, `context_reviews`, `kick_reviews`, `review_basis`, `consumptions`로 분리).
+
+## 4. 제약·인덱스
 
 | 테이블 | 제약·인덱스 | 이유 |
 | --- | --- | --- |
-| messages | `UNIQUE(channel_id, author_id, client_message_id)` | 재전송 중복 제거 |
-| messages | 인덱스 `(channel_id, sent_at DESC)` | 이력 조회 |
-| messages | 인덱스 `(channel_id, author_id, normalized_text, sent_at)` | 도배 10초 3회 판정 |
-| cases | 인덱스 `(channel_id, user_id, judged_at) WHERE counted AND released_at IS NULL AND kick_review_id IS NULL` | 누적 횟수 계산 |
-| kick_reviews | 부분 유일 `(channel_id, user_id) WHERE status = 'PENDING'` | 같은 사용자에 대한 검토 1건 |
-| kick_reviews | `UNIQUE(decided_by, client_request_id)` | 결정 버튼 중복 클릭 |
-| kicks | `UNIQUE(review_id)`, `UNIQUE(idempotency_key)` | 강퇴 중복 실행 방지 (Recovery 재시도 대비) |
-| kicks | `CHECK (expires_at - starts_at <= interval '86400 seconds')` | 강퇴 기간 상한 |
-| kicks | 인덱스 `(channel_id, user_id, expires_at) WHERE revoked_at IS NULL` | 전송·구독 차단 확인 |
+| lives | 부분 유일 `(channel_id) WHERE ended_at IS NULL` | 채널당 진행 중 방송 1개 |
+| messages | `UNIQUE(live_id, author_id, client_message_id)` | 재전송 중복 제거 |
+| messages | 인덱스 `(live_id, sent_at DESC)` | 이력 조회 |
+| messages | 인덱스 `(live_id, author_id, normalized_text, sent_at)` | 도배 10초 창, 묶음 열림 확인 |
+| message_hold_reasons | 인덱스 `(message_id) WHERE released_at IS NULL` | 미해제 원인 확인 |
+| case_messages | 부분 유일 `(message_id) WHERE owned` | 메시지는 한 사건만 소유 (V200) |
+| findings | 부분 유일 `(case_id, category) WHERE status = 'CONFIRMED'` | 같은 사건의 중복 유형 제거 (V200) |
+| reviews | 인덱스 `(live_id, kind, status)` | 운영자 목록에서 문맥 검토와 강퇴 승인을 구분 |
+| reviews | `CHECK ((kind = 'CONTEXT') = (case_id IS NOT NULL))` | CONTEXT만 대상 사건을 가진다 |
+| context_reviews, kick_reviews | `review_id` PK이자 `reviews` FK | 검토당 하위 행 1개. 행의 종류는 `reviews.kind`와 같아야 하며 서비스가 생성 시 보장 |
+| review_basis | `PRIMARY KEY(review_id, case_id)` | 기준 집합 고정 |
+| reservations | 부분 유일 `(case_id) WHERE state = 'RESERVED'` | 대기 중 심사 중복 사용 금지 |
+| decisions | 부분 유일 `(review_id) WHERE value <> 'DEFER'` | **최종 결정만** 검토당 1건. DEFER는 최종이 아니므로 여러 건과, 이후 최종 결정을 허용 |
+| decisions | `UNIQUE(review_id, client_request_id)` | 요청 멱등. 같은 요청 재전송은 저장된 같은 결과를 돌려준다 |
+| consumptions | `PRIMARY KEY(case_id, review_id)` | 소진 관계 보존 (사용자 카운터 초기화로 구현하지 않음) |
+| actions | `UNIQUE(idempotency_key)` | 실제 효과 1회 |
+| live_bans | `UNIQUE(live_id, user_id, action_id)` | 같은 실행으로 중복 금지 생성 방지 |
+| timeouts | 인덱스 `(live_id, user_id, expires_at)` | 전송 차단 확인 |
+| flood_marks | 인덱스 `(live_id, user_id, text_hash, confirmed_at)` | 재적발 확인 |
 
-## 4. 핵심 쿼리
+## 5. 핵심 쿼리
 
-누적 위반 횟수 (6절 기본값 기준):
+`:now`·`:sentAt`은 주입 Clock의 서버 수신 UTC 시각을 마이크로초로 자른 값이다(TBD-05).
 
-```sql
-SELECT count(*) FROM guard.cases
-WHERE channel_id = :channelId AND user_id = :userId
-  AND counted AND released_at IS NULL
-  AND kick_review_id IS NULL                    -- 이미 검토에 사용된 사건 제외
-  AND judged_at >= :now - interval '24 hours';
-```
-
-판정 제출 처리 (Backend, 한 트랜잭션):
-
-```
-1. cases.version = expectedVersion 확인 (다르면 409)
-2. verdict 저장
-3. VIOLATION    → 사건 메시지 visibility = HIDDEN (filter_result=PASS인 증거 메시지는 제외), counted = true
-   NO_VIOLATION → HELD 메시지를 PUBLIC으로
-   NEEDS_REVIEW → 그대로
-4. 누적 횟수 ≥ 3 이고 PENDING 검토가 없으면
-   → kick_reviews(PENDING) 생성, 해당 사건들의 kick_review_id 연결
-5. 커밋 후 SSE 발행 (MESSAGE_VISIBILITY_CHANGED, CASE_UPDATED, KICK_REVIEW_REQUIRED)
-6. 응답: { caseStatus, violationCount, kickReviewId | null }
-```
-
-전송·구독 차단 확인:
+**전송 차단** (먼저 검사, 차단이면 메시지·사건·도배 카운터를 만들지 않음, AC-10):
 
 ```sql
-SELECT max(expires_at) FROM guard.kicks
-WHERE channel_id = :channelId AND user_id = :userId
-  AND revoked_at IS NULL AND expires_at > :now;   -- :now는 주입 가능한 Clock
+-- 활성 live ban: 방송이 아직 진행 중이면 유효
+SELECT 1 FROM guard.live_bans b JOIN platform.lives l ON l.id = b.live_id
+WHERE b.live_id = :liveId AND b.user_id = :userId AND b.active_until_live_end AND l.ended_at IS NULL;
+
+-- 활성 TIMEOUT
+SELECT max(expires_at) FROM guard.timeouts
+WHERE live_id = :liveId AND user_id = :userId AND expires_at > :now;
 ```
 
-후보 전달(`CandidateSink.open`)과 FLOOD 사건 묶기 — BE1 이슈 #15에서 확정:
-
-| 항목 | 내용 |
-| --- | --- |
-| 호출 조건 | 1차 필터가 PASS가 아니고 **새로 저장된** 메시지. 메시지 저장과 같은 트랜잭션. 재전송은 호출하지 않음 |
-| 전달 값 | `channelId`, `userId`, `messageId`, `filterResult`, `matchingTags`(`MatchingTag` 6종), `filterVersion`, `sentAt`, `relatedMessageIds` |
-| `filterVersion` | 정규화·사전 버전 조합. 예: `norm-v1+dict-v2` (재현·감사용) |
-| `sentAt` | 서버가 요청을 받아 주입 Clock으로 정한 UTC 시각(마이크로초). 클라이언트 시각이 아님. 사건 생성 시각(`cases.created_at`)과 다름. 락 전에 정해지고 재전송 응답과 같음 |
-| 이번 범위에서 없는 것 | `liveId`(방송 단위는 Phase 2, 범위는 채널 + 최근 24시간), `handlingRoute`, `policyVersion`(판정 제출 시 `policySnapshots`로 저장), `normalizedTextHash` |
-
-FLOOD 판정에 쓰는 10초 창 (`platform.messages`, 실제 쿼리):
+**도배 10초 창** (현재 메시지 포함 3회 이상이면 FLOOD_REVIEW):
 
 ```sql
 SELECT id FROM platform.messages
-WHERE channel_id = :channelId AND author_id = :authorId AND normalized_text = :normalizedText
-  AND sent_at > :sentAt - interval '10 seconds'     -- 하한 제외: 정확히 10초 전 메시지는 불포함
+WHERE live_id = :liveId AND author_id = :userId AND normalized_text = :normalizedText
+  AND sent_at > :sentAt - interval '10 seconds'     -- 하한 제외: 정확히 10초 전은 불포함
 ORDER BY sent_at, id;                               -- relatedMessageIds (오래된 순)
--- 결과 행 수 + 1(현재 메시지) >= 3 이면 FLOOD (HOLD가 아닐 때). 상한은 없음(동시 요청 시 sentAt 순서 역전 가능, 제출 후 개선)
 ```
 
-사건 묶기: `relatedMessageIds` 중 판정 전(`ANALYZING`) 사건에 연결된 메시지가 있으면 **그 caseId를 재사용**하고, 없으면
-새 사건을 만든다(여러 개면 가장 최근 메시지에 연결된 사건). B1은 반환된 caseId를 현재 메시지와 `case_id IS NULL`인
-관련 메시지에만 기록한다.
+**도배 사건 묶기 (TBD-04)**: 재사용 조건은 **같은 `user_id`·`live_id`·문장의 `FLOOD_REVIEW` 묶음이 열려 있음**이다. 사건 상태(ANALYZING 여부, `judged_at`)는 보지 않지만 재사용 대상은 `handling_route = 'FLOOD_REVIEW'` 사건으로 제한한다. 같은 문장의 문맥·개인정보 사건(CONTEXT_REVIEW, PII_INVESTIGATION)에는 붙지 않는다. 그래서 3번째에서 즉시 확정(TBD-11)해도 같은 묶음의 4·5번째는 같은 사건에 붙고, 한 번의 도배가 강퇴 집계에서 1건이 된다.
 
-| 도착(초) | 메시지 | `relatedMessageIds` | 결과 |
+```sql
+-- 열린 묶음: 위 10초 창 안에 이미 FLOOD_REVIEW 사건을 소유한 같은 문장 메시지가 있으면 그 사건
+SELECT cm.case_id FROM platform.messages m
+JOIN guard.case_messages cm ON cm.message_id = m.id AND cm.owned
+JOIN guard.cases c ON c.id = cm.case_id AND c.handling_route = 'FLOOD_REVIEW'
+WHERE m.live_id = :liveId AND m.author_id = :userId AND m.normalized_text = :normalizedText
+  AND m.sent_at > :sentAt - interval '10 seconds'   -- 마지막 반복 후 10초가 지나면 묶음 종료
+ORDER BY m.sent_at DESC, m.id DESC
+LIMIT 1;
+-- 결과 없음 → 새 사건. 앞의 두 메시지는 증거로 연결만 하고 가리지 않는다(is_target = false)
+```
+
+**도배 재적발** (첫 확정 후 24시간 안 같은 문장은 1회로도 새 도배 사건, POLICY §7):
+
+```sql
+SELECT case_id FROM guard.flood_marks
+WHERE live_id = :liveId AND user_id = :userId AND text_hash = :textHash
+  AND confirmed_at + interval '24 hours' > :sentAt;
+```
+
+**강퇴 집계** (신규 심사 후보, POLICY §8, CONTRACTS §6):
+
+```sql
+SELECT DISTINCT c.id FROM guard.cases c
+JOIN guard.findings f ON f.case_id = c.id
+WHERE c.live_id = :liveId AND c.user_id = :userId
+  AND f.source = 'BACKEND' AND f.status = 'CONFIRMED' AND f.verdict = 'VIOLATION'
+  AND f.confirmed_at > :now - interval '24 hours'   -- 현재 사건 포함
+  AND NOT EXISTS (SELECT 1 FROM guard.consumptions x WHERE x.case_id = c.id)
+  AND NOT EXISTS (SELECT 1 FROM guard.reservations r WHERE r.case_id = c.id AND r.state = 'RESERVED');
+-- 3건 이상이면 강퇴 심사 요청. 다섯 유형 통합, 한 사건의 여러 유형은 1건
+```
+
+**TIMEOUT 이력** (유형별 제재표의 "이전 확정", TBD-03):
+
+```sql
+SELECT count(DISTINCT c.id) FROM guard.cases c
+JOIN guard.findings f ON f.case_id = c.id
+WHERE c.live_id = :liveId AND c.user_id = :userId AND c.id <> :currentCaseId
+  AND f.category = :category AND f.source = 'BACKEND' AND f.status = 'CONFIRMED' AND f.verdict = 'VIOLATION';
+-- 범위는 같은 방송 전체(history-scope=LIVE). 소진된 사건도 포함, 취소(revoked_at)는 제외
+```
+
+**승인 재검증** (승인 실행 근거, CONTRACTS §6·§9): `review_basis`의 기준 사건 집합을 그대로 쓰고, 각 사건이 여전히 확정·시간창 안·같은 userId/liveId인지 확인한다. 소진은 **이 review의 decision이 만든 것만** 허용하고 다른 심사의 소진은 거부한다. 신규 심사용 집계(소진 제외)를 재검증에 그대로 쓰지 않는다.
+
+**판정 처리 순서**
+
+| 경로 | 확정 주체 | 저장 | 메시지 |
 | --- | --- | --- | --- |
-| 0 | m1 | - | PASS (창 안 1건) |
-| 1 | m2 | - | PASS (2건) |
-| 2 | m3 | `[m1, m2]` | FLOOD, 새 사건 X. m1·m2·m3의 `case_id` = X (m1·m2는 공개 유지) |
-| 3 | m4 | `[m1, m2, m3]` | FLOOD, X가 `ANALYZING`이므로 X 재사용 |
-| 4 | m5 | `[m1, m2, m3, m4]` | FLOOD, X 재사용 → 3·4·5번째가 같은 사건, 누적 1회 |
-| 10 (m1이 0초일 때) | m6 | `[m2, m3, m4, m5]` | m1은 정확히 10초 전이라 창에서 빠짐. 나머지로 FLOOD, X 재사용 |
+| RULE_CONFIRMED | BE 규칙 | `findings`(BACKEND, CONFIRMED), `actions`(HIDE, 표에 따라 TIMEOUT), `timeouts` | 같은 처리 안에서 HIDDEN |
+| FLOOD_REVIEW | BE 규칙(TBD-11) | 위와 같음 + `flood_marks` | 3번째 이후 중복 HIDE, 첫 두 메시지는 공개 유지 |
+| PII_INVESTIGATION | AI 판정 → BE 검증 | AI 제안은 `findings`(AI_PROPOSAL), 확정은 BACKEND | 정상이면 자기 원인 해제, 부족하면 HELD 유지 |
+| CONTEXT_REVIEW | 운영자 결정 | `reviews`, `context_reviews`, `decisions`(ContextDecision), 확정 시 `findings`(BACKEND) | 정상 확정 시 자기 원인 해제, 위반 확정 시 HIDE + 표, DEFER는 HELD 유지 |
+| 강퇴 | 운영자 승인 + 재검증 | `reviews`, `kick_reviews`, `review_basis`, `reservations`, `decisions`, `consumptions`, `actions`(KICK), `live_bans` | 기존 HIDE·TIMEOUT 유지 |
 
-X가 이미 판정(`HIDDEN` 등)됐으면 다음 도배 메시지는 새 사건 Y를 연다(X에 연결된 메시지의 `case_id`는 그대로).
-확실한 욕설·피싱 HOLD는 FLOOD보다 우선하므로 같은 욕설 반복은 FLOOD가 아니라 HOLD 여러 건이며
-`relatedMessageIds`는 비어 있다.
+모든 경로가 확정 사건을 저장하면 강퇴 집계를 확인한다. 결정 저장과 소진은 한 트랜잭션(또는 outbox)으로 함께 기록한다. 이벤트는 커밋 후 발행한다.
 
-## 5. 담당
+## 6. enum
+
+| enum | 값 | 비고 |
+| --- | --- | --- |
+| FilterResult | PASS, REVIEW, HOLD, FLOOD | **REVIEW는 v3.1 경로에서 미사용** (신규 의미 부여 금지) |
+| HandlingRoute | PASS, RULE_CONFIRMED, CONTEXT_REVIEW, PII_INVESTIGATION, FLOOD_REVIEW | 우선순위 RULE_CONFIRMED > FLOOD_REVIEW > PII_INVESTIGATION > CONTEXT_REVIEW > PASS (TBD-02) |
+| Category | PROFANITY, HARASSMENT, FLOOD, PHISHING, PII_EXPOSURE | 유형별 TIMEOUT 계산 |
+| MatchingTag | ATTACK_TERM, CERTAIN_PROFANITY, OFFICIAL_CLAIM, CREDENTIAL_REQUEST, **LINK**, REPEATED_TEXT, **PII_PHONE**, **PII_ACCOUNT**, **PII_EMAIL** | v0.5의 `UNOFFICIAL_URL`을 공식 링크 포함 `LINK`로, PII 태그 3종 추가(E-8) |
+| Visibility | PUBLIC, HELD, HIDDEN | |
+| Verdict | NO_VIOLATION, VIOLATION, NEEDS_REVIEW | 출처(`findings.source`)와 함께 저장 |
+| confirmation_status | PENDING, CONFIRMED_VIOLATION, CONFIRMED_NORMAL, CANCELLED | E-3 |
+| ReviewKind | CONTEXT, KICK | |
+| ContextDecision | CONFIRM_NORMAL, CONFIRM_VIOLATION, DEFER | DEFER는 공개 승인 아님 |
+| KickDecision | APPROVE, REJECT | |
+| ReviewStatus | PENDING, DECIDED | 결정 상태, 실행 상태와 분리 |
+| reservations.state | RESERVED, CONSUMED, RELEASED | E-4 |
+| ActionType | HIDE, TIMEOUT, RELEASE_HELD, KICK | |
+| ActionStatus | PENDING, RUNNING, SUCCEEDED, FAILED | |
+| Observation | CONFIRMED, UNKNOWN | UNKNOWN이면 결과 미확인(실패로 단정 안 함) |
+
+`openapi.yaml`과 Java enum은 이 문서에 맞춰 v1.0 계약 작업에서 바꾼다(현재 Java `MatchingTag`는 v0.5 6종).
+
+## 7. 담당
 
 | 영역 | 테이블·기능 | 담당 |
 | --- | --- | --- |
 | 인증 | users, 세션 로그인, 역할·채널 권한 | B1 |
-| 채팅 | channels, channel_members, messages, 1차 필터, 채팅 SSE | B1 |
-| 사건·판정 | cases, 판정 제출 처리, 누적 계산, 관제 SSE 이벤트 발행 | B2 |
-| 강퇴 | kick_reviews, kicks, 결정 API, kick_user 내부 API | B2 |
-| 내부 조회 API | context·history·channel info | B1 (데이터 주인) |
+| 방송·채팅 | lives, channels, channel_members, messages, message_hold_reasons, 1차 필터, 전송 차단 확인, 채팅 SSE | B1 |
+| 도배 재적발 | flood_marks (탐지는 B1 전송 경로, 확정 기록은 B2) | B1·B2 |
+| 사건·판정 | cases, candidates, case_messages, findings, finding_events, reviews, context_reviews, decisions(CONTEXT) | B2 |
+| 제재 | actions, timeouts, live_bans, 유형별 표 계산 | B2 |
+| 강퇴 | kick_reviews, review_basis, reservations, decisions(KICK), consumptions | B2 |
+| 내부 조회 API | context·channel info (데이터 주인) | B1 |
 
-## 6. 팀 확정 필요 (기본값으로 작성됨)
+## 8. 미정 (정책 원본의 TBD 중 이 ERD에 남은 것)
 
-| # | 항목 | 기본값 |
+| TBD | 남은 결정 | 이 문서의 처리 |
 | --- | --- | --- |
-| 1 | 3회를 세는 단위 | 메시지가 아니라 **위반 사건**. 도배 10개가 한 사건이면 1회 |
-| 2 | 집계 기간·범위 | 최근 24시간, 같은 채널, 운영자가 해제한 사건 제외 |
-| 3 | 강퇴의 의미 | 해당 채널에서 24시간 전송·구독 금지, 열린 SSE 종료. 영구 강퇴 없음 |
-| 4 | 운영자 거절 후 | 가림은 유지. 검토에 쓰인 3건은 소진되고, 새 위반 3건이 쌓이면 다시 검토 |
-| 5 | 오탐 해제 | 운영자가 사건 해제 → 메시지 PUBLIC, 누적에서 제외 |
-| 6 | 유형 | PROFANITY, HARASSMENT, FLOOD, PHISHING (PII 제외, 마스킹만) |
+| TBD-04 | 재적발 메시지마다 별도 사건으로 쪼갤지 | 묶음 규칙(마지막 반복 후 10초)을 재적발에도 적용 |
+| TBD-06 | 재검증 탈락 후 검토 상태(INVALIDATED) | `reviews.status`(ReviewStatus)에 값을 추가할지는 openapi v1.0에서 정함 |
+| TBD-07 | kick 일시 오류 코드·간격 | `actions.attempt_count`·`retry_count`로 예산만 보존 |
+| TBD-10 | 검토 대기 만료·재배정 | 만들지 않음(자동 공개 없음) |

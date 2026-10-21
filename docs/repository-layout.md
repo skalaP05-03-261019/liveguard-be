@@ -12,7 +12,7 @@ organization: [skalaP05-03-261019](https://github.com/skalaP05-03-261019)
 
 ## 공통 기준
 
-정책의 기준 위치는 [docs/policy/](policy/README.md)다(정책 원본 v3.0: PROJECT·POLICY·CONTRACTS·ARCHITECTURE와 미정 항목 결정 TBD-decisions).
+정책의 기준 위치는 [docs/policy/](policy/README.md)다(정책 원본 v3.1: PROJECT·POLICY·CONTRACTS·ARCHITECTURE와 미정 항목 결정 TBD-decisions).
 [docs/live-guard/v0.3](live-guard/v0.3/README.md)는 이전 기획이며 구현 기준이 아니다(평가 사례 evaluation_cases.md만 계속 사용).
 분리는 배치 변경이며 정책이나 구현 완료 상태를 변경하지 않는다.
 API·도구·정책 버전을 변경할 때 Backend·Agent·Frontend 담당이 함께 검토한다.
