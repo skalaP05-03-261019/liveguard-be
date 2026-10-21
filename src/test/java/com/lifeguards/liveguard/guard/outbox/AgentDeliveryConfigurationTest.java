@@ -30,14 +30,22 @@ class AgentDeliveryConfigurationTest {
 	@Test
 	void enabledConfigurationCreatesWorkerAndDisablingItCreatesNoNetworkClients() {
 		var runner = new ApplicationContextRunner()
-				.withUserConfiguration(AgentDeliveryConfiguration.class)
+				.withUserConfiguration(AgentDeliveryConfiguration.class, AgentRabbitConfiguration.class)
 				.withBean(AgentOutboxRepository.class, () -> mock(AgentOutboxRepository.class))
 				.withBean(Clock.class, Clock::systemUTC)
 				.withBean(JsonMapper.class, () -> JsonMapper.builder().build());
 		runner.run(context -> {
 			assertTrue(context.getBeansOfType(AgentHttpGateway.class).isEmpty());
 			assertTrue(context.getBeansOfType(AgentDeliveryWorker.class).isEmpty());
+			assertTrue(context.getBeansOfType(AgentRabbitTransport.class).isEmpty());
 		});
+		runner.withPropertyValues("liveguard.agent.delivery.transport=rabbit").run(context -> {
+			assertTrue(context.getBeansOfType(AgentHttpGateway.class).isEmpty());
+			assertTrue(context.getBeansOfType(AgentRabbitTransport.class).isEmpty());
+			assertTrue(context.getBeansOfType(AgentDeliveryConfiguration.DeliveryScheduler.class).isEmpty());
+		});
+		runner.withPropertyValues("liveguard.agent.delivery.transport=typo").run(context ->
+				assertNotNull(context.getStartupFailure()));
 		runner.withPropertyValues("liveguard.agent.delivery.enabled=true",
 				"liveguard.agent.delivery.base-url=http://127.0.0.1:1",
 				"liveguard.agent.delivery.service-token=test-only",

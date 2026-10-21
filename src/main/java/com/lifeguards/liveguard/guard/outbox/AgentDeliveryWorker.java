@@ -1,6 +1,7 @@
 package com.lifeguards.liveguard.guard.outbox;
 
 import java.time.Clock;
+import java.util.UUID;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -24,12 +25,20 @@ public class AgentDeliveryWorker {
 	}
 
 	public boolean deliverOne() {
+		return deliver(null);
+	}
+
+	/** True means an outcome was persisted, or no eligible row exists for this notification. */
+	public boolean deliver(UUID id) {
 		if (TransactionSynchronizationManager.isActualTransactionActive()) {
 			throw new IllegalStateException("Agent delivery must run outside a business transaction");
 		}
-		var claimed = repository.claim(clock.instant(), clock.instant().plus(properties.leaseDuration()));
+		var nowForClaim = clock.instant();
+		var claimed = id == null
+				? repository.claim(nowForClaim, nowForClaim.plus(properties.leaseDuration()))
+				: repository.claim(id, nowForClaim, nowForClaim.plus(properties.leaseDuration()));
 		if (claimed.isEmpty()) {
-			return false;
+			return id != null;
 		}
 		var delivery = claimed.get();
 		var result = gateway.deliver(delivery.envelope(), delivery.uncertain(),
@@ -46,6 +55,9 @@ public class AgentDeliveryWorker {
 		} else if (!result.accepted()) {
 			log.warn("Agent delivery not accepted: outboxId={} status={} code={} attempt={}",
 					delivery.id(), status, result.code(), delivery.attemptCount());
+		}
+		if (!saved) {
+			throw new IllegalStateException("Agent delivery outcome was not persisted");
 		}
 		return true;
 	}
