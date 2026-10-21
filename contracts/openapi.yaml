@@ -9,11 +9,11 @@ info:
     Java contracts.enums와 로직에 연결되지 않은 DTO는 이 계약에 맞췄다. Message·ChatEvent·VisibilityChangedEvent·
     UserKickedEvent(→ LiveAccessBlockedEvent)·SseEnvelope는 liveId 구현과 함께 맞춘다.
 
-    아래는 0.6.0-draft에서 이어진 구현 상태다. 내부 business-tool 중 `/context`, `/channel-info`, `/role`은 현재 조회 구현이며,
-    사건 조회는 필수 메타데이터가 있는 경우, 이력 조회는 명시한 days가 있는 경우에 구현된다.
-    나머지 표시된 business-tool 스텁은 HTTP 501 `NOT_IMPLEMENTED` (retryable=false)이다.
+    내부 사건·문맥은 같은 불변 마스킹 snapshot을 읽고 대상 버전은 현재 값을 반환한다.
+    사용자 이력은 같은 방송 전체이며 days는 거부한다. 강퇴 후보와 원 결정의 기준/소진 소유권도 읽기 전용으로 구현된다.
+    표시된 미지원 legacy/business action은 HTTP 501 `NOT_IMPLEMENTED` (retryable=false)이다.
     `x-implementation-status: planned`는 미래/레거시 계약일 뿐 현재 구현을 의미하지 않는다.
-    사건 필수 정보 미준비는 409 CASE_NOT_READY다. 주변 문맥 snapshot 연결 및 최종 강퇴 자격은 후속 작업이다.
+    사건 필수 정보나 불변 snapshot 미준비는 409 CASE_NOT_READY다. 외부 Agent/RAG 배포 완료를 의미하지 않는다.
 
     공통 규칙
     - ID와 traceId는 UUID 문자열, 시각은 UTC ISO 8601. JSON은 camelCase.
@@ -30,21 +30,21 @@ info:
     | business-mcp | get_chat_context | 구현된 조회 | GET /internal/cases/{caseId}/context |
     | business-mcp | get_channel_info, get_stream_info, get_official_links | 구현된 공유 조회 | GET /internal/cases/{caseId}/channel-info |
     | business-mcp | get_channel_user_role | 구현된 조회 | GET /internal/cases/{caseId}/role |
-    | business-mcp | get_security_facts | 스텁 | GET /internal/cases/{caseId}/security-facts |
-    | business-mcp | get_user_history | 명시 기간 조회 구현 | GET /internal/cases/{caseId}/user-history |
-    | business-mcp | get_kick_eligibility | 스텁 | GET /internal/cases/{caseId}/kick-eligibility |
-    | business-mcp | get_kick_review_basis | 스텁 | GET /internal/kick-reviews/{reviewId}/basis |
-    | business-mcp | (강퇴 재검증) | 계획 | POST /internal/kick-reviews/{reviewId}/revalidate |
-    | business-mcp | (판정 제출) | 계획 | POST /internal/cases/{caseId}/judgment |
-    | business-mcp | get_action_status | 스텁 | GET /internal/actions/{actionId} |
-    | business-mcp | business action | 스텁 | POST /internal/actions/{actionId}/execute |
+    | business-mcp | get_security_facts | 통합 사건 UNKNOWN, 출처 미연동 | GET /internal/cases/{caseId}/security-facts |
+    | business-mcp | get_user_history | 방송 전체 확정 이력 | GET /internal/cases/{caseId}/user-history |
+    | business-mcp | get_kick_eligibility | 예약·소진 제외 조회 | GET /internal/cases/{caseId}/kick-eligibility |
+    | business-mcp | get_kick_review_basis | 원 결정의 기준·소진 소유권 | GET /internal/kick-reviews/{reviewId}/basis |
+    | business-mcp | (강퇴 재검증) | 구현 | POST /internal/kick-reviews/{reviewId}/revalidate |
+    | business-mcp | (판정 제출) | 구현 | POST /internal/cases/{caseId}/judgment |
+    | business-mcp | get_action_status | 저장된 live action 조회 | GET /internal/actions/{actionId} |
+    | business-mcp | business action | KICK 구현, 그 외 MCP 실행 미지원 | POST /internal/actions/{actionId}/execute |
     | business-mcp | reconcile_review | deprecated 스텁 | POST /internal/cases/{caseId}/reviews/{decisionId}/reconcile |
     | rag-mcp | search_policy | 조회 | (pgvector) |
     | rag-mcp | policy://{version}/{documentId}/{sectionId} | Resource | 정책 원문 |
 
-    `POST /internal/cases/{caseId}/judgment`는 CONTRACTS §5 Agent 출력으로 바뀌었고 아직 구현 전이다.
+    `POST /internal/cases/{caseId}/judgment`는 CONTRACTS §5 Agent 출력을 받아 AI 제안과 BE 확정을 구분한다.
     `POST /internal/kick-reviews/{reviewId}/execute`는 deprecated 레거시 계약이다(A-12).
-    새 action 실행의 canonical 계약은 `/internal/actions/{actionId}/execute`이며 현재 스텁이다.
+    새 action 실행의 canonical 계약은 `/internal/actions/{actionId}/execute`이며 Backend 발급 KICK만 실행한다.
     Judgment의 Agent context 판정은 사람의 결정 전 최종 판정이 아니며 자동 kick을 의미하지 않는다.
     Agent 재개(`POST /agent/tasks/{id}/resume`)는 Agent 저장소 계약이라 이 문서에 넣지 않는다(A-10).
 
@@ -573,8 +573,9 @@ paths:
         Missing case returns 404. Missing broadcast/policy/route, current evidence or targets returns
         409 CASE_NOT_READY (retryable=false); metadata is never fabricated.
         targets is canonical; targetMessageIds and targetVersions are derived compatibility projections.
-        This is not an immutable historical chat-context snapshot.
-      x-implementation-status: partial
+        Messages come from the immutable masked snapshot shared with /context.
+        Current target visibility/version and case version are separate projections; legacy evidence is not synthesized.
+      x-implementation-status: implemented
       x-owner: B2
       security:
         - serviceToken: []
@@ -605,10 +606,10 @@ paths:
       summary: get_chat_context
       description: |
         Implemented Backend query of masked case messages and surrounding chat; response has at most 20 messages.
-        before and after each default to 10 and must be between 0 and 10. Missing case message is 404.
+        before and after each default to 10 and must be between 0 and 10. Missing case is 404.
         Optional deprecated view accepts only `chatContext`; any other value is 400.
-        Snapshot/evidence version and message visibility enrichment required by the Agent loader
-        is deferred; this response alone does not satisfy the complete Agent context contract.
+        Uses the same immutable masked snapshotId/evidenceVersion as /cases/{caseId}.
+        Later messages do not alter an existing snapshot. Missing legacy provenance/snapshot returns 409 CASE_NOT_READY.
       x-owner: B1
       x-implementation-status: implemented
       security:
@@ -656,6 +657,8 @@ paths:
           $ref: '#/components/responses/Error'
         '404':
           $ref: '#/components/responses/Error'
+        '409':
+          $ref: '#/components/responses/Error'
 
   /internal/cases/{caseId}/user-history:
     parameters:
@@ -669,13 +672,12 @@ paths:
         TIMEOUT history by category, excluding the current case. Only current, unrevoked Backend
         confirmed VIOLATION findings count; proposals and NO_VIOLATION/NEEDS_REVIEW do not.
         Consumed kick-review cases and expired TIMEOUTs remain in history.
-        Explicit positive days selects [server time - days, server time], inclusive by case occurrence time;
-        confirmations after the upper bound are excluded. This reads current revocation state, not historical replay.
+        Scope is the same user/live for the whole broadcast, based on confirmedAt <= server asOf, not occurrence time.
+        This reads current finding-level revocation state, not historical replay.
         violationCount counts distinct cases; recentCases contains one row per case/category.
-        No default policy period is approved: omitted days returns 501 for an existing case.
-        days * 24 must fit an integer; overflow returns 400, not a policy duration limit.
+        Omit days. Every supplied days value is unsupported and returns 400, never silently ignored.
         The response has no windowHours; the v1.0 history scope is the whole live (TBD-03, A-13).
-      x-implementation-status: partial
+      x-implementation-status: implemented
       x-owner: B2
       security:
         - serviceToken: []
@@ -683,13 +685,14 @@ paths:
         - name: days
           in: query
           required: false
-          description: Optional positive requested range; no default or maximum is established.
+          deprecated: true
+          description: Unsupported; any supplied days value returns 400. History covers the whole live.
           schema:
             type: integer
             minimum: 1
       responses:
         '200':
-          description: Explicit-period confirmed history.
+          description: Whole-broadcast confirmed history.
           content:
             application/json:
               schema:
@@ -700,8 +703,8 @@ paths:
           $ref: '#/components/responses/Error'
         '404':
           $ref: '#/components/responses/Error'
-        '501':
-          $ref: '#/components/responses/NotImplemented'
+        '409':
+          $ref: '#/components/responses/Error'
 
   /internal/cases/{caseId}/history:
     parameters:
@@ -713,7 +716,7 @@ paths:
       summary: Legacy user-history alias
       description: Deprecated alias with the same TIMEOUT-only, excludes-current-case semantics as `/user-history`. 삭제 여부는 B2 확인 후 정한다(A-12).
       deprecated: true
-      x-implementation-status: partial
+      x-implementation-status: implemented
       x-owner: B2
       security:
         - serviceToken: []
@@ -721,13 +724,14 @@ paths:
         - name: days
           in: query
           required: false
-          description: Optional positive requested range; no default or maximum is established.
+          deprecated: true
+          description: Unsupported; any supplied days value returns 400.
           schema:
             type: integer
             minimum: 1
       responses:
         '200':
-          description: Same explicit-period history as /user-history.
+          description: Same whole-broadcast history as /user-history.
           content:
             application/json:
               schema:
@@ -738,8 +742,8 @@ paths:
           $ref: '#/components/responses/Error'
         '404':
           $ref: '#/components/responses/Error'
-        '501':
-          $ref: '#/components/responses/NotImplemented'
+        '409':
+          $ref: '#/components/responses/Error'
 
   /internal/cases/{caseId}/kick-eligibility:
     parameters:
@@ -750,11 +754,13 @@ paths:
       operationId: internalGetKickEligibility
       summary: get_kick_eligibility
       description: |
-        Contract stub (501). Fixed 24-hour window includes the current confirmed case and distinct
-        confirmed cases across all five categories. Excludes revoked and consumed cases, but not cases
+        Read-only fixed 24-hour window includes the current confirmed case and distinct
+        confirmed cases across all five categories. Uses confirmedAt > asOf - 24h and confirmedAt <= asOf.
+        Excludes revoked, RESERVED and CONSUMED cases, but not cases
         whose TIMEOUT has expired. Eligibility is not approval or permission to execute KICK.
         A supplied `days` parameter is unsupported and returns 400.
-      x-implementation-status: stub
+        Ended broadcasts return no new candidates. This read creates no reservation, review or outbox item.
+      x-implementation-status: implemented
       x-owner: B2
       security:
         - serviceToken: []
@@ -767,12 +773,20 @@ paths:
           schema:
             type: integer
       responses:
+        '200':
+          description: Read-only unreserved, unconsumed distinct confirmed cases.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KickEligibilityResponse'
         '400':
           $ref: '#/components/responses/Error'
         '403':
           $ref: '#/components/responses/Error'
-        '501':
-          $ref: '#/components/responses/NotImplemented'
+        '404':
+          $ref: '#/components/responses/Error'
+        '409':
+          $ref: '#/components/responses/Error'
 
   /internal/cases/{caseId}/channel-info:
     parameters:
@@ -843,12 +857,18 @@ paths:
       tags: [Internal]
       operationId: internalGetSecurityFacts
       summary: get_security_facts
-      description: Contract stub (501). TRUE/FALSE facts require source references; unresolved facts are UNKNOWN. Channel metadata alone is not proof of PII.
-      x-implementation-status: stub
+      description: Integrated cases return UNKNOWN without verified sources; legacy unsupported cases return 501. Channel metadata alone is not proof of PII.
+      x-implementation-status: partial
       x-owner: B2
       security:
         - serviceToken: []
       responses:
+        '200':
+          description: Unresolved security facts; no verified PII source is integrated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SecurityFactsResponse'
         '403':
           $ref: '#/components/responses/Error'
         '501':
@@ -873,7 +893,7 @@ paths:
         본문 caseId는 경로와 같아야 하고, snapshotId·evidenceVersion이 현재 사건과 다르면 409 STALE_VERSION,
         policyVersion이 활성 버전(v3.1)과 다르면 400 VALIDATION_FAILED다. 같은 snapshotId·evidenceVersion 재제출은 같은 결과를 반환한다.
         TARGET 메시지마다 messageFindings가 정확히 하나 있어야 한다. 임의 TIMEOUT 기간이나 승인 여부는 받지 않는다.
-      x-implementation-status: planned
+      x-implementation-status: implemented
       x-owner: B2
       security:
         - serviceToken: []
@@ -898,8 +918,6 @@ paths:
           $ref: '#/components/responses/Error'
         '409':
           $ref: '#/components/responses/Error'
-        '501':
-          $ref: '#/components/responses/NotImplemented'
 
   /internal/kick-reviews/{reviewId}/execute:
     parameters:
@@ -940,18 +958,27 @@ paths:
       operationId: internalGetKickReviewBasis
       summary: get_kick_review_basis
       description: |
-        Contract stub (501). Returns the fixed approved review basis and consumption ownership, not a
+        Returns the fixed decided review basis and actual consumption ownership, not a
         new eligibility count. During revalidation only this review/decision's consumption is permitted;
         another review's consumption blocks execution. This read does not approve a review or issue validationRef.
-      x-implementation-status: stub
+        A missing review returns 404; an undecided or incomplete basis returns 409 CASE_NOT_READY.
+      x-implementation-status: implemented
       x-owner: B2
       security:
         - serviceToken: []
       responses:
+        '200':
+          description: Fixed original basis and actual consumption ownership.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KickReviewBasisResponse'
         '403':
           $ref: '#/components/responses/Error'
-        '501':
-          $ref: '#/components/responses/NotImplemented'
+        '404':
+          $ref: '#/components/responses/Error'
+        '409':
+          $ref: '#/components/responses/Error'
 
   /internal/kick-reviews/{reviewId}/revalidate:
     parameters:
@@ -968,7 +995,7 @@ paths:
         통과하면 valid=true와 kick 실행 명령에 넣을 validationRef를 발급한다. 실패하면 valid=false, validationRef=null이며
         실행하지 않는다(후속 상태는 TBD-06). 승인 결정이 없으면 422 REVIEW_NOT_APPROVED.
         kick 재시도 전에도 다시 호출한다.
-      x-implementation-status: planned
+      x-implementation-status: implemented
       x-owner: B2
       security:
         - serviceToken: []
@@ -989,8 +1016,8 @@ paths:
           $ref: '#/components/responses/Error'
         '422':
           $ref: '#/components/responses/Error'
-        '501':
-          $ref: '#/components/responses/NotImplemented'
+        '409':
+          $ref: '#/components/responses/Error'
 
   /internal/actions/{actionId}:
     parameters:
@@ -1000,12 +1027,18 @@ paths:
       tags: [Internal]
       operationId: internalGetActionStatus
       summary: get_action_status
-      description: Contract stub (501); reads action status only and does not execute an action.
-      x-implementation-status: stub
+      description: Reads a stored live action without executing it. Legacy unsupported action IDs return 501.
+      x-implementation-status: partial
       x-owner: B2
       security:
         - serviceToken: []
       responses:
+        '200':
+          description: Stored live action outcome or nonterminal unknown observation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ActionExecutionResultResponse'
         '403':
           $ref: '#/components/responses/Error'
         '501':
@@ -1020,10 +1053,10 @@ paths:
       operationId: internalExecuteAction
       summary: Execute a Backend-issued action command
       description: |
-        Contract stub (501). Canonical action command for HIDE, TIMEOUT, RELEASE_HELD, and KICK.
-        The path actionId must match the body. Future execution must revalidate versions, policy,
+        Backend-issued KICK is implemented; separate MCP HIDE/TIMEOUT/RELEASE_HELD remain unsupported (501).
+        The path actionId must match the body. Execution revalidates versions, policy,
         permissions, idempotency, and (for KICK) approval/basis. UNKNOWN observations are nonterminal.
-      x-implementation-status: stub
+      x-implementation-status: partial
       x-owner: B2
       security:
         - serviceToken: []
@@ -1939,7 +1972,7 @@ components:
           $ref: '#/components/schemas/Timestamp'
     InternalCase:
       type: object
-      description: Current persisted evidence and current target state. Missing required metadata returns CASE_NOT_READY.
+      description: Immutable masked evidence shared with ContextData; current target state and case version are separate projections. Missing required metadata returns CASE_NOT_READY.
       required: [caseId, channelId, liveId, snapshotId, evidenceVersion, policyVersion, handlingRoute, filterResult, matchingTags, version, messages, targets, targetMessageIds, targetVersions]
       properties:
         userId:

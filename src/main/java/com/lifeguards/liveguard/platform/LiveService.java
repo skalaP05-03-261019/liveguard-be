@@ -21,6 +21,8 @@ public class LiveService implements LivePlatformPort {
   private final JdbcClient db;
   private final Clock clock;
   private final LiveGuardPort guard;
+  private final CandidateSink candidates;
+  private final KickStatusQuery legacyKicks;
   private final MessageFilter filter;
   private final MessageRepository messages;
   private final ChannelEventHub legacyEvents;
@@ -29,29 +31,30 @@ public class LiveService implements LivePlatformPort {
   private final SseRegistry chats = new SseRegistry("live-chat-v1", Duration.ofSeconds(15));
   private final SseRegistry events = new SseRegistry("live-guard-v1", Duration.ofSeconds(15));
   private final String policy;
-  private final boolean fixtureEnabled;
 
   public LiveService(
       JdbcClient db,
       Clock clock,
       LiveGuardPort guard,
+      CandidateSink candidates,
+      KickStatusQuery legacyKicks,
       MessageFilter filter,
       MessageRepository messages,
       ChannelEventHub legacyEvents,
       JdbcLiveQuery liveQueries,
       org.springframework.context.ApplicationEventPublisher applicationEvents,
-      @Value("${LIVEGUARD_POLICY_VERSION:}") String policy,
-      @Value("${LIVEGUARD_TBD_FIXTURE_ENABLED:false}") boolean fixtureEnabled) {
+      @Value("${liveguard.policy.version:v3.1}") String policy) {
     this.db = db;
     this.clock = clock;
     this.guard = guard;
+    this.candidates = candidates;
+    this.legacyKicks = legacyKicks;
     this.filter = filter;
     this.messages = messages;
     this.legacyEvents=legacyEvents;
     this.liveQueries = liveQueries;
     this.applicationEvents = applicationEvents;
     this.policy = policy;
-    this.fixtureEnabled = fixtureEnabled;
   }
 
   private Timestamp now() {
@@ -63,7 +66,7 @@ public class LiveService implements LivePlatformPort {
     return liveQueries.find(id).orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND, "Live not found"));
   }
 
-  public boolean integrationEnabled() { return fixtureEnabled && policy.equals("v3.1"); }
+  public boolean integrationEnabled() { return true; }
 
   @Override
   public void authorize(UUID liveId, UUID userId, boolean operator) {
@@ -177,6 +180,9 @@ public class LiveService implements LivePlatformPort {
   public Map<String, Object> send(UUID id, AuthenticatedUser user, SendMessageRequest req) {
     authorize(id, user.userId(), false);
     var live = live(id);
+    legacyKicks.activeKickUntil(live.channelId(),user.userId()).ifPresent(until->{
+      throw new ApiException(ErrorCode.KICKED,"Kicked from this channel",until,null);
+    });
     guard.checkEntry(id,user.userId());
     if (req.text().indexOf(0)>=0) throw new ApiException(ErrorCode.VALIDATION_FAILED,"Unsupported text");
     messages.lockAuthorInChannel(live.channelId(),user.userId());
@@ -188,7 +194,6 @@ public class LiveService implements LivePlatformPort {
       return message(old.get().id(),user.userId());
     }
     active(id);
-    if (!integrationEnabled()) throw new ApiException(ErrorCode.CASE_NOT_READY,"Explicit shared policy integration required");
     Timestamp at = now();
     String normalized = TextNormalizer.normalize(req.text());
     int repeated =
@@ -203,26 +208,10 @@ public class LiveService implements LivePlatformPort {
     var d =
         filter.classify(
             new FilterInput(
-                req.text(), normalized, repeated));
+                req.text(), normalized, repeated, guard.floodRecurrence(id,user.userId(),normalized,at.toInstant())));
     String route = d.handlingRoute().name();
-    List<String> tags = new ArrayList<>(d.matchingTags());
-    if(!route.equals("RULE_CONFIRMED")&&guard.floodRecurrence(id,user.userId(),normalized,at.toInstant())) { route="FLOOD_REVIEW";if(!tags.contains("REPEATED_TEXT"))tags.add("REPEATED_TEXT"); }
-    if (!UrlHosts.extract(req.text()).isEmpty()) {
-      route = "RULE_CONFIRMED";
-      if (!tags.contains("LINK")) tags.add("LINK");
-    } else if (!route.equals("RULE_CONFIRMED")
-        && !route.equals("FLOOD_REVIEW")
-        && req.text()
-            .matches(
-                "(?s).*(01[016789][- .]?[0-9]{3,4}[-"
-                    + " .]?[0-9]{4}|[\\w.+-]+@[\\w.-]+\\.[A-Za-z]{2,}).*")) {
-      route = "PII_INVESTIGATION";
-      tags.add(req.text().contains("@") ? "PII_EMAIL" : "PII_PHONE");
-    }
-    if(route.equals("PASS")&&tags.contains("OFFICIAL_CLAIM")&&tags.contains("CREDENTIAL_REQUEST"))route="CONTEXT_REVIEW";
-    String visibility =
-        route.equals("PASS") ? "PUBLIC" : route.equals("RULE_CONFIRMED") ? "HIDDEN" : "HELD";
-    String reasonCode=switch(route){case "RULE_CONFIRMED"->d.moderationReasonCode().name();case "FLOOD_REVIEW"->"FLOOD_REPEATED";case "PII_INVESTIGATION"->"PII_PENDING";case "CONTEXT_REVIEW"->"CONTEXT_PENDING";default->null;};
+    String visibility = d.visibility().name();
+    String reasonCode=d.moderationReasonCode()==null?null:d.moderationReasonCode().name();
     UUID message = UUID.randomUUID();
     db.sql(
             "INSERT INTO"
@@ -236,18 +225,29 @@ public class LiveService implements LivePlatformPort {
             req.clientMessageId(),
             req.text(),
             normalized,
-            route.equals("PASS") ? "PASS" : route.equals("FLOOD_REVIEW") ? "FLOOD" : "HOLD",
+            d.result().name(),
             visibility,
             reasonCode,
             at)
         .update();
     if (!route.equals("PASS")) {
-      UUID caseId =
-          guard.candidate(
-              id, live.channelId(), user.userId(), message, route, policy, tags, at.toInstant(), normalized);
-
+      List<UUID> related=d.result()==FilterResult.FLOOD
+        ? messages.sameTextMessageIds(id,user.userId(),normalized,at.toInstant().minusSeconds(10)).stream().filter(m->!m.equals(message)).toList()
+        : List.of();
+      try {
+        UUID caseId=candidates.open(new CandidateRequest(live.channelId(),id,user.userId(),message,d.result(),
+          d.handlingRoute(),d.ruleId(),d.matchingTags(),MessageFilter.version(),policy,at.toInstant(),related));
+        db.sql("UPDATE platform.messages SET case_id=? WHERE id=?").params(caseId,message).update();
+      } catch(ApiException ex) {
+        throw ex;
+      } catch(RuntimeException ex) {
+        throw new ApiException(ErrorCode.TEMPORARY_UNAVAILABLE,"Candidate processing unavailable");
+      }
     }
     var result = message(message, user.userId());
+    applicationEvents.publishEvent(new MessageCreatedEvent(live.channelId(),user.userId(),
+      new com.lifeguards.liveguard.contracts.dto.event.ChatEvent(message,id,result.get("authorAlias").toString(),
+        req.text(),Visibility.valueOf(result.get("visibility").toString()),((Number)result.get("version")).intValue(),at.toInstant())));
     emit(id, "CHAT", result, user.userId(), !visibility.equals("PUBLIC"));
     return result;
   }
@@ -280,7 +280,7 @@ public class LiveService implements LivePlatformPort {
     UUID id=(UUID)message.get("messageId");
     String route=db.sql("SELECT reason FROM platform.message_hold_reasons WHERE message_id=? ORDER BY created_at LIMIT 1")
       .param(id).query(String.class).optional().orElse("");
-    String code=switch(route){case "RULE_CONFIRMED"->UrlHosts.extract(message.get("text").toString()).isEmpty()?"PROFANITY_INCLUDED":"LINK_NOT_ALLOWED";case "FLOOD_REVIEW"->"FLOOD_REPEATED";case "PII_INVESTIGATION"->"PII_PENDING";case "CONTEXT_REVIEW"->"CONTEXT_PENDING";default->null;};
+    String code=db.sql("SELECT moderation_reason_code FROM platform.messages WHERE id=?").param(id).query((r,n)->r.getString(1)).optional().orElse(null);
     message.put("moderationReasonCode",code);
     message.put("moderationNotice",switch(route){case "RULE_CONFIRMED"->"금지된 욕설 또는 링크가 포함되어 숨김 처리되었습니다.";case "FLOOD_REVIEW"->"동일 문장 반복으로 숨김 처리되었습니다.";case "PII_INVESTIGATION"->"개인정보 노출 가능성을 확인하고 있습니다.";default->message.get("visibility").toString().equals("HELD")?"문맥 확인과 운영자 결정을 기다립니다.":"운영자 검토로 위반이 확정되어 숨김 처리되었습니다.";});
     message.put("reviewStatus",message.get("visibility").toString().equals("HELD")?"PENDING":null);
@@ -332,14 +332,31 @@ public class LiveService implements LivePlatformPort {
   }
 
   @Override
-  public List<Map<String, Object>> snapshot(UUID id, UUID target, UUID author) {
+  public List<Map<String, Object>> snapshot(UUID id, UUID target, UUID author, List<UUID> evidenceIds) {
     Map<UUID,String> aliases = new LinkedHashMap<>();
     aliases.put(author, "U1");
     var rows =
         db.sql(
-                "SELECT id,author_id,text,visibility,version,sent_at FROM platform.messages WHERE"
-                    + " live_id=? ORDER BY sent_at DESC,id DESC LIMIT 20")
-            .param(id)
+                """
+                WITH evidence AS (
+                  SELECT id,sent_at FROM platform.messages WHERE live_id=:live
+                    AND (case_id=(SELECT case_id FROM platform.messages WHERE id=:target)
+                      OR id=ANY(string_to_array(:evidence,',')::uuid[]))),
+                first_target AS (SELECT * FROM evidence ORDER BY sent_at,id LIMIT 1),
+                last_target AS (SELECT * FROM evidence ORDER BY sent_at DESC,id DESC LIMIT 1),
+                selected AS (
+                  (SELECT id FROM platform.messages WHERE live_id=:live
+                    AND (sent_at,id)<(SELECT sent_at,id FROM first_target) ORDER BY sent_at DESC,id DESC LIMIT 10)
+                  UNION (SELECT id FROM platform.messages WHERE live_id=:live
+                    AND (sent_at,id)>=(SELECT sent_at,id FROM first_target)
+                    AND (sent_at,id)<=(SELECT sent_at,id FROM last_target))
+                  UNION (SELECT id FROM platform.messages WHERE live_id=:live
+                    AND (sent_at,id)>(SELECT sent_at,id FROM last_target) ORDER BY sent_at,id LIMIT 10))
+                SELECT id,author_id,text,visibility,version,sent_at FROM platform.messages
+                  WHERE id IN (SELECT id FROM selected) ORDER BY sent_at DESC,id DESC
+                """)
+            .param("live",id).param("target",target)
+            .param("evidence",String.join(",",evidenceIds.stream().map(UUID::toString).toList()))
             .query(
                 (r, n) -> {
                   Map<String, Object> m = new LinkedHashMap<>();
@@ -362,15 +379,24 @@ public class LiveService implements LivePlatformPort {
 
   @Override
   public void visibility(UUID caseId, String visibility) {
+    changeVisibility(caseId,visibility,false);
+  }
+
+  @Override
+  public void releaseRevokedCase(UUID caseId) {
+    changeVisibility(caseId,"PUBLIC",true);
+  }
+
+  private void changeVisibility(UUID caseId,String visibility,boolean revoked) {
     if (visibility.equals("PUBLIC"))
       db.sql(
               "UPDATE platform.message_hold_reasons SET released_at=? WHERE case_id=? AND"
-                  + " released_at IS NULL")
-          .params(now(), caseId)
+                  + " released_at IS NULL AND (reason<>'RULE_CONFIRMED' OR ?)")
+          .params(now(), caseId, revoked)
           .update();
     var ids =
-        db.sql("SELECT id FROM platform.messages WHERE case_id=? FOR UPDATE")
-            .param(caseId)
+        db.sql("SELECT id FROM platform.messages WHERE case_id=? OR id IN (SELECT message_id FROM platform.message_hold_reasons WHERE case_id=?) FOR UPDATE")
+            .params(caseId,caseId)
             .query(UUID.class)
             .list();
     for (UUID id : ids) {
@@ -426,7 +452,7 @@ public class LiveService implements LivePlatformPort {
                 event,
                 envelope,
                 event.equals("LIVE_ENDED"));
-          legacyEvents.integrated(live(id).channelId(),author,restricted,event,data);
+          if(!event.equals("CHAT"))legacyEvents.integrated(live(id).channelId(),author,restricted,event,data);
           events.broadcast(id, s -> true, event, envelope);
         });
   }

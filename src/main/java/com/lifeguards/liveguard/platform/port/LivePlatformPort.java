@@ -13,9 +13,11 @@ public interface LivePlatformPort {
 
   void authorize(UUID liveId, UUID userId, boolean operator);
 
-  List<Map<String, Object>> snapshot(UUID liveId, UUID targetId, UUID authorId);
+  List<Map<String, Object>> snapshot(UUID liveId, UUID targetId, UUID authorId, List<UUID> evidenceIds);
 
   void visibility(UUID caseId, String visibility);
+
+  void releaseRevokedCase(UUID caseId);
 
   void verifyTargets(UUID liveId, List<Map<String, Object>> targets);
 

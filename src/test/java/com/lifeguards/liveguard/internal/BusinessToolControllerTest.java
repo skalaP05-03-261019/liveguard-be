@@ -33,7 +33,6 @@ class BusinessToolControllerTest {
 
 	@ParameterizedTest
 	@ValueSource(strings = {"/internal/cases/" + ID + "/security-facts",
-			"/internal/cases/" + ID + "/kick-eligibility", "/internal/kick-reviews/" + ID + "/basis",
 			"/internal/actions/" + ID})
 	void readsRequireServiceTokenAndReturnExplicitStub(String path) throws Exception {
 		mockMvc.perform(get(path)).andExpect(status().isForbidden());
@@ -48,7 +47,8 @@ class BusinessToolControllerTest {
 
 	@ParameterizedTest
 	@ValueSource(strings = {"/internal/cases/" + ID, "/internal/cases/" + ID + "/user-history",
-			"/internal/cases/" + ID + "/history"})
+			"/internal/cases/" + ID + "/history", "/internal/cases/" + ID + "/kick-eligibility",
+			"/internal/kick-reviews/" + ID + "/basis"})
 	void implementedReadsRequireServiceTokenAndReturnNotFound(String path) throws Exception {
 		mockMvc.perform(get(path)).andExpect(status().isForbidden());
 		mockMvc.perform(get(path).header("X-Service-Token", "wrong")).andExpect(status().isForbidden());
@@ -109,7 +109,7 @@ class BusinessToolControllerTest {
 		mockMvc.perform(internal(get("/internal/cases/{id}/user-history", ID)).param("days", "0"))
 				.andExpect(status().isBadRequest());
 		mockMvc.perform(internal(get("/internal/cases/{id}/user-history", ID)).param("days", "31"))
-				.andExpect(status().isNotFound());
+				.andExpect(status().isBadRequest());
 		mockMvc.perform(internal(get("/internal/cases/{id}/kick-eligibility", ID)).param("days", "30"))
 				.andExpect(status().isBadRequest());
 	}

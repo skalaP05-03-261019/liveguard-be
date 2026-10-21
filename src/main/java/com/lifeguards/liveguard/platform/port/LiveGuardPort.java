@@ -4,15 +4,7 @@ import java.time.Instant;
 import java.util.*;
 
 public interface LiveGuardPort {
-  UUID candidate(
-      UUID liveId,
-      UUID channelId,
-      UUID userId,
-      UUID messageId,
-      String route,
-      String policyVersion,
-      List<String> tags,
-      Instant receivedAt, String normalizedText);
+  UUID candidate(CandidateRequest request);
 
   boolean floodRecurrence(UUID liveId, UUID userId, String normalizedText, Instant receivedAt);
 

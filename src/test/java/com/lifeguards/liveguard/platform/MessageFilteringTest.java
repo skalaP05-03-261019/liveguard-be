@@ -40,7 +40,7 @@ import com.lifeguards.liveguard.filter.TextNormalizer;
 /** 전송 경로에 연결된 1차 필터: 저장되는 filter_result·visibility, 응답, 이벤트, 이력 공개 범위. */
 @SpringBootTest
 @AutoConfigureMockMvc
-@ActiveProfiles("test")
+@ActiveProfiles({"test","recording-sink"})
 @Import({ TestcontainersConfiguration.class, MessageControllerTest.EventRecorder.class })
 class MessageFilteringTest {
 
@@ -63,8 +63,8 @@ class MessageFilteringTest {
 
 	@AfterEach
 	void cleanUp() {
-		jdbc.update("DELETE FROM platform.messages");
 		CaseFixtures.deleteCases(jdbc);
+		jdbc.update("DELETE FROM platform.messages");
 	}
 
 	@Test

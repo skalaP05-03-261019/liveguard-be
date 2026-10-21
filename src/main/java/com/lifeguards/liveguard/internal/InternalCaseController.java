@@ -60,7 +60,7 @@ class InternalCaseController {
 			throw new InvalidContractException("Use the dedicated case or channel-info endpoint instead of view");
 		}
 		if(before<0||before>10||after<0||after>10) throw new InvalidContractException("Invalid context range");
-		return new ApiResponse<>(live.owns(caseId)?live.internalContext(caseId):cases.context(caseId, before, after), TraceIdFilter.current());
+		return new ApiResponse<>(live.internalContext(caseId,before,after), TraceIdFilter.current());
 	}
 
 	@GetMapping("/channel-info")

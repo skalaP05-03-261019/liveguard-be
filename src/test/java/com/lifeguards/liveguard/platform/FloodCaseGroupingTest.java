@@ -81,8 +81,8 @@ class FloodCaseGroupingTest {
 
 	@AfterEach
 	void cleanUp() {
-		jdbc.update("DELETE FROM platform.messages");
 		CaseFixtures.deleteCases(jdbc);
+		jdbc.update("DELETE FROM platform.messages");
 	}
 
 	@Test
@@ -95,7 +95,8 @@ class FloodCaseGroupingTest {
 		assertEquals(1, recording.requests.size());
 		assertRelated(0, FilterResult.FLOOD, List.of(m1, m2), m3);
 		UUID caseX = caseIdOf(m3);
-		assertEquals(List.of(caseX, caseX), List.of(caseIdOf(m1), caseIdOf(m2)), "증거 메시지도 같은 사건에 연결");
+		assertEquals(java.util.Arrays.asList(null,null), java.util.Arrays.asList(caseIdOf(m1),caseIdOf(m2)),
+				"증거는 후보 요청으로 넘기고 platform의 제재 대상 case_id는 설정하지 않는다");
 
 		UUID m4 = send(UUID.randomUUID());
 		assertRelated(1, FilterResult.FLOOD, List.of(m1, m2, m3), m4);
@@ -145,7 +146,7 @@ class FloodCaseGroupingTest {
 		assertRelated(1, FilterResult.FLOOD, List.of(m1, m2, m3), m4);
 		UUID caseY = caseIdOf(m4);
 		assertEquals(false, caseY.equals(caseX), "판정된 사건은 재사용하지 않고 새 사건을 연다");
-		assertEquals(List.of(caseX, caseX, caseX), List.of(caseIdOf(m1), caseIdOf(m2), caseIdOf(m3)),
+		assertEquals(java.util.Arrays.asList(null,null,caseX), java.util.Arrays.asList(caseIdOf(m1),caseIdOf(m2),caseIdOf(m3)),
 				"이미 연결된 메시지의 case_id는 바뀌지 않는다");
 
 		UUID m5 = send(UUID.randomUUID());

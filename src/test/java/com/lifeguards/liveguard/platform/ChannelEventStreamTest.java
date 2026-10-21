@@ -46,7 +46,7 @@ import com.lifeguards.liveguard.contracts.enums.Visibility;
 
 /** 실제 서버를 띄워 HTTP로 SSE를 구독한다 (브라우저 두 개로 CHAT을 받는 확인의 자동화). */
 @SpringBootTest(webEnvironment = WebEnvironment.RANDOM_PORT, properties = "liveguard.sse.heartbeat-interval=200ms")
-@ActiveProfiles("test")
+@ActiveProfiles({"test","recording-sink"})
 @Import(TestcontainersConfiguration.class)
 class ChannelEventStreamTest {
 
@@ -78,8 +78,8 @@ class ChannelEventStreamTest {
 	@AfterEach
 	void cleanUp() {
 		openStreams.forEach(Stream::close);
-		jdbc.update("DELETE FROM platform.messages");
 		CaseFixtures.deleteCases(jdbc);
+		jdbc.update("DELETE FROM platform.messages");
 		jdbc.update("DELETE FROM platform.channel_members WHERE user_id = ?", VIEWER2);
 		jdbc.update("DELETE FROM platform.users WHERE id = ?", VIEWER2);
 	}

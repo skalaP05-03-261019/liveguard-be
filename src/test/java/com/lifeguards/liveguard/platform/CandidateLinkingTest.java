@@ -74,8 +74,8 @@ class CandidateLinkingTest {
 
 	@AfterEach
 	void cleanUp() {
-		jdbc.update("DELETE FROM platform.messages");
 		CaseFixtures.deleteCases(jdbc);
+		jdbc.update("DELETE FROM platform.messages");
 	}
 
 	@Test
@@ -188,10 +188,9 @@ class CandidateLinkingTest {
 		assertEquals(List.of(MessageFilter.REPEATED_TEXT), request.matchingTags());
 		assertEquals(ids.get(2), request.messageId());
 		assertEquals(ids.subList(0, 2), request.relatedMessageIds());
-		for (UUID id : ids) {
-			assertEquals(floodCase, jdbc.queryForObject("SELECT case_id FROM platform.messages WHERE id = ?",
-					UUID.class, id));
-		}
+		assertNull(jdbc.queryForObject("SELECT case_id FROM platform.messages WHERE id=?",UUID.class,ids.get(0)));
+		assertNull(jdbc.queryForObject("SELECT case_id FROM platform.messages WHERE id=?",UUID.class,ids.get(1)));
+		assertEquals(floodCase,jdbc.queryForObject("SELECT case_id FROM platform.messages WHERE id=?",UUID.class,ids.get(2)));
 		assertEquals(List.of("PUBLIC", "PUBLIC", "HELD"), jdbc.queryForList(
 				"SELECT visibility FROM platform.messages ORDER BY sent_at, id", String.class));
 	}
@@ -209,7 +208,7 @@ class CandidateLinkingTest {
 		assertEquals(List.of(linked, unlinked), recording.requests.get(0).relatedMessageIds());
 		assertEquals(otherCase, jdbc.queryForObject("SELECT case_id FROM platform.messages WHERE id = ?",
 				UUID.class, linked), "이미 다른 사건에 연결된 메시지는 바뀌지 않는다");
-		assertEquals(newCase, jdbc.queryForObject("SELECT case_id FROM platform.messages WHERE id = ?",
+		assertNull(jdbc.queryForObject("SELECT case_id FROM platform.messages WHERE id = ?",
 				UUID.class, unlinked));
 	}
 
@@ -229,7 +228,7 @@ class CandidateLinkingTest {
 		assertEquals(3, recording.requests.get(1).relatedMessageIds().size(), "창 안의 이전 메시지 전부");
 		List<UUID> cases = jdbc.queryForList("SELECT case_id FROM platform.messages ORDER BY sent_at, id",
 				UUID.class);
-		assertEquals(List.of(firstCase, firstCase, firstCase, secondCase), cases);
+		assertEquals(java.util.Arrays.asList(null,null,firstCase,secondCase), cases);
 	}
 
 	@Test

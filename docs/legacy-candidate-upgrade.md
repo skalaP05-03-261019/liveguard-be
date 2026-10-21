@@ -12,6 +12,6 @@ psql -v ON_ERROR_STOP=1 -f scripts/reconcile-legacy-candidate-links.sql
 
 같은 DB에서 V200 적용 전 재실행은 추가 변경이 없습니다. 이미 `guard.cases`가 있거나 보존된 연결과 다른 case_id가 있으면 트랜잭션을 거부합니다. 아카이브에는 외래키가 없으므로 이후 테스트 데이터 정리로 원본 메시지가 없어져도 이전 참조 기록은 남습니다. 기본 웹/API에는 이 테이블을 노출하지 않습니다.
 
-그다음 Backend를 재기동해 원래 V200을 적용합니다. 새 채팅 후보가 실제 `guard.cases/candidates/case_messages`에 저장되고, AI 제안/확정 판정은 추가로 생성되지 않는지 확인합니다. 이 절차가 Agent dispatch·운영자 승인 API의 구현을 대신하지는 않습니다.
+그다음 Backend를 재기동해 원래 V200과 후속 마이그레이션을 적용합니다. 새 후보는 실제 `guard.cases/candidates/case_messages`와 불변 마스킹 snapshot에 저장됩니다. 03-2 통합 경로는 규칙·도배를 BE 확정하고 문맥/PII 조사를 outbox에 연결하지만, 이 업그레이드 절차 자체는 과거 AI 제안·확정 판정·미준비 snapshot을 생성하지 않습니다.
 
 복구가 필요하면 서비스를 멈추고 백업을 별도 DB에 복원하여 연결 대상을 전환합니다. 정상 적용된 V200을 임의로 되돌리거나 원본 DB에 백업을 덮어쓰지 않습니다. 실제 사건이 생성된 뒤 legacy 참조를 다시 덮으면 새 데이터와 충돌할 수 있으므로 자동 역변환은 제공하지 않습니다.

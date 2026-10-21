@@ -37,8 +37,11 @@ class MessageRepository {
 
 	private final JdbcClient jdbc;
 
-	MessageRepository(JdbcClient jdbc) {
+	private final java.time.Clock clock;
+
+	MessageRepository(JdbcClient jdbc, java.time.Clock clock) {
 		this.jdbc = jdbc;
+		this.clock = clock;
 	}
 
 	boolean isMember(UUID channelId, UUID userId) {
@@ -73,11 +76,25 @@ class MessageRepository {
 	 */
 	List<ChangedMessage> changeCaseVisibility(UUID caseId, Visibility target, List<Visibility> from,
 			boolean excludePass) {
+		if(target==Visibility.PUBLIC) {
+			jdbc.sql("UPDATE platform.message_hold_reasons SET released_at=:at WHERE case_id=:caseId AND reason<>'RULE_CONFIRMED' AND released_at IS NULL")
+				.param("at",java.sql.Timestamp.from(clock.instant())).param("caseId",caseId).update();
+		}
 		return jdbc.sql("""
 				WITH old AS (
 					SELECT id, visibility FROM platform.messages
-					WHERE case_id = :caseId AND visibility IN (:from)
+					WHERE (case_id = :caseId OR (:target = 'PUBLIC' AND EXISTS (
+							SELECT 1 FROM platform.message_hold_reasons own_reason
+							WHERE own_reason.message_id=platform.messages.id AND own_reason.case_id=:caseId)))
+						AND visibility IN (:from)
 						AND (:includePass OR filter_result <> 'PASS')
+						AND (:target <> 'PUBLIC' OR (
+							(COALESCE(moderation_reason_code,'') NOT IN ('PROFANITY_INCLUDED','LINK_NOT_ALLOWED')
+								OR EXISTS (SELECT 1 FROM platform.message_hold_reasons released_rule
+									WHERE released_rule.message_id=platform.messages.id
+										AND released_rule.reason='RULE_CONFIRMED' AND released_rule.released_at IS NOT NULL))
+							AND NOT EXISTS (SELECT 1 FROM platform.message_hold_reasons h
+								WHERE h.message_id=platform.messages.id AND h.released_at IS NULL)))
 					ORDER BY sent_at, id
 					FOR UPDATE)
 				UPDATE platform.messages m SET visibility = :target, version = m.version + 1

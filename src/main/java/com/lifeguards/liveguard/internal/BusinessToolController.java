@@ -42,7 +42,7 @@ public class BusinessToolController {
 			description = "Persistence-backed current evidence and target versions. Missing case is 404; incomplete metadata/evidence is 409 CASE_NOT_READY.")
 	public ApiResponse<InternalCase> getModerationCase(
 			@PathVariable UUID caseId) {
-		return new ApiResponse<>(live.owns(caseId)?live.internalCase(caseId):queries.moderationCase(caseId), TraceIdFilter.current());
+		return new ApiResponse<>(queries.moderationCase(caseId), TraceIdFilter.current());
 	}
 
 	@GetMapping("/cases/{caseId}/security-facts")
@@ -61,23 +61,19 @@ public class BusinessToolController {
 			description = """
 					TIMEOUT history by category, excluding the current case.
 					Consumed kick-review cases remain in this history. This is not kick eligibility.
-					days is an optional positive requested range, not an approved policy window.
-					The default TIMEOUT lookback remains undecided; no 30-day default is applied.
-					Explicit days is implemented; omitted days returns 501 for an existing case.
+					History covers the whole broadcast, based on confirmedAt, not message occurrence.
+					days is unsupported and is explicitly rejected.
 					violationCount counts distinct cases; recentCases contains case/category rows.
 					""")
 	public ApiResponse<UserHistory> getUserHistory(
 			@PathVariable UUID caseId,
 			@RequestParam(required = false) Integer days) {
-		if (days != null && days < 1) {
-			throw new IllegalArgumentException("days must be positive when provided");
-		}
-		return new ApiResponse<>(live.owns(caseId)?live.userHistory(caseId):queries.userHistory(caseId, days), TraceIdFilter.current());
+		return new ApiResponse<>(queries.userHistory(caseId, days), TraceIdFilter.current());
 	}
 
 	@GetMapping("/cases/{caseId}/history")
 	@Operation(summary = "Legacy get_user_history alias", deprecated = true,
-			description = "Use /user-history. No default lookback is approved.")
+			description = "Use /user-history. Whole-broadcast confirmed history; days is unsupported.")
 	public ApiResponse<UserHistory> legacyUserHistory(
 			@PathVariable UUID caseId,
 			@RequestParam(required = false) Integer days) {
@@ -101,19 +97,19 @@ public class BusinessToolController {
 		if (days != null) {
 			throw new IllegalArgumentException("Kick eligibility has a fixed 24-hour window; days is not supported");
 		}
-		throw new BusinessToolNotImplementedException();
+		return new ApiResponse<>(queries.kickEligibility(caseId),TraceIdFilter.current());
 	}
 
 	@GetMapping("/kick-reviews/{reviewId}/basis")
 	@Operation(summary = "get_kick_review_basis: read the original approved review basis",
 			description = """
-					Contract only. Read the fixed basis and consumption ownership, not a new eligibility count.
+					Read the fixed decided basis and consumption ownership, not a new eligibility count.
 					Own review/decision consumption is allowed during revalidation; another review's is not.
 					This read does not approve a review or issue a validationRef.
 					""")
 	public ApiResponse<KickReviewBasis> getKickReviewBasis(
 			@PathVariable UUID reviewId) {
-		throw new BusinessToolNotImplementedException();
+		return new ApiResponse<>(live.kickReviewBasis(reviewId),TraceIdFilter.current());
 	}
 
 	@GetMapping("/actions/{actionId}")
