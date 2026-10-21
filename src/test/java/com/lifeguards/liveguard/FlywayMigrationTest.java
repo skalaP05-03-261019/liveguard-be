@@ -57,14 +57,14 @@ class FlywayMigrationTest {
 				Integer.class));
 		assertEquals(1, jdbc.queryForObject(
 				"SELECT count(*) FROM pg_extension WHERE extname = 'vector'", Integer.class));
-		assertEquals(List.of("channel_members", "channels", "lives", "messages", "users"), jdbc.queryForList(
+		assertEquals(List.of("channel_members", "channels", "lives", "message_hold_reasons", "messages", "users"), jdbc.queryForList(
 				"SELECT table_name FROM information_schema.tables WHERE table_schema = 'platform' ORDER BY table_name",
 				String.class));
 	}
 
 	@Test
 	void createsGuardPersistenceTables() {
-		assertEquals(List.of("agent_task_outbox", "candidates", "case_messages", "cases", "finding_events", "findings"),
+		assertEquals(List.of("agent_task_outbox", "candidates", "case_messages", "cases", "decisions", "finding_events", "findings", "live_actions", "live_case_state", "live_kicks", "live_reservations", "live_timeouts", "reviews"),
 				jdbc.queryForList(
 				"SELECT table_name FROM information_schema.tables WHERE table_schema = 'guard' ORDER BY table_name",
 				String.class));
