@@ -6,15 +6,25 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Function;
 
 import org.springframework.context.annotation.Profile;
+import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Component;
+import org.springframework.jdbc.core.JdbcTemplate;
+
+import com.lifeguards.liveguard.support.CaseFixtures;
 
 /**
- * B2 구현을 흉내 내는 스캔 대상 컴포넌트 (recording-sink 프로파일에서만 등록).
- * 스캔된 컴포넌트가 임시 구현을 대체하는 실제 경로를 그대로 쓴다.
+ * B2 동작을 제어하는 계약 테스트 대역. 실제 사건 FK를 만족시키면서 기본 sink 대신 주입한다.
  */
 @Component
 @Profile("recording-sink")
+@Primary
 public class RecordingCandidateSink implements CandidateSink {
+
+	private final JdbcTemplate jdbc;
+
+	public RecordingCandidateSink(JdbcTemplate jdbc) {
+		this.jdbc = jdbc;
+	}
 
 	public final List<CandidateRequest> requests = new CopyOnWriteArrayList<>();
 	/** 요청을 받아 caseId를 정하거나(기본: 새 UUID) 예외를 던진다. 호출 안에서 DB를 확인하는 용도로도 쓴다. */
@@ -23,7 +33,9 @@ public class RecordingCandidateSink implements CandidateSink {
 	@Override
 	public UUID open(CandidateRequest request) {
 		requests.add(request);
-		return behavior.apply(request);
+		UUID caseId = behavior.apply(request);
+		CaseFixtures.insertCase(jdbc, caseId, request.channelId(), request.userId());
+		return caseId;
 	}
 
 	public void reset() {

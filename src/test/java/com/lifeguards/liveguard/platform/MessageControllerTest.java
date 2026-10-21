@@ -33,6 +33,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import com.lifeguards.liveguard.TestcontainersConfiguration;
+import com.lifeguards.liveguard.support.CaseFixtures;
 import com.lifeguards.liveguard.common.security.AuthenticatedUser;
 import com.lifeguards.liveguard.contracts.dto.request.SendMessageRequest;
 import com.lifeguards.liveguard.contracts.enums.Role;
@@ -71,6 +72,7 @@ class MessageControllerTest {
 	@AfterEach
 	void cleanUp() {
 		jdbc.update("DELETE FROM platform.messages");
+		CaseFixtures.deleteCases(jdbc);
 		jdbc.update("DELETE FROM platform.channels WHERE id = ?", unjoinedChannel);
 	}
 

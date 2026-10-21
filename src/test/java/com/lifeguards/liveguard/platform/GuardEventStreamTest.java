@@ -29,6 +29,7 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import com.lifeguards.liveguard.TestcontainersConfiguration;
+import com.lifeguards.liveguard.support.CaseFixtures;
 import com.lifeguards.liveguard.contracts.dto.event.CaseEvent;
 import com.lifeguards.liveguard.contracts.enums.CaseStatus;
 import com.lifeguards.liveguard.platform.ChannelEventStreamTest.Client;
@@ -61,6 +62,7 @@ class GuardEventStreamTest {
 	@BeforeEach
 	void insertCaseMessage() {
 		caseId = UUID.randomUUID();
+		CaseFixtures.insertCase(jdbc, caseId, CHANNEL_A, VIEWER);
 		jdbc.update("INSERT INTO platform.messages (channel_id, author_id, client_message_id, text, normalized_text, "
 				+ "filter_result, visibility, case_id, sent_at) VALUES (?, ?, ?, '증거', '증거', 'REVIEW', 'PUBLIC', ?, ?)",
 				CHANNEL_A, VIEWER, UUID.randomUUID(), caseId, Timestamp.from(Instant.now()));
@@ -70,6 +72,7 @@ class GuardEventStreamTest {
 	void cleanUp() {
 		openStreams.forEach(Stream::close);
 		jdbc.update("DELETE FROM platform.messages");
+		CaseFixtures.deleteCases(jdbc);
 	}
 
 	@Test

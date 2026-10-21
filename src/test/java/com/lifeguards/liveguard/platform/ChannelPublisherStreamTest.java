@@ -28,6 +28,7 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import com.lifeguards.liveguard.TestcontainersConfiguration;
+import com.lifeguards.liveguard.support.CaseFixtures;
 import com.lifeguards.liveguard.platform.ChannelEventStreamTest.Client;
 import com.lifeguards.liveguard.platform.ChannelEventStreamTest.Lines;
 import com.lifeguards.liveguard.platform.port.ChannelEventPublisher;
@@ -78,6 +79,7 @@ class ChannelPublisherStreamTest {
 		openStreams.forEach(Stream::close);
 		((InMemoryKickStatus) kickStatus).clear();
 		jdbc.update("DELETE FROM platform.messages");
+		CaseFixtures.deleteCases(jdbc);
 		jdbc.update("DELETE FROM platform.channel_members WHERE user_id = ?", VIEWER2);
 		jdbc.update("DELETE FROM platform.users WHERE id = ?", VIEWER2);
 	}
@@ -385,6 +387,7 @@ class ChannelPublisherStreamTest {
 	private UUID insert(UUID channelId, UUID author, String text, String visibility, String filterResult,
 			UUID caseId, int secondsAfterT0) {
 		UUID id = UUID.randomUUID();
+		CaseFixtures.insertCase(jdbc, caseId, channelId, author);
 		jdbc.update("INSERT INTO platform.messages (id, channel_id, author_id, client_message_id, text, "
 				+ "normalized_text, filter_result, visibility, case_id, sent_at) "
 				+ "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
