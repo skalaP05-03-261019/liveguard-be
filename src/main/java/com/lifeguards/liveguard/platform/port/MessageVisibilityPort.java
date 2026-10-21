@@ -18,12 +18,14 @@ import java.util.UUID;
  * </ul>
  *
  * <p>
- * 주의: 사건에 연결된 메시지는 전부 대상이다. 도배(FLOOD) 사건은 앞의 두 메시지(증거로 연결된 PUBLIC 메시지)도
- * 사건 메시지이므로 {@link #hideCaseMessages}가 함께 가린다.
+ * 도배(FLOOD) 사건: 앞의 두 메시지는 1차 필터를 통과(filter_result=PASS)한 채 증거로만 사건에 연결된다.
+ * 정책상 도배 조치는 세 번째 이후 메시지가 대상이므로 {@link #hideCaseMessages}는 PASS 메시지를 가리지 않고
+ * (공개 유지, 사건 연결도 유지) 세 번째 이후(FLOOD, HELD)만 가린다. {@link #restoreCaseMessages}는
+ * filter_result와 상관없이 HELD·HIDDEN을 되돌린다.
  */
 public interface MessageVisibilityPort {
 
-	/** PUBLIC·HELD 메시지를 HIDDEN으로 바꾼다. 이미 HIDDEN인 메시지는 건너뛴다. */
+	/** PUBLIC·HELD 메시지를 HIDDEN으로 바꾼다. 이미 HIDDEN이거나 filter_result가 PASS인 메시지는 건너뛴다. */
 	int hideCaseMessages(UUID caseId);
 
 	/** HELD·HIDDEN 메시지를 PUBLIC으로 되돌린다. 이미 PUBLIC인 메시지는 건너뛴다. */

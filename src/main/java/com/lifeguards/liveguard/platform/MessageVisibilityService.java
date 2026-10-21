@@ -25,17 +25,18 @@ class MessageVisibilityService implements MessageVisibilityPort {
 	@Override
 	@Transactional
 	public int hideCaseMessages(UUID caseId) {
-		return change(caseId, Visibility.HIDDEN, List.of(Visibility.PUBLIC, Visibility.HELD));
+		// 1차 필터를 통과한(PASS) 증거 메시지는 가리지 않는다: 도배는 세 번째부터가 조치 대상이다
+		return change(caseId, Visibility.HIDDEN, List.of(Visibility.PUBLIC, Visibility.HELD), true);
 	}
 
 	@Override
 	@Transactional
 	public int restoreCaseMessages(UUID caseId) {
-		return change(caseId, Visibility.PUBLIC, List.of(Visibility.HELD, Visibility.HIDDEN));
+		return change(caseId, Visibility.PUBLIC, List.of(Visibility.HELD, Visibility.HIDDEN), false);
 	}
 
-	private int change(UUID caseId, Visibility target, List<Visibility> from) {
-		List<ChangedMessage> changed = messages.changeCaseVisibility(caseId, target, from);
+	private int change(UUID caseId, Visibility target, List<Visibility> from, boolean excludePass) {
+		List<ChangedMessage> changed = messages.changeCaseVisibility(caseId, target, from, excludePass);
 		for (ChangedMessage message : changed) {
 			channelEvents.visibilityChanged(new VisibilityChange(message.id(), message.channelId(),
 					message.authorId(), message.previous(), target, message.version(), message.text(),
