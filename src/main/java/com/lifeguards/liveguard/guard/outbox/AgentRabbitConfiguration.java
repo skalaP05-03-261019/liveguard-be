@@ -22,6 +22,7 @@ import org.springframework.context.annotation.Configuration;
 @ConditionalOnProperty(prefix = "liveguard.agent.delivery", name = "enabled", havingValue = "true")
 class AgentRabbitConfiguration {
 	@Configuration(proxyBeanMethods = false)
+	@ConditionalOnBooleanProperty(prefix = "liveguard.agent.delivery", name = "enabled")
 	@ConditionalOnProperty(prefix = "liveguard.agent.delivery", name = "transport", havingValue = "rabbit")
 	@EnableConfigurationProperties(AgentRabbitProperties.class)
 	static class RabbitDelivery {
