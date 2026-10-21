@@ -47,6 +47,10 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
 	ResponseEntity<Object> handleInvalidContract(InvalidContractException ex) {
 		return respond(HttpStatus.BAD_REQUEST, error(ErrorCode.VALIDATION_FAILED, ex.getMessage()));
 	}
+	@ExceptionHandler(IllegalArgumentException.class)
+	ResponseEntity<Object> handleInvalidArgument(IllegalArgumentException ex) {
+		return respond(HttpStatus.BAD_REQUEST, error(ErrorCode.VALIDATION_FAILED, "Invalid request fields"));
+	}
 
 	// Security 예외는 ExceptionTranslationFilter가 401/403으로 바꾸도록 그대로 던진다 (아래 catch-all이 500으로 삼키지 않게)
 	@ExceptionHandler({ AccessDeniedException.class, AuthenticationException.class })

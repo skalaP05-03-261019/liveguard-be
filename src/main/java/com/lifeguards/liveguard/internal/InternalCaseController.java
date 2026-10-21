@@ -42,10 +42,12 @@ class InternalCaseController {
 
 	private final CaseContextQuery cases;
 	private final GuardEventPublisher guardEvents;
+	private final com.lifeguards.liveguard.guard.LiveModerationService live;
 
-	InternalCaseController(CaseContextQuery cases, GuardEventPublisher guardEvents) {
+	InternalCaseController(CaseContextQuery cases, GuardEventPublisher guardEvents, com.lifeguards.liveguard.guard.LiveModerationService live) {
 		this.cases = cases;
 		this.guardEvents = guardEvents;
+		this.live=live;
 	}
 
 	@GetMapping("/context")
@@ -57,7 +59,8 @@ class InternalCaseController {
 		if (view != null && !view.equals("chatContext")) {
 			throw new InvalidContractException("Use the dedicated case or channel-info endpoint instead of view");
 		}
-		return new ApiResponse<>(cases.context(caseId, before, after), TraceIdFilter.current());
+		if(before<0||before>10||after<0||after>10) throw new InvalidContractException("Invalid context range");
+		return new ApiResponse<>(live.owns(caseId)?live.internalContext(caseId):cases.context(caseId, before, after), TraceIdFilter.current());
 	}
 
 	@GetMapping("/channel-info")
@@ -87,6 +90,7 @@ class InternalCaseController {
 			case TASK_FAILED -> new TaskFailedEvent(caseId, requiredText(request.payload(), "stage"),
 					requiredText(request.payload(), "errorCode"), optionalText(request.payload(), "traceUrl"));
 		};
+		if(live.owns(caseId)){live.progress(caseId,request.event().name(),data);return;}
 		UUID channelId = cases.channelOf(caseId)
 				.orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND, "Case has no messages"));
 		guardEvents.publish(channelId, request.event().name(), data);

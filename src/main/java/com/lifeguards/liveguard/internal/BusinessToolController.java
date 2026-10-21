@@ -29,9 +29,12 @@ import org.springframework.web.bind.annotation.RestController;
 public class BusinessToolController {
 
 	private final CaseQueryService queries;
+	private final com.lifeguards.liveguard.guard.LiveModerationService live;
+	private final tools.jackson.databind.json.JsonMapper mapper;
 
-	public BusinessToolController(CaseQueryService queries) {
+	public BusinessToolController(CaseQueryService queries, com.lifeguards.liveguard.guard.LiveModerationService live, tools.jackson.databind.json.JsonMapper mapper) {
 		this.queries = queries;
+		this.live = live; this.mapper=mapper;
 	}
 
 	@GetMapping("/cases/{caseId}")
@@ -39,7 +42,7 @@ public class BusinessToolController {
 			description = "Persistence-backed current evidence and target versions. Missing case is 404; incomplete metadata/evidence is 409 CASE_NOT_READY.")
 	public ApiResponse<InternalCase> getModerationCase(
 			@PathVariable UUID caseId) {
-		return new ApiResponse<>(queries.moderationCase(caseId), TraceIdFilter.current());
+		return new ApiResponse<>(live.owns(caseId)?live.internalCase(caseId):queries.moderationCase(caseId), TraceIdFilter.current());
 	}
 
 	@GetMapping("/cases/{caseId}/security-facts")
@@ -47,6 +50,9 @@ public class BusinessToolController {
 			description = "Contract only. TRUE/FALSE require verified sources; unresolved facts are UNKNOWN. Channel metadata is not proof of PII.")
 	public ApiResponse<SecurityFacts> getSecurityFacts(
 			@PathVariable UUID caseId) {
+		if(live.owns(caseId))return new ApiResponse<>(new SecurityFacts(java.util.List.of(
+			new SecurityFacts.Fact("isPersonalData",SecurityFacts.Value.UNKNOWN,java.util.List.of()),
+			new SecurityFacts.Fact("isOfficialContact",SecurityFacts.Value.UNKNOWN,java.util.List.of()))),TraceIdFilter.current());
 		throw new BusinessToolNotImplementedException();
 	}
 
@@ -114,6 +120,7 @@ public class BusinessToolController {
 	@Operation(summary = "get_action_status: read an existing action without executing it")
 	public ApiResponse<ActionExecutionResult> getActionStatus(
 			@PathVariable UUID actionId) {
+		if(live.ownsAction(actionId)) return new ApiResponse<>(mapper.convertValue(live.actionStatus(actionId),ActionExecutionResult.class),TraceIdFilter.current());
 		throw new BusinessToolNotImplementedException();
 	}
 
@@ -130,6 +137,11 @@ public class BusinessToolController {
 			@RequestBody BusinessActionCommand command) {
 		if (!actionId.equals(command.actionId())) {
 			throw new IllegalArgumentException("Path actionId must match command actionId");
+		}
+		if(live.ownsAction(actionId)) {
+			java.util.Map<String,Object> payload=mapper.convertValue(command,java.util.Map.class);
+			payload.values().removeIf(java.util.Objects::isNull);
+			return new ApiResponse<>(mapper.convertValue(live.execute(actionId,payload),ActionExecutionResult.class),TraceIdFilter.current());
 		}
 		throw new BusinessToolNotImplementedException();
 	}

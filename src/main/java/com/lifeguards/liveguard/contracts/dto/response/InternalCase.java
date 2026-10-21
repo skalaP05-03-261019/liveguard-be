@@ -25,7 +25,14 @@ public record InternalCase(
 		List<String> matchingTags,
 		int version,
 		List<MaskedMessage> messages,
-		List<Target> targets) {
+		List<Target> targets,
+		UUID userId, String confirmationStatus, Map<String,Object> kickReview) {
+	public InternalCase(UUID caseId, UUID channelId, UUID liveId, UUID snapshotId, int evidenceVersion,
+		String policyVersion, HandlingRoute handlingRoute, FilterResult filterResult, List<String> tags,
+		int version, List<MaskedMessage> messages, List<Target> targets) {
+		this(caseId,channelId,liveId,snapshotId,evidenceVersion,policyVersion,handlingRoute,filterResult,tags,
+			version,messages,targets,null,null,null);
+	}
 	public InternalCase {
 		DtoValidation.requireNonNull(caseId, "caseId");
 		DtoValidation.requireNonNull(channelId, "channelId");

@@ -30,7 +30,7 @@ import com.lifeguards.liveguard.TestcontainersConfiguration;
 import com.lifeguards.liveguard.support.CaseFixtures;
 
 /** 채팅의 방송 귀속(A-17, A-18). 시드 채널의 방송은 건드리지 않도록 전용 채널을 쓴다. */
-@SpringBootTest
+@SpringBootTest(properties = { "LIVEGUARD_POLICY_VERSION=v3.1", "LIVEGUARD_TBD_FIXTURE_ENABLED=true" })
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
 @Import(TestcontainersConfiguration.class)
@@ -112,16 +112,16 @@ class LiveMessageFlowTest {
 	}
 
 	@Test
-	void legacyChannelPathUsesTheLiveInProgressAnd409WithoutOne() throws Exception {
+	void legacyChannelPathIsDisabledInIntegrationMode() throws Exception {
 		mockMvc.perform(sendToChannel(UUID.randomUUID(), "방송 전"))
 				.andExpect(status().isConflict())
-				.andExpect(jsonPath("$.error.code").value("LIVE_ENDED"));
+				.andExpect(jsonPath("$.error.code").value("CASE_NOT_READY"));
 
-		String liveId = startLive();
+		startLive();
 		mockMvc.perform(sendToChannel(UUID.randomUUID(), "방송 중"))
-				.andExpect(status().isCreated())
-				.andExpect(jsonPath("$.data.liveId").value(liveId));
-		assertEquals(1, messageCount());
+				.andExpect(status().isConflict())
+				.andExpect(jsonPath("$.error.code").value("CASE_NOT_READY"));
+		assertEquals(0, messageCount());
 	}
 
 	@Test
@@ -143,7 +143,7 @@ class LiveMessageFlowTest {
 	}
 
 	@Test
-	void liveHistoryHasOnlyThatLiveWhileChannelHistoryHasEverything() throws Exception {
+	void liveHistoryIsScopedAndChannelHistoryIsDisabledInIntegrationMode() throws Exception {
 		String first = startLive();
 		mockMvc.perform(sendToLive(first, UUID.randomUUID(), "첫 방송")).andExpect(status().isCreated());
 		endLive(first);
@@ -152,11 +152,11 @@ class LiveMessageFlowTest {
 
 		String live = mockMvc.perform(get("/api/lives/" + second + "/messages").session(viewer))
 				.andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
-		String all = mockMvc.perform(get("/api/channels/" + channel + "/messages").session(viewer))
-				.andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+		mockMvc.perform(get("/api/channels/" + channel + "/messages").session(viewer))
+				.andExpect(status().isConflict())
+				.andExpect(jsonPath("$.error.code").value("CASE_NOT_READY"));
 
 		assertEquals(List.of("둘째 방송"), JsonPath.read(live, "$.data.items[*].text"));
-		assertEquals(List.of("둘째 방송", "첫 방송"), JsonPath.read(all, "$.data.items[*].text"));
 	}
 
 	private String startLive() throws Exception {
