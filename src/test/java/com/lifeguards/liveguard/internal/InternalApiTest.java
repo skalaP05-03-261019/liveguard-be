@@ -16,6 +16,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
@@ -67,10 +68,12 @@ class InternalApiTest {
 	private GuardEventPublisher guardEvents;
 
 	private UUID caseId;
+	private final List<UUID> lives = new ArrayList<>();
 
 	@BeforeEach
 	void setUp() {
 		caseId = UUID.randomUUID();
+		lives.clear();
 		CaseFixtures.insertCase(jdbc, caseId, CHANNEL_A, VIEWER);
 	}
 
@@ -78,6 +81,7 @@ class InternalApiTest {
 	void cleanUp() {
 		jdbc.update("DELETE FROM platform.messages");
 		CaseFixtures.deleteCases(jdbc);
+		lives.forEach(id -> jdbc.update("DELETE FROM platform.lives WHERE id = ?", id));
 	}
 
 	// ----- 서비스 토큰 -----
@@ -222,6 +226,55 @@ class InternalApiTest {
 	}
 
 	@Test
+	void contextStaysWithinTheLiveOfTheEvidence() throws Exception {
+		UUID oldLive = insertEndedLive(0, 9);
+		UUID newLive = insertEndedLive(10, 40);
+		insertIn(oldLive, MODERATOR, "지난 방송 1", 1, null, "PUBLIC");
+		insertIn(oldLive, MODERATOR, "지난 방송 2", 2, null, "PUBLIC");
+		insertIn(null, MODERATOR, "방송 도입 전", 5, null, "PUBLIC");
+		insertIn(newLive, MODERATOR, "새 방송 앞", 12, null, "PUBLIC");
+		insertIn(newLive, VIEWER, "증거", 20, caseId, "HELD");
+		insertIn(newLive, MODERATOR, "새 방송 뒤", 22, null, "PUBLIC");
+
+		String body = mockMvc.perform(internal(get(context(caseId) + "?before=5&after=5")))
+				.andExpect(status().isOk())
+				.andReturn().getResponse().getContentAsString();
+
+		assertEquals(List.of("새 방송 앞", "증거", "새 방송 뒤"), JsonPath.read(body, "$.data.messages[*].text"));
+	}
+
+	@Test
+	void contextOfEvidenceWithoutALiveSkipsMessagesOfLives() throws Exception {
+		UUID live = insertEndedLive(10, 40);
+		insertIn(null, MODERATOR, "도입 전 앞", 5, null, "PUBLIC");
+		insertIn(live, MODERATOR, "방송 중", 12, null, "PUBLIC");
+		insertIn(null, VIEWER, "도입 전 증거", 20, caseId, "PUBLIC");
+		insertIn(null, MODERATOR, "도입 전 뒤", 25, null, "PUBLIC");
+
+		String body = mockMvc.perform(internal(get(context(caseId) + "?before=5&after=5")))
+				.andExpect(status().isOk())
+				.andReturn().getResponse().getContentAsString();
+
+		assertEquals(List.of("도입 전 앞", "도입 전 증거", "도입 전 뒤"),
+				JsonPath.read(body, "$.data.messages[*].text"));
+	}
+
+	@Test
+	void contextCarriesTheVisibilityOfEveryMessage() throws Exception {
+		UUID live = insertEndedLive(0, 60);
+		insertIn(live, MODERATOR, "공개 앞", 10, null, "PUBLIC");
+		insertIn(live, VIEWER, "가려진 증거", 20, caseId, "HELD");
+		insertIn(live, MODERATOR, "숨김 뒤", 30, null, "HIDDEN");
+
+		String body = mockMvc.perform(internal(get(context(caseId) + "?before=5&after=5")))
+				.andExpect(status().isOk())
+				.andReturn().getResponse().getContentAsString();
+
+		assertEquals(List.of("공개 앞", "가려진 증거", "숨김 뒤"), JsonPath.read(body, "$.data.messages[*].text"));
+		assertEquals(List.of("PUBLIC", "HELD", "HIDDEN"), JsonPath.read(body, "$.data.messages[*].visibility"));
+	}
+
+	@Test
 	void contextValidatesBeforeAndAfter() throws Exception {
 		insert(VIEWER, "증거", 0, caseId);
 		for (String query : new String[] { "?before=11", "?after=11", "?before=-1", "?after=abc" }) {
@@ -331,6 +384,25 @@ class InternalApiTest {
 
 	private static String context(UUID caseId) {
 		return "/internal/cases/" + caseId + "/context";
+	}
+
+	/** 방송 도입 전 시험과 섞이지 않도록 이미 끝난 방송만 만든다(채널당 진행 중 방송은 하나뿐이다). */
+	private UUID insertEndedLive(int startSecondsAfterT0, int endSecondsAfterT0) {
+		UUID id = UUID.randomUUID();
+		jdbc.update("INSERT INTO platform.lives (id, channel_id, started_at, ended_at) VALUES (?, ?, ?, ?)",
+				id, CHANNEL_A, Timestamp.from(T0.plusSeconds(startSecondsAfterT0)),
+				Timestamp.from(T0.plusSeconds(endSecondsAfterT0)));
+		lives.add(id);
+		return id;
+	}
+
+	private void insertIn(UUID liveId, UUID author, String text, int secondsAfterT0, UUID caseId, String visibility) {
+		CaseFixtures.insertCase(jdbc, caseId, CHANNEL_A, author);
+		jdbc.update("INSERT INTO platform.messages (channel_id, live_id, author_id, client_message_id, text, "
+				+ "normalized_text, filter_result, visibility, case_id, sent_at) "
+				+ "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				CHANNEL_A, liveId, author, UUID.randomUUID(), text, text, "PUBLIC".equals(visibility) ? "PASS" : "HOLD",
+				visibility, caseId, Timestamp.from(T0.plusSeconds(secondsAfterT0)));
 	}
 
 	private UUID insert(UUID author, String text, int secondsAfterT0, UUID caseId) {
