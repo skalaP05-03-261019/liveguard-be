@@ -95,6 +95,9 @@ class ChannelEventHub implements ChannelEventPublisher {
 				"USER_KICKED", event, true));
 	}
 
+  @org.springframework.context.event.EventListener
+  void reauthenticated(com.lifeguards.liveguard.common.security.SessionReauthenticatedEvent event) { registry.closeSession(event.previousSessionId()); }
+
 	@PreDestroy
 	void shutdown() {
 		registry.shutdown();

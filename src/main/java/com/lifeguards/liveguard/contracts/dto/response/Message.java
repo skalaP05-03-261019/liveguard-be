@@ -16,7 +16,13 @@ public record Message(
 		Visibility visibility,
 		int version,
 		Instant sentAt,
-		boolean isMine) {
+		boolean isMine,
+        com.lifeguards.liveguard.contracts.enums.ModerationReasonCode moderationReasonCode,
+        String moderationNotice, Instant timeoutUntil,
+        com.lifeguards.liveguard.contracts.enums.ReviewStatus reviewStatus) {
+    public Message(UUID messageId,UUID liveId,UUID channelId,String authorAlias,String text,Visibility visibility,int version,Instant sentAt,boolean isMine){
+        this(messageId,liveId,channelId,authorAlias,text,visibility,version,sentAt,isMine,null,null,null,null);
+    }
 	public Message {
 		DtoValidation.requireNonNull(messageId, "messageId");
 		DtoValidation.requireNonNull(channelId, "channelId");

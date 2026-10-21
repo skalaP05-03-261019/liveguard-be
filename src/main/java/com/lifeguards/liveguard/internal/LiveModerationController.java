@@ -16,16 +16,18 @@ import org.springframework.web.bind.annotation.*;
 class LiveModerationController {
   private final LiveModerationService live;
   private final ObjectMapper mapper;
+  private final com.lifeguards.liveguard.guard.LiveFindingRecovery recovery;
 
-  LiveModerationController(LiveModerationService live, ObjectMapper mapper) {
+  LiveModerationController(LiveModerationService live, ObjectMapper mapper, com.lifeguards.liveguard.guard.LiveFindingRecovery recovery) {
     this.live = live;
     this.mapper = mapper;
+    this.recovery=recovery;
   }
 
   @GetMapping("/api/reviews")
   ApiResponse<?> reviews(
-      @RequestParam UUID liveId, @AuthenticationPrincipal AuthenticatedUser user) {
-    return wrap(live.reviews(liveId, user));
+      @RequestParam UUID liveId, @RequestParam com.lifeguards.liveguard.contracts.enums.ReviewKind kind, @RequestParam(required=false) com.lifeguards.liveguard.contracts.enums.ReviewStatus status, @AuthenticationPrincipal AuthenticatedUser user) {
+    return wrap(live.reviews(liveId, user).stream().filter(r->r.get("kind").equals(kind.name())).filter(r->status==null||r.get("status").equals(status.name())).toList());
   }
 
   @GetMapping("/api/cases")
@@ -79,6 +81,11 @@ class LiveModerationController {
   @SecurityRequirement(name = "serviceToken")
   ApiResponse<?> revalidate(@PathVariable UUID reviewId, @RequestBody Map<String, Object> request) {
     return wrap(live.revalidate(reviewId, UUID.fromString(request.get("decisionId").toString())));
+  }
+
+  @PostMapping("/api/findings/{findingId}/revoke")
+  ApiResponse<?> revoke(@PathVariable UUID findingId,@RequestBody RevokeFindingRequest request,@AuthenticationPrincipal AuthenticatedUser user){
+    return wrap(recovery.revoke(findingId,request,user));
   }
 
   private Map<String, Object> body(Object request) {

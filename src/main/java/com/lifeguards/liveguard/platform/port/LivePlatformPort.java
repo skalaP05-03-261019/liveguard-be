@@ -7,6 +7,10 @@ public interface LivePlatformPort {
 
   Live live(UUID liveId);
 
+  void lockScope(UUID liveId);
+
+  void bindCase(UUID messageId, UUID caseId, String route);
+
   void authorize(UUID liveId, UUID userId, boolean operator);
 
   List<Map<String, Object>> snapshot(UUID liveId, UUID targetId, UUID authorId);

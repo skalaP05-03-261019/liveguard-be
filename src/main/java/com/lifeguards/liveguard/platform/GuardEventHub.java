@@ -54,6 +54,9 @@ class GuardEventHub implements GuardEventPublisher {
 		registry.closeSession(event.getId());
 	}
 
+  @org.springframework.context.event.EventListener
+  void reauthenticated(com.lifeguards.liveguard.common.security.SessionReauthenticatedEvent event) { registry.closeSession(event.previousSessionId()); }
+
 	@PreDestroy
 	void shutdown() {
 		registry.shutdown();

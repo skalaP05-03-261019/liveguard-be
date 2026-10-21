@@ -34,14 +34,16 @@ import jakarta.servlet.http.HttpServletResponse;
 class AuthController {
 
 	private final AuthenticationManager authenticationManager;
+	private final org.springframework.context.ApplicationEventPublisher events;
 	private final SessionAuthenticationStrategy loginSessionStrategy;
 	private final SecurityContextRepository securityContextRepository;
 	private final ChannelMembershipQuery channelMemberships;
 	private final SecurityContextHolderStrategy contextHolder = SecurityContextHolder.getContextHolderStrategy();
 
 	AuthController(AuthenticationManager authenticationManager, SessionAuthenticationStrategy loginSessionStrategy,
-			SecurityContextRepository securityContextRepository, ChannelMembershipQuery channelMemberships) {
+			SecurityContextRepository securityContextRepository, ChannelMembershipQuery channelMemberships, org.springframework.context.ApplicationEventPublisher events) {
 		this.authenticationManager = authenticationManager;
+		this.events=events;
 		this.loginSessionStrategy = loginSessionStrategy;
 		this.securityContextRepository = securityContextRepository;
 		this.channelMemberships = channelMemberships;
@@ -57,7 +59,9 @@ class AuthController {
 			// 계정 존재 여부가 드러나지 않도록 실패 사유를 구분하지 않는다
 			throw new ApiException(ErrorCode.UNAUTHENTICATED, "Invalid username or password");
 		}
+		String previousSessionId=request.getSession(false)==null?null:request.getSession(false).getId();
 		loginSessionStrategy.onAuthentication(authentication, request, response);
+		if(previousSessionId!=null) events.publishEvent(new com.lifeguards.liveguard.common.security.SessionReauthenticatedEvent(previousSessionId));
 		// 회전된 CSRF 토큰은 지연 생성되므로 여기서 읽어 새 XSRF-TOKEN 쿠키를 로그인 응답에 싣는다.
 		// 그러지 않으면 로그인 직후 다른 GET 없이 보낸 첫 POST가 403이 된다
 		CsrfToken csrfToken = (CsrfToken) request.getAttribute(CsrfToken.class.getName());

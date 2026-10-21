@@ -20,13 +20,8 @@ import jakarta.servlet.http.HttpServletRequest;
 @RestController
 class ChannelEventController {
 
-	@org.springframework.beans.factory.annotation.Value("${LIVEGUARD_TBD_FIXTURE_ENABLED:false}")
-	private boolean liveIntegrationEnabled;
-
-	private void requireLegacyMode() {
-		if (liveIntegrationEnabled) throw new com.lifeguards.liveguard.common.ApiException(
-			com.lifeguards.liveguard.contracts.enums.ErrorCode.CASE_NOT_READY, "Use the liveId API in integration mode");
-	}
+	@org.springframework.beans.factory.annotation.Autowired
+	private LiveService lives;
 
 	private final JdbcChannelMembershipQuery memberships;
 	private final ChannelEventHub hub;
@@ -41,7 +36,8 @@ class ChannelEventController {
 	@GetMapping("/api/channels/{channelId}/events")
 	ResponseEntity<SseEmitter> subscribe(@PathVariable UUID channelId, @AuthenticationPrincipal AuthenticatedUser user,
 			HttpServletRequest request) {
-		requireLegacyMode();
+		if(lives.integrationEnabled()) return ResponseEntity.ok().header("Cache-Control","no-cache")
+			.body(lives.subscribe(lives.current(channelId,user).liveId(),user,request.getSession().getId(),false));
 		AuthorRole role = memberships.memberRole(channelId, user.userId())
 				.orElseThrow(() -> new ApiException(ErrorCode.FORBIDDEN, "Not a member of this channel"));
 		kickStatus.activeKickUntil(channelId, user.userId()).ifPresent(until -> {
