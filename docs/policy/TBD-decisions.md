@@ -165,7 +165,7 @@
 | E-2 | 보류 원인(`holdReasons`) | 별도 테이블 `message_hold_reasons(message_id, case_id, reason, created_at, released_at)`. `reason`은 handlingRoute 값. 미해제 원인이 남아 있으면 PUBLIC으로 되돌리지 않는다(자기 원인만 해제) | CONTRACTS §3(Message), POLICY §4 | B1 |
 | E-3 | 사건 확정 상태 | `cases.status`는 처리 진행 상태로 유지하고 `confirmation_status`(PENDING, CONFIRMED_VIOLATION, CONFIRMED_NORMAL, CANCELLED)를 추가한다. DEFER는 `decisions`에만 기록하며 상태는 PENDING으로 둔다 | CONTRACTS §3(Case), POLICY §5 | B2 |
 | E-4 | 예약 상태 | `reservations.state`: RESERVED, CONSUMED, RELEASED | POLICY §8·§9 | B2 |
-| E-5 | 결정 중복 방지 | `decisions`에 `UNIQUE(review_id)`와 `client_request_id` 저장. 같은 요청의 재전송은 같은 결과, 다른 요청은 409 | CONTRACTS §8 | B2 |
+| E-5 | 결정 중복 방지 | 최종 결정(DEFER가 아닌 값)만 검토당 1건: `UNIQUE(review_id) WHERE value <> 'DEFER'`. 요청 멱등은 `UNIQUE(review_id, client_request_id)`. DEFER는 최종 결정이 아니므로 `decisions`에 이력으로 남고 검토는 PENDING으로 유지되며, 이후 최종 결정을 저장할 수 있다. 같은 요청의 재전송은 저장된 같은 결과를 돌려주고, 최종 결정이 저장된 뒤 들어온 다른 요청은 409다. 검토 요청은 공통 부모 `reviews`(CONTEXT·KICK)가 식별하고 `decisions.review_id`는 `reviews`를 참조한다 | CONTRACTS §8, TBD-04·10 | B2 |
 | E-6 | TIMEOUT 저장 | `timeouts(live_id, user_id, action_id, starts_at, expires_at)`. 활성 TIMEOUT 교체는 TBD-09(새 만료가 더 늦을 때만)를 따르되 기록은 모두 남긴다 | CONTRACTS §4(timeoutUntil), TBD-09 | B2 |
 | E-7 | 도배 재적발 상태 | `flood_marks(live_id, user_id, text_hash, case_id, confirmed_at, notice_event_id)`. `text_hash`는 norm-v1 정규화 문장의 SHA-256, `notice_event_id`는 nullable. 재적발 창은 `confirmed_at + 24시간` | ARCHITECTURE §4, POLICY §7, TBD-05·TBD-11 | B1·B2 |
 | E-8 | PII 태그 | MatchingTag에 `PII_PHONE`, `PII_ACCOUNT`, `PII_EMAIL` 추가 | TBD-02(3순위), POLICY §2 | B1 |
