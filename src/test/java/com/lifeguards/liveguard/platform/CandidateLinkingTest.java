@@ -277,10 +277,11 @@ class CandidateLinkingTest {
 	private UUID insert(String text, UUID caseId, Instant sentAt) {
 		UUID id = UUID.randomUUID();
 		CaseFixtures.insertCase(jdbc, caseId, CHANNEL_A, VIEWER);
-		jdbc.update("INSERT INTO platform.messages (id, channel_id, author_id, client_message_id, text, "
+		// 도배는 같은 방송 범위라 시드 채널의 진행 중 방송에 넣는다
+		jdbc.update("INSERT INTO platform.messages (id, channel_id, live_id, author_id, client_message_id, text, "
 				+ "normalized_text, filter_result, visibility, case_id, sent_at) "
-				+ "VALUES (?, ?, ?, ?, ?, ?, 'PASS', 'PUBLIC', ?, ?)",
-				id, CHANNEL_A, VIEWER, UUID.randomUUID(), text, TextNormalizer.normalize(text), caseId,
+				+ "VALUES (?, ?, (SELECT id FROM platform.lives WHERE channel_id = ? AND ended_at IS NULL), ?, ?, ?, ?, 'PASS', 'PUBLIC', ?, ?)",
+				id, CHANNEL_A, CHANNEL_A, VIEWER, UUID.randomUUID(), text, TextNormalizer.normalize(text), caseId,
 				Timestamp.from(sentAt));
 		return id;
 	}

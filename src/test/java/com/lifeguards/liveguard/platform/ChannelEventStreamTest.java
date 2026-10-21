@@ -225,7 +225,7 @@ class ChannelEventStreamTest {
 	}
 
 	private static ChatEvent chat(String text, Visibility visibility) {
-		return new ChatEvent(UUID.randomUUID(), "시청자", text, visibility, 1, Instant.now());
+		return new ChatEvent(UUID.randomUUID(), UUID.randomUUID(), "시청자", text, visibility, 1, Instant.now());
 	}
 
 	private static String awaitMatching(BlockingQueue<String> queue, Predicate<String> predicate)

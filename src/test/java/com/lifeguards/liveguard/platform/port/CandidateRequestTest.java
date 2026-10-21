@@ -19,7 +19,8 @@ import com.lifeguards.liveguard.contracts.exception.InvalidContractException;
 class CandidateRequestTest {
 
 	private static CandidateRequest request(List<String> tags, String filterVersion) {
-		return new CandidateRequest(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), FilterResult.FLOOD, tags,
+		return new CandidateRequest(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(),
+				FilterResult.FLOOD, tags,
 				filterVersion, Instant.parse("2026-10-20T12:00:00Z"), List.of());
 	}
 

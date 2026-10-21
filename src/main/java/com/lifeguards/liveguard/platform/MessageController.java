@@ -9,7 +9,6 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -21,7 +20,6 @@ import com.lifeguards.liveguard.contracts.dto.response.Message;
 import com.lifeguards.liveguard.contracts.dto.response.MessagePage;
 
 @RestController
-@RequestMapping("/api/channels/{channelId}/messages")
 class MessageController {
 
 	private final MessageService messageService;
@@ -30,18 +28,39 @@ class MessageController {
 		this.messageService = messageService;
 	}
 
-	@PostMapping
-	ResponseEntity<ApiResponse<Message>> send(@PathVariable UUID channelId, @RequestBody SendMessageRequest request,
+	@PostMapping("/api/lives/{liveId}/messages")
+	ResponseEntity<ApiResponse<Message>> sendToLive(@PathVariable UUID liveId, @RequestBody SendMessageRequest request,
 			@AuthenticationPrincipal AuthenticatedUser user) {
-		Message message = messageService.send(channelId, user, request);
-		return ResponseEntity.status(HttpStatus.CREATED).body(new ApiResponse<>(message, TraceIdFilter.current()));
+		return created(messageService.sendToLive(liveId, user, request));
 	}
 
 	/** 최신순. nextCursor로 더 과거 페이지를 가져온다 (마지막 페이지면 null). */
-	@GetMapping
-	ApiResponse<MessagePage> history(@PathVariable UUID channelId, @RequestParam(required = false) String cursor,
+	@GetMapping("/api/lives/{liveId}/messages")
+	ApiResponse<MessagePage> historyOfLive(@PathVariable UUID liveId, @RequestParam(required = false) String cursor,
 			@RequestParam(defaultValue = "50") int limit, @AuthenticationPrincipal AuthenticatedUser user) {
-		return new ApiResponse<>(messageService.history(channelId, user, cursor, limit), TraceIdFilter.current());
+		return new ApiResponse<>(messageService.historyOfLive(liveId, user, cursor, limit), TraceIdFilter.current());
+	}
+
+	/** 기존 FE 호환 경로(A-18). 채널의 진행 중 방송으로 귀속한다. */
+	@Deprecated
+	@PostMapping("/api/channels/{channelId}/messages")
+	ResponseEntity<ApiResponse<Message>> sendToChannel(@PathVariable UUID channelId,
+			@RequestBody SendMessageRequest request, @AuthenticationPrincipal AuthenticatedUser user) {
+		return created(messageService.sendToChannel(channelId, user, request));
+	}
+
+	/** 기존 FE 호환 경로(A-18). 채널 전체 이력. */
+	@Deprecated
+	@GetMapping("/api/channels/{channelId}/messages")
+	ApiResponse<MessagePage> historyOfChannel(@PathVariable UUID channelId,
+			@RequestParam(required = false) String cursor, @RequestParam(defaultValue = "50") int limit,
+			@AuthenticationPrincipal AuthenticatedUser user) {
+		return new ApiResponse<>(messageService.historyOfChannel(channelId, user, cursor, limit),
+				TraceIdFilter.current());
+	}
+
+	private static ResponseEntity<ApiResponse<Message>> created(Message message) {
+		return ResponseEntity.status(HttpStatus.CREATED).body(new ApiResponse<>(message, TraceIdFilter.current()));
 	}
 
 }
