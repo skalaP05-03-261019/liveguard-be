@@ -1657,7 +1657,7 @@ components:
             - $ref: '#/components/schemas/Uuid'
             - type: 'null'
         basisCaseIds:
-          type: array
+          type: [array, 'null']
           uniqueItems: true
           items:
             $ref: '#/components/schemas/Uuid'
