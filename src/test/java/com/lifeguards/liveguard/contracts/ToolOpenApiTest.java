@@ -10,7 +10,22 @@ import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+import com.lifeguards.liveguard.contracts.dto.event.ActionEvent;
+import com.lifeguards.liveguard.contracts.dto.event.CaseEvent;
+import com.lifeguards.liveguard.contracts.dto.event.ContextReviewRequiredEvent;
+import com.lifeguards.liveguard.contracts.dto.event.KickReviewRequiredEvent;
+import com.lifeguards.liveguard.contracts.dto.event.ReviewDecidedEvent;
+import com.lifeguards.liveguard.contracts.dto.request.ContextDecisionRequest;
+import com.lifeguards.liveguard.contracts.dto.request.JudgmentRequest;
+import com.lifeguards.liveguard.contracts.dto.request.KickDecisionRequest;
 import com.lifeguards.liveguard.contracts.dto.response.ActionExecutionResult;
+import com.lifeguards.liveguard.contracts.dto.response.CaseSummary;
+import com.lifeguards.liveguard.contracts.dto.response.ContextReview;
+import com.lifeguards.liveguard.contracts.dto.response.Decision;
+import com.lifeguards.liveguard.contracts.dto.response.KickRevalidation;
+import com.lifeguards.liveguard.contracts.dto.response.KickReview;
+import com.lifeguards.liveguard.contracts.dto.response.Live;
+import com.lifeguards.liveguard.contracts.dto.response.UserHistory;
 import com.lifeguards.liveguard.contracts.dto.response.ChannelUserRole;
 import com.lifeguards.liveguard.contracts.dto.response.KickEligibility;
 import com.lifeguards.liveguard.contracts.dto.response.InternalCase;
@@ -43,6 +58,35 @@ class ToolOpenApiTest {
 				fields.addAll(Set.of("targetMessageIds", "targetVersions"));
 			}
 			assertEquals(fields, map(map(schemas, type.getSimpleName()), "properties").keySet(), type.getSimpleName());
+		}
+	}
+
+	/** v1.0에서 openapi에 맞춘 계약 DTO. 로직에 연결된 Message·ChatEvent 등은 liveId 구현 때 추가한다. */
+	@Test
+	void v1ContractRecordsHaveTheSameFieldsAsOpenApiSchemas() throws IOException {
+		Map<?, ?> schemas = map(map(contract(), "components"), "schemas");
+		Map<Class<?>, String> records = Map.ofEntries(
+				Map.entry(UserHistory.class, "UserHistory"),
+				Map.entry(UserHistory.RecentCase.class, "UserHistoryRecentCase"),
+				Map.entry(CaseSummary.class, "CaseSummary"),
+				Map.entry(CaseEvent.class, "CaseEvent"),
+				Map.entry(KickReview.class, "KickReview"),
+				Map.entry(ContextReview.class, "ContextReview"),
+				Map.entry(Decision.class, "Decision"),
+				Map.entry(Live.class, "Live"),
+				Map.entry(KickRevalidation.class, "KickRevalidation"),
+				Map.entry(KickDecisionRequest.class, "KickDecisionRequest"),
+				Map.entry(ContextDecisionRequest.class, "ContextDecisionRequest"),
+				Map.entry(JudgmentRequest.class, "JudgmentRequest"),
+				Map.entry(JudgmentRequest.MessageFinding.class, "MessageFinding"),
+				Map.entry(ContextReviewRequiredEvent.class, "ContextReviewRequiredEvent"),
+				Map.entry(KickReviewRequiredEvent.class, "KickReviewRequiredEvent"),
+				Map.entry(ReviewDecidedEvent.class, "ReviewDecidedEvent"),
+				Map.entry(ActionEvent.class, "ActionEvent"));
+		for (var entry : records.entrySet()) {
+			Set<String> fields = Arrays.stream(entry.getKey().getRecordComponents()).map(component -> component.getName())
+					.collect(Collectors.toSet());
+			assertEquals(fields, map(map(schemas, entry.getValue()), "properties").keySet(), entry.getValue());
 		}
 	}
 
