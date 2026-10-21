@@ -1,7 +1,12 @@
 package com.lifeguards.liveguard.filter;
 
+import java.text.Normalizer;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+
+import com.lifeguards.liveguard.contracts.enums.MatchingTag;
 
 /**
  * 내부 API(Agent·모델 입력)로 보내는 본문의 개인정보·링크를 마스킹한다 (계약 MaskedMessage.text).
@@ -24,6 +29,33 @@ public final class PiiMasker {
 	private static final int MIN_ACCOUNT_DIGITS = 10;
 
 	private PiiMasker() {
+	}
+
+	/**
+	 * 개인정보 후보 신호(TBD-02 3순위). 전화번호·계좌·이메일 "형식"만 본다. 하이픈 없이 이어진 숫자 나열은 마스킹은 하지만
+	 * 후보로 보지 않는다(AC-06). 마스킹과 같은 순서·패턴을 쓰고, 전각 숫자 우회를 막으려 NFKC만 적용한 원문에서 찾는다.
+	 * scheme 있는 URL 안의 문자열은 링크로 따로 다루므로 보지 않는다. 결과는 PII_PHONE, PII_ACCOUNT, PII_EMAIL 순서다.
+	 */
+	public static List<MatchingTag> candidates(String text) {
+		String rest = URL_WITH_SCHEME.matcher(Normalizer.normalize(text, Normalizer.Form.NFKC)).replaceAll(" ");
+		boolean email = EMAIL.matcher(rest).find();
+		rest = EMAIL.matcher(rest).replaceAll(" ");
+		boolean phone = PHONE.matcher(rest).find();
+		rest = PHONE.matcher(rest).replaceAll(" ");
+		boolean account = NUMBER_GROUPS.matcher(rest).results()
+				.anyMatch(match -> match.group().replace("-", "").length() >= MIN_ACCOUNT_DIGITS);
+
+		List<MatchingTag> tags = new ArrayList<>(3);
+		if (phone) {
+			tags.add(MatchingTag.PII_PHONE);
+		}
+		if (account) {
+			tags.add(MatchingTag.PII_ACCOUNT);
+		}
+		if (email) {
+			tags.add(MatchingTag.PII_EMAIL);
+		}
+		return List.copyOf(tags);
 	}
 
 	public static String mask(String text) {
