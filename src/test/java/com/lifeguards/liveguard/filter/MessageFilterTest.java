@@ -45,7 +45,7 @@ class MessageFilterTest {
 		FilterDecision decision = classify("오늘 기사 떴네요 https://news.example.org/article/123");
 
 		assertEquals(FilterResult.PASS, decision.result());
-		assertEquals(List.of(MessageFilter.UNOFFICIAL_URL), decision.matchingTags());
+		assertEquals(List.of(MessageFilter.LINK), decision.matchingTags());
 	}
 
 	@Test
@@ -56,7 +56,7 @@ class MessageFilterTest {
 		assertEquals(FilterResult.HOLD, decision.result());
 		assertEquals(Visibility.HELD, decision.visibility());
 		assertEquals(List.of(MessageFilter.OFFICIAL_CLAIM, MessageFilter.CREDENTIAL_REQUEST,
-				MessageFilter.UNOFFICIAL_URL), decision.matchingTags());
+				MessageFilter.LINK), decision.matchingTags());
 	}
 
 	@Test
@@ -114,7 +114,7 @@ class MessageFilterTest {
 		FilterDecision holdAndFlood = classify("공식 로그인 http://evil.test 꺼져", 5);
 		assertEquals(FilterResult.HOLD, holdAndFlood.result());
 		assertTrue(holdAndFlood.matchingTags().containsAll(List.of(MessageFilter.ATTACK_TERM,
-				MessageFilter.REPEATED_TEXT, MessageFilter.UNOFFICIAL_URL)));
+				MessageFilter.REPEATED_TEXT, MessageFilter.LINK)));
 
 		assertEquals(FilterResult.FLOOD, classify("꺼져", 3).result());
 		assertEquals(FilterResult.REVIEW, classify("꺼져", 2).result());
@@ -189,7 +189,7 @@ class MessageFilterTest {
 
 		assertEquals(FilterResult.HOLD, decision.result());
 		assertEquals(List.of(MessageFilter.CERTAIN_PROFANITY, MessageFilter.OFFICIAL_CLAIM,
-				MessageFilter.CREDENTIAL_REQUEST, MessageFilter.UNOFFICIAL_URL), decision.matchingTags());
+				MessageFilter.CREDENTIAL_REQUEST, MessageFilter.LINK), decision.matchingTags());
 	}
 
 	@Test
@@ -207,7 +207,7 @@ class MessageFilterTest {
 
 		assertEquals(FilterResult.HOLD, decision.result());
 		assertFalse(decision.matchingTags().contains(MessageFilter.CERTAIN_PROFANITY));
-		assertTrue(decision.matchingTags().contains(MessageFilter.UNOFFICIAL_URL));
+		assertTrue(decision.matchingTags().contains(MessageFilter.LINK));
 	}
 
 	@Test
