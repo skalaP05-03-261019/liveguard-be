@@ -8,8 +8,6 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.event.EventListener;
 import org.springframework.security.web.session.HttpSessionDestroyedEvent;
 import org.springframework.stereotype.Component;
-import org.springframework.transaction.support.TransactionSynchronization;
-import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import com.lifeguards.liveguard.platform.port.GuardEventPublisher;
@@ -48,16 +46,7 @@ class GuardEventHub implements GuardEventPublisher {
 		if (channelId == null || data == null) {
 			throw new IllegalArgumentException("channelId and data are required");
 		}
-		if (TransactionSynchronizationManager.isSynchronizationActive()) {
-			TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-				@Override
-				public void afterCommit() {
-					registry.broadcast(channelId, subscriber -> true, event, data);
-				}
-			});
-		} else {
-			registry.broadcast(channelId, subscriber -> true, event, data);
-		}
+		AfterCommit.run(() -> registry.broadcast(channelId, subscriber -> true, event, data));
 	}
 
 	@EventListener

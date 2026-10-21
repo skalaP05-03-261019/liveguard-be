@@ -66,12 +66,21 @@ final class SseRegistry {
 
 	/** 레지스트리 스레드에서 채널 구독자 중 recipients에 해당하는 사람에게 보낸다. */
 	void broadcast(UUID channelId, Predicate<SseSubscriber> recipients, String eventName, Object data) {
+		broadcast(channelId, recipients, eventName, data, false);
+	}
+
+	/** closeAfterSend이면 보낸 직후 같은 작업 안에서 연결을 닫는다 (이벤트가 먼저 나가고 닫힌다). */
+	void broadcast(UUID channelId, Predicate<SseSubscriber> recipients, String eventName, Object data,
+			boolean closeAfterSend) {
 		dispatcher.execute(() -> {
 			String id = Long.toString(eventIds.incrementAndGet());
 			for (SseSubscriber subscriber : subscribers.getOrDefault(channelId, Set.of())) {
 				if (recipients.test(subscriber)) {
-					send(channelId, subscriber,
+					boolean sent = send(channelId, subscriber,
 							() -> SseEmitter.event().id(id).name(eventName).data(data, MediaType.APPLICATION_JSON));
+					if (sent && closeAfterSend) {
+						subscriber.emitter().complete();
+					}
 				}
 			}
 		});
@@ -104,13 +113,15 @@ final class SseRegistry {
 				.forEach(subscriber -> send(channelId, subscriber, () -> SseEmitter.event().comment(" ping"))));
 	}
 
-	private void send(UUID channelId, SseSubscriber subscriber, Supplier<SseEventBuilder> event) {
+	private boolean send(UUID channelId, SseSubscriber subscriber, Supplier<SseEventBuilder> event) {
 		try {
 			subscriber.emitter().send(event.get());
+			return true;
 		} catch (IOException | IllegalStateException ex) {
 			// 끊긴 연결. 이벤트 내용(채팅 원문 등)은 로그에 남기지 않는다
 			log.debug("Dropping SSE subscriber: {}", ex.getClass().getSimpleName());
 			remove(channelId, subscriber);
+			return false;
 		}
 	}
 

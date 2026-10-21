@@ -273,6 +273,14 @@ class ChannelEventStreamTest {
 			awaitMatching(queue, END::equals);
 		}
 
+		/** d만큼 기다린 뒤 그동안 쌓인 줄을 비우며 돌려준다 (이벤트가 오지 않았음을 확인하는 용도). */
+		List<String> drainFor(Duration d) throws InterruptedException {
+			Thread.sleep(d.toMillis());
+			List<String> lines = new ArrayList<>();
+			queue.drainTo(lines);
+			return lines;
+		}
+
 	}
 
 	/** 쿠키(세션, XSRF-TOKEN)를 유지하는 브라우저 대용 클라이언트. */

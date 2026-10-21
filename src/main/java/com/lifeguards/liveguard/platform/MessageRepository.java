@@ -5,6 +5,7 @@ import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.time.OffsetDateTime;
+import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Optional;
@@ -22,6 +23,11 @@ class MessageRepository {
 
 	record HistoryRow(UUID id, UUID authorId, String authorNickname, String text, Visibility visibility, int version,
 			Instant sentAt) {
+	}
+
+	/** hide·restore가 바꾼 메시지. previous는 바뀌기 전 공개 범위. */
+	record ChangedMessage(UUID id, UUID channelId, UUID authorId, Visibility previous, int version, String text,
+			String authorNickname, Instant sentAt) {
 	}
 
 	record StoredMessage(UUID id, String text, Visibility visibility, int version, Instant sentAt) {
@@ -58,6 +64,42 @@ class MessageRepository {
 				.params(channelId, authorId, normalizedText, Timestamp.from(since))
 				.query(UUID.class)
 				.list();
+	}
+
+	/**
+	 * 사건 메시지 중 from 상태인 것을 target으로 바꾸고 version을 1 올린다. 행을 잠그고 바꾸므로 동시 호출은
+	 * 순서대로 처리되며, 이미 target인 메시지는 대상이 아니다. excludePass이면 1차 필터를 통과한(PASS) 메시지도
+	 * 대상에서 뺀다. 바뀐 메시지를 (sent_at, id) 순으로 돌려준다.
+	 */
+	List<ChangedMessage> changeCaseVisibility(UUID caseId, Visibility target, List<Visibility> from,
+			boolean excludePass) {
+		return jdbc.sql("""
+				WITH old AS (
+					SELECT id, visibility FROM platform.messages
+					WHERE case_id = :caseId AND visibility IN (:from)
+						AND (:includePass OR filter_result <> 'PASS')
+					ORDER BY sent_at, id
+					FOR UPDATE)
+				UPDATE platform.messages m SET visibility = :target, version = m.version + 1
+				FROM old WHERE m.id = old.id
+				RETURNING m.id, m.channel_id, m.author_id, old.visibility AS previous, m.version, m.text, m.sent_at,
+					(SELECT u.nickname FROM platform.users u WHERE u.id = m.author_id) AS nickname""")
+				.param("caseId", caseId)
+				.param("from", from.stream().map(Visibility::name).toList())
+				.param("target", target.name())
+				.param("includePass", !excludePass)
+				.query((rs, rowNum) -> new ChangedMessage(
+						rs.getObject("id", UUID.class),
+						rs.getObject("channel_id", UUID.class),
+						rs.getObject("author_id", UUID.class),
+						Visibility.valueOf(rs.getString("previous")),
+						rs.getInt("version"),
+						rs.getString("text"),
+						rs.getString("nickname"),
+						rs.getObject("sent_at", OffsetDateTime.class).toInstant()))
+				.list().stream()
+				.sorted(Comparator.comparing(ChangedMessage::sentAt).thenComparing(ChangedMessage::id))
+				.toList();
 	}
 
 	/** case_id가 아직 비어 있는 메시지에만 사건을 연결한다 (이미 연결된 메시지는 바꾸지 않는다). */
