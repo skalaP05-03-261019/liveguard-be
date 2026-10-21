@@ -39,6 +39,7 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter.SseEventBuilder;
 
 import com.lifeguards.liveguard.TestcontainersConfiguration;
+import com.lifeguards.liveguard.support.CaseFixtures;
 import com.lifeguards.liveguard.contracts.dto.event.ChatEvent;
 import com.lifeguards.liveguard.contracts.enums.Visibility;
 
@@ -77,6 +78,7 @@ class ChannelEventStreamTest {
 	void cleanUp() {
 		openStreams.forEach(Stream::close);
 		jdbc.update("DELETE FROM platform.messages");
+		CaseFixtures.deleteCases(jdbc);
 		jdbc.update("DELETE FROM platform.channel_members WHERE user_id = ?", VIEWER2);
 		jdbc.update("DELETE FROM platform.users WHERE id = ?", VIEWER2);
 	}

@@ -32,6 +32,7 @@ import com.lifeguards.liveguard.filter.MessageFilter;
 import com.lifeguards.liveguard.platform.port.CandidateRequest;
 import com.lifeguards.liveguard.platform.port.CandidateSink;
 import com.lifeguards.liveguard.platform.port.RecordingCandidateSink;
+import com.lifeguards.liveguard.support.CaseFixtures;
 
 /**
  * FLOOD 3→4→5번째 사건 묶기 (BE1 이슈 #15). 테스트용 sink가 B2의 재사용 규칙을 흉내 낸다:
@@ -81,6 +82,7 @@ class FloodCaseGroupingTest {
 	@AfterEach
 	void cleanUp() {
 		jdbc.update("DELETE FROM platform.messages");
+		CaseFixtures.deleteCases(jdbc);
 	}
 
 	@Test

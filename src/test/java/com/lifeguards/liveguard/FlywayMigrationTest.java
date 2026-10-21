@@ -20,7 +20,7 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.annotation.Transactional;
 
-/** 기본 프로파일(시드 없음)에서 V100·V101이 적용된 스키마와 제약을 확인한다. */
+/** 기본 프로파일(시드 없음)에서 적용된 스키마와 제약을 확인한다. */
 @SpringBootTest
 @Import(TestcontainersConfiguration.class)
 @Transactional
@@ -42,12 +42,12 @@ class FlywayMigrationTest {
 	}
 
 	@Test
-	void appliesV100AndV101() {
+	void appliesPlatformAndGuardMigrations() {
 		List<String> versions = jdbc.queryForList(
 				"SELECT version FROM flyway_schema_history WHERE success AND version IS NOT NULL ORDER BY installed_rank",
 				String.class);
 
-		assertEquals(List.of("100", "101"), versions);
+		assertEquals(List.of("100", "101", "200"), versions);
 	}
 
 	@Test
@@ -59,6 +59,13 @@ class FlywayMigrationTest {
 				"SELECT count(*) FROM pg_extension WHERE extname = 'vector'", Integer.class));
 		assertEquals(List.of("channel_members", "channels", "messages", "users"), jdbc.queryForList(
 				"SELECT table_name FROM information_schema.tables WHERE table_schema = 'platform' ORDER BY table_name",
+				String.class));
+	}
+
+	@Test
+	void createsGuardPersistenceTables() {
+		assertEquals(List.of("candidates", "case_messages", "cases", "finding_events", "findings"), jdbc.queryForList(
+				"SELECT table_name FROM information_schema.tables WHERE table_schema = 'guard' ORDER BY table_name",
 				String.class));
 	}
 

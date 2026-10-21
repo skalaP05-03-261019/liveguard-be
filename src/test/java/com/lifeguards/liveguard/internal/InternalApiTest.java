@@ -44,6 +44,7 @@ import com.lifeguards.liveguard.TestcontainersConfiguration;
 import com.lifeguards.liveguard.contracts.dto.event.TaskFailedEvent;
 import com.lifeguards.liveguard.contracts.dto.event.ToolEvent;
 import com.lifeguards.liveguard.platform.port.GuardEventPublisher;
+import com.lifeguards.liveguard.support.CaseFixtures;
 
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -70,11 +71,13 @@ class InternalApiTest {
 	@BeforeEach
 	void setUp() {
 		caseId = UUID.randomUUID();
+		CaseFixtures.insertCase(jdbc, caseId, CHANNEL_A, VIEWER);
 	}
 
 	@AfterEach
 	void cleanUp() {
 		jdbc.update("DELETE FROM platform.messages");
+		CaseFixtures.deleteCases(jdbc);
 	}
 
 	// ----- 서비스 토큰 -----
@@ -332,6 +335,7 @@ class InternalApiTest {
 
 	private UUID insert(UUID author, String text, int secondsAfterT0, UUID caseId) {
 		UUID id = UUID.randomUUID();
+		CaseFixtures.insertCase(jdbc, caseId, CHANNEL_A, author);
 		jdbc.update("INSERT INTO platform.messages (id, channel_id, author_id, client_message_id, text, "
 				+ "normalized_text, filter_result, visibility, case_id, sent_at) "
 				+ "VALUES (?, ?, ?, ?, ?, ?, 'PASS', 'PUBLIC', ?, ?)",

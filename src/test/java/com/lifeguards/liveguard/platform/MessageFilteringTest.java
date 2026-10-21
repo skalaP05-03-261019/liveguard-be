@@ -32,6 +32,7 @@ import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilde
 
 import com.jayway.jsonpath.JsonPath;
 import com.lifeguards.liveguard.TestcontainersConfiguration;
+import com.lifeguards.liveguard.support.CaseFixtures;
 import com.lifeguards.liveguard.contracts.enums.Visibility;
 import com.lifeguards.liveguard.filter.TextNormalizer;
 
@@ -62,6 +63,7 @@ class MessageFilteringTest {
 	@AfterEach
 	void cleanUp() {
 		jdbc.update("DELETE FROM platform.messages");
+		CaseFixtures.deleteCases(jdbc);
 	}
 
 	@Test

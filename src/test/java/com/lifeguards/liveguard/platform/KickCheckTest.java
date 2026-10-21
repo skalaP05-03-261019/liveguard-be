@@ -34,12 +34,13 @@ import org.springframework.test.web.servlet.ResultActions;
 
 import com.lifeguards.liveguard.TestcontainersConfiguration;
 import com.lifeguards.liveguard.platform.port.CandidateSink;
-import com.lifeguards.liveguard.platform.port.InMemoryCandidateSink;
+import com.lifeguards.liveguard.guard.JdbcCandidateSink;
 import com.lifeguards.liveguard.platform.port.InMemoryKickStatus;
 import com.lifeguards.liveguard.platform.port.KickStatusQuery;
 import com.lifeguards.liveguard.support.MutableClock;
+import com.lifeguards.liveguard.support.CaseFixtures;
 
-/** B2 구현이 없을 때의 임시 포트 구현(메모리)과 강퇴 확인. 시간은 조절 가능한 Clock으로 시험한다. */
+/** 사건 포트의 영속 구현과 임시 강퇴 확인. 시간은 조절 가능한 Clock으로 시험한다. */
 @SpringBootTest
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
@@ -88,11 +89,13 @@ class KickCheckTest {
 	void cleanUp() {
 		kicks.clear();
 		jdbc.update("DELETE FROM platform.messages");
+		CaseFixtures.deleteCases(jdbc);
 	}
 
 	@Test
-	void defaultImplementationsAreTheInMemoryOnes() {
-		assertInstanceOf(InMemoryCandidateSink.class, candidateSink);
+	void candidateSinkIsDurableWhileKickStatusStillUsesTheFallback() {
+		assertInstanceOf(JdbcCandidateSink.class, candidateSink);
+		assertInstanceOf(InMemoryKickStatus.class, kickStatus);
 	}
 
 	@Test

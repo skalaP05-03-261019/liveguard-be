@@ -30,6 +30,7 @@ import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilde
 
 import com.jayway.jsonpath.JsonPath;
 import com.lifeguards.liveguard.TestcontainersConfiguration;
+import com.lifeguards.liveguard.support.CaseFixtures;
 
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -59,6 +60,7 @@ class MessageHistoryTest {
 	@AfterEach
 	void cleanUp() {
 		jdbc.update("DELETE FROM platform.messages");
+		CaseFixtures.deleteCases(jdbc);
 		jdbc.update("DELETE FROM platform.channel_members WHERE user_id = ?", VIEWER2);
 		jdbc.update("DELETE FROM platform.users WHERE id = ?", VIEWER2);
 	}

@@ -40,6 +40,7 @@ import com.lifeguards.liveguard.filter.TextNormalizer;
 import com.lifeguards.liveguard.platform.port.CandidateRequest;
 import com.lifeguards.liveguard.platform.port.CandidateSink;
 import com.lifeguards.liveguard.platform.port.RecordingCandidateSink;
+import com.lifeguards.liveguard.support.CaseFixtures;
 
 /** 스캔된 CandidateSink 구현(B2 대역)이 임시 구현을 대체하고, 사건 연결이 메시지 저장과 한 트랜잭션인지 확인한다. */
 @SpringBootTest
@@ -73,6 +74,7 @@ class CandidateLinkingTest {
 	@AfterEach
 	void cleanUp() {
 		jdbc.update("DELETE FROM platform.messages");
+		CaseFixtures.deleteCases(jdbc);
 	}
 
 	@Test
@@ -274,6 +276,7 @@ class CandidateLinkingTest {
 
 	private UUID insert(String text, UUID caseId, Instant sentAt) {
 		UUID id = UUID.randomUUID();
+		CaseFixtures.insertCase(jdbc, caseId, CHANNEL_A, VIEWER);
 		jdbc.update("INSERT INTO platform.messages (id, channel_id, author_id, client_message_id, text, "
 				+ "normalized_text, filter_result, visibility, case_id, sent_at) "
 				+ "VALUES (?, ?, ?, ?, ?, ?, 'PASS', 'PUBLIC', ?, ?)",
