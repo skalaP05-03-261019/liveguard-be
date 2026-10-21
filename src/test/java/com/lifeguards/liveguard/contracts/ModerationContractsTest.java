@@ -3,10 +3,15 @@ package com.lifeguards.liveguard.contracts;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Instant;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -19,6 +24,7 @@ import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
 import org.junit.jupiter.api.Test;
+import org.yaml.snakeyaml.Yaml;
 
 import com.lifeguards.liveguard.contracts.dto.event.ChatEvent;
 import com.lifeguards.liveguard.contracts.dto.event.UserKickedEvent;
@@ -39,14 +45,24 @@ import com.lifeguards.liveguard.contracts.dto.response.Me;
 import com.lifeguards.liveguard.contracts.dto.response.Message;
 import com.lifeguards.liveguard.contracts.dto.response.MessagePage;
 import com.lifeguards.liveguard.contracts.dto.response.UserHistory;
+import com.lifeguards.liveguard.contracts.enums.ActionStatus;
+import com.lifeguards.liveguard.contracts.enums.ActionType;
 import com.lifeguards.liveguard.contracts.enums.AgentEventType;
 import com.lifeguards.liveguard.contracts.enums.AuthorRole;
 import com.lifeguards.liveguard.contracts.enums.CaseStatus;
 import com.lifeguards.liveguard.contracts.enums.Category;
+import com.lifeguards.liveguard.contracts.enums.ConfirmationStatus;
+import com.lifeguards.liveguard.contracts.enums.ContextDecision;
 import com.lifeguards.liveguard.contracts.enums.ErrorCode;
 import com.lifeguards.liveguard.contracts.enums.FilterResult;
+import com.lifeguards.liveguard.contracts.enums.HandlingRoute;
 import com.lifeguards.liveguard.contracts.enums.KickDecision;
 import com.lifeguards.liveguard.contracts.enums.KickReviewStatus;
+import com.lifeguards.liveguard.contracts.enums.MatchingTag;
+import com.lifeguards.liveguard.contracts.enums.ModerationReasonCode;
+import com.lifeguards.liveguard.contracts.enums.Observation;
+import com.lifeguards.liveguard.contracts.enums.ReviewKind;
+import com.lifeguards.liveguard.contracts.enums.ReviewStatus;
 import com.lifeguards.liveguard.contracts.enums.Role;
 import com.lifeguards.liveguard.contracts.enums.Verdict;
 import com.lifeguards.liveguard.contracts.enums.Visibility;
@@ -56,22 +72,26 @@ class ModerationContractsTest {
 
 	private static final String EMOJI = "😀";
 
+	/** contracts.enums의 값은 openapi.yaml의 같은 이름 schema enum과 같다. AgentEventType만 AgentEventRequest.event의 inline enum. */
 	@Test
-	void enumValuesMatchOpenApiContract() {
-		assertValues(Role.class, "VIEWER", "MODERATOR", "PLATFORM_ADMIN");
-		assertValues(Visibility.class, "PUBLIC", "HELD", "HIDDEN");
-		assertValues(FilterResult.class, "PASS", "REVIEW", "HOLD", "FLOOD");
-		assertValues(CaseStatus.class, "ANALYZING", "NO_ACTION", "HIDDEN", "NEEDS_REVIEW",
-				"KICK_REVIEW_PENDING", "CLOSED", "FAILED");
-		assertValues(Verdict.class, "VIOLATION", "NO_VIOLATION", "NEEDS_REVIEW");
-		assertValues(Category.class, "PROFANITY", "HARASSMENT", "FLOOD", "PHISHING", "PII_EXPOSURE");
-		assertValues(KickReviewStatus.class, "PENDING", "APPROVED", "REJECTED", "EXECUTED", "FAILED");
-		assertValues(ErrorCode.class, "VALIDATION_FAILED", "UNAUTHENTICATED", "FORBIDDEN", "KICKED",
-				"NOT_FOUND", "CASE_NOT_READY", "STALE_VERSION", "IDEMPOTENCY_CONFLICT", "REVIEW_NOT_APPROVED",
-				"NOT_IMPLEMENTED", "TEMPORARY_UNAVAILABLE", "INTERNAL_ERROR");
-		assertValues(KickDecision.class, "APPROVE", "REJECT");
-		assertValues(AuthorRole.class, "VIEWER", "STREAMER", "OFFICIAL_STAFF", "MODERATOR");
-		assertValues(AgentEventType.class, "TOOL_START", "TOOL_END", "TASK_FAILED");
+	void enumValuesMatchOpenApiContract() throws IOException {
+		Map<?, ?> schemas;
+		try (var input = Files.newInputStream(Path.of("contracts/openapi.yaml"))) {
+			Map<?, ?> root = assertInstanceOf(Map.class, new Yaml().load(input));
+			schemas = (Map<?, ?>) ((Map<?, ?>) root.get("components")).get("schemas");
+		}
+		List<Class<? extends Enum<?>>> types = List.of(ActionStatus.class, ActionType.class, AuthorRole.class,
+				CaseStatus.class, Category.class, ConfirmationStatus.class, ContextDecision.class, ErrorCode.class,
+				FilterResult.class, HandlingRoute.class, KickDecision.class, KickReviewStatus.class, MatchingTag.class,
+				ModerationReasonCode.class, Observation.class, ReviewKind.class, ReviewStatus.class, Role.class,
+				Verdict.class, Visibility.class);
+		for (Class<? extends Enum<?>> type : types) {
+			Map<?, ?> schema = assertInstanceOf(Map.class, schemas.get(type.getSimpleName()), type.getSimpleName());
+			assertValues(type, (List<?>) schema.get("enum"));
+		}
+		Map<?, ?> event = (Map<?, ?>) ((Map<?, ?>) ((Map<?, ?>) schemas.get("AgentEventRequest"))
+				.get("properties")).get("event");
+		assertValues(AgentEventType.class, (List<?>) event.get("enum"));
 	}
 
 	@Test
@@ -233,13 +253,15 @@ class ModerationContractsTest {
 		assertThrows(InvalidContractException.class, () -> new ApiResponse<>(null, "trace-1"));
 	}
 
-	private static <E extends Enum<E>> void assertValues(Class<E> type, String... expected) {
+	private static void assertValues(Class<? extends Enum<?>> type, List<?> contract) {
+		assertNotNull(contract, type.getSimpleName() + " has no enum in openapi.yaml");
+		Set<String> expected = contract.stream().map(Object::toString).collect(Collectors.toSet());
 		Set<String> actual = Arrays.stream(type.getEnumConstants())
 				.map(Enum::name)
 				.collect(Collectors.toSet());
 
-		assertEquals(Set.of(expected), actual, type.getSimpleName());
-		assertEquals(expected.length, type.getEnumConstants().length, type.getSimpleName());
+		assertEquals(expected, actual, type.getSimpleName());
+		assertEquals(contract.size(), type.getEnumConstants().length, type.getSimpleName());
 	}
 
 	private static void assertTextBounds(Consumer<String> factory) {

@@ -876,7 +876,7 @@ paths:
         검사: 같은 userId·liveId, 각 기준 사건의 확정 유지·취소 여부·24시간 범위, 소진이 이 review/decision의 것인지,
         정책·증거 버전, 방송 진행 중 여부, 같은 action의 기존 성공 기록.
         통과하면 valid=true와 kick 실행 명령에 넣을 validationRef를 발급한다. 실패하면 valid=false, validationRef=null이며
-        실행하지 않는다(후속 상태는 TBD-06). 승인 결정이 없으면 409 REVIEW_NOT_APPROVED.
+        실행하지 않는다(후속 상태는 TBD-06). 승인 결정이 없으면 422 REVIEW_NOT_APPROVED.
         kick 재시도 전에도 다시 호출한다.
       x-implementation-status: planned
       x-owner: B2
@@ -896,7 +896,7 @@ paths:
           $ref: '#/components/responses/Error'
         '404':
           $ref: '#/components/responses/Error'
-        '409':
+        '422':
           $ref: '#/components/responses/Error'
         '501':
           $ref: '#/components/responses/NotImplemented'
@@ -1208,6 +1208,7 @@ components:
         429를 쓰지 않는다(클라이언트 Recovery가 429를 자동 재시도하므로, A-5).
         LIVE_ENDED: 이미 끝난 방송에 대한 요청. HTTP 409, retryable=false.
         LIVE_ALREADY_ACTIVE: 채널에 진행 중인 방송이 있는데 새 방송 시작. HTTP 409, retryable=false.
+        REVIEW_NOT_APPROVED: 저장된 승인 결정이 없는 실행·재검증 요청. HTTP 422, retryable=false.
       enum:
         - VALIDATION_FAILED
         - UNAUTHENTICATED
