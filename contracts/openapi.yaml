@@ -1,9 +1,14 @@
 openapi: 3.1.0
 info:
   title: LIVE:GUARD API
-  version: 0.6.0-draft
+  version: 1.0.0
   description: |
-    0.6.0-draft 계약. 내부 business-tool 중 `/context`, `/channel-info`, `/role`은 현재 조회 구현이며,
+    1.0.0 계약. 기준은 정책 원본 v3.1(`docs/policy/`), TBD-decisions(OpenAPI v1.0 구현 결정 A-1~A-15), `docs/erd.md` v1.0.
+    모든 정책 범위(집계, 도배, 재적발, TIMEOUT, 강퇴)는 `liveId`다. `channelId`는 고정 채널 식별자로만 쓴다.
+    활성 정책 버전은 `v3.1` 고정(TBD-08). 사건·판정·action 명령의 `policyVersion`은 이 값과 같아야 한다.
+    Java enum·DTO는 이 계약에 맞춰 후속 작업에서 바꾼다(contracts.enums PR).
+
+    아래는 0.6.0-draft에서 이어진 구현 상태다. 내부 business-tool 중 `/context`, `/channel-info`, `/role`은 현재 조회 구현이며,
     사건 조회는 필수 메타데이터가 있는 경우, 이력 조회는 명시한 days가 있는 경우에 구현된다.
     나머지 표시된 business-tool 스텁은 HTTP 501 `NOT_IMPLEMENTED` (retryable=false)이다.
     `x-implementation-status: planned`는 미래/레거시 계약일 뿐 현재 구현을 의미하지 않는다.
@@ -28,25 +33,30 @@ info:
     | business-mcp | get_user_history | 명시 기간 조회 구현 | GET /internal/cases/{caseId}/user-history |
     | business-mcp | get_kick_eligibility | 스텁 | GET /internal/cases/{caseId}/kick-eligibility |
     | business-mcp | get_kick_review_basis | 스텁 | GET /internal/kick-reviews/{reviewId}/basis |
+    | business-mcp | (강퇴 재검증) | 계획 | POST /internal/kick-reviews/{reviewId}/revalidate |
+    | business-mcp | (판정 제출) | 계획 | POST /internal/cases/{caseId}/judgment |
     | business-mcp | get_action_status | 스텁 | GET /internal/actions/{actionId} |
     | business-mcp | business action | 스텁 | POST /internal/actions/{actionId}/execute |
     | business-mcp | reconcile_review | deprecated 스텁 | POST /internal/cases/{caseId}/reviews/{decisionId}/reconcile |
     | rag-mcp | search_policy | 조회 | (pgvector) |
     | rag-mcp | policy://{version}/{documentId}/{sectionId} | Resource | 정책 원문 |
 
-    `POST /internal/cases/{caseId}/judgment`와 `POST /internal/kick-reviews/{reviewId}/execute`는 planned legacy 계약이다.
+    `POST /internal/cases/{caseId}/judgment`는 CONTRACTS §5 Agent 출력으로 바뀌었고 아직 구현 전이다.
+    `POST /internal/kick-reviews/{reviewId}/execute`는 deprecated 레거시 계약이다(A-12).
     새 action 실행의 canonical 계약은 `/internal/actions/{actionId}/execute`이며 현재 스텁이다.
     Judgment의 Agent context 판정은 사람의 결정 전 최종 판정이 아니며 자동 kick을 의미하지 않는다.
+    Agent 재개(`POST /agent/tasks/{id}/resume`)는 Agent 저장소 계약이라 이 문서에 넣지 않는다(A-10).
 
     `x-owner`: B1 = 인증·채팅·채팅 SSE·내부 조회 API, B2 = 사건·판정 처리·강퇴·관제 SSE 발행.
 servers:
   - url: /
 tags:
   - name: Auth
+  - name: Lives
   - name: Messages
   - name: Streams
   - name: Cases
-  - name: KickReviews
+  - name: Reviews
   - name: Internal
     description: Agent·MCP 전용. 브라우저 비공개, 서비스 토큰 필요
 security:
@@ -102,16 +112,91 @@ paths:
         '401':
           $ref: '#/components/responses/Error'
 
-  /api/channels/{channelId}/messages:
+  /api/channels/{channelId}/lives:
     parameters:
       - $ref: '#/components/parameters/ChannelId'
+    post:
+      tags: [Lives]
+      operationId: startLive
+      summary: 방송 시작 (그 채널의 STREAMER 또는 MODERATOR)
+      description: |
+        새 liveId를 발급한다. 이전 방송의 제재·카운터는 승계하지 않는다.
+        채널에 진행 중인 방송이 있으면 409 LIVE_ALREADY_ACTIVE (A-1).
+      x-owner: B1
+      responses:
+        '201':
+          description: 방송 시작
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LiveResponse'
+        '403':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+        '409':
+          $ref: '#/components/responses/Error'
+
+  /api/channels/{channelId}/lives/current:
+    parameters:
+      - $ref: '#/components/parameters/ChannelId'
+    get:
+      tags: [Lives]
+      operationId: getCurrentLive
+      summary: 채널의 진행 중 방송 (FE가 liveId를 얻는 곳)
+      description: 진행 중인 방송이 없으면 404 NOT_FOUND (A-2).
+      x-owner: B1
+      responses:
+        '200':
+          description: 진행 중 방송
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LiveResponse'
+        '404':
+          $ref: '#/components/responses/Error'
+
+  /api/lives/{liveId}/end:
+    parameters:
+      - $ref: '#/components/parameters/LiveId'
+    post:
+      tags: [Lives]
+      operationId: endLive
+      summary: 방송 종료 (그 채널의 STREAMER 또는 MODERATOR)
+      description: |
+        `endedAt`을 기록한다. 이 방송의 live ban 효력이 끝나고 기록은 남는다.
+        이미 끝난 방송이면 409 LIVE_ENDED (A-1).
+      x-owner: B1
+      responses:
+        '200':
+          description: 방송 종료
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LiveResponse'
+        '403':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+        '409':
+          $ref: '#/components/responses/Error'
+
+  /api/lives/{liveId}/messages:
+    parameters:
+      - $ref: '#/components/parameters/LiveId'
     post:
       tags: [Messages]
       operationId: sendMessage
       summary: 채팅 전송
       description: |
-        저장 → 1차 필터 → 공개 범위 결정 → SSE 발행. HOLD·FLOOD는 즉시 HELD(작성자·운영자에게만 보임).
-        같은 clientMessageId·같은 text는 최초 응답 반환, 다른 text는 409. 강퇴 중이면 403 KICKED + until.
+        활성 live ban·TIMEOUT 검사 → 같은 clientMessageId 확인 → 저장 → 1차 필터(handlingRoute 1개) → 공개 범위 결정 → SSE 발행.
+        차단이면 메시지·사건·도배 카운터를 만들지 않는다.
+        - live ban 중: 403 KICKED (until 없음, 방송 종료까지)
+        - TIMEOUT 중: 403 TIMED_OUT + until (429 아님)
+        - 끝난 방송: 409 LIVE_ENDED
+        - 방송 채널의 멤버가 아니면 403 FORBIDDEN
+        PASS는 PUBLIC. RULE_CONFIRMED는 HIDDEN. FLOOD_REVIEW·PII_INVESTIGATION·CONTEXT_REVIEW는 HELD(작성자·담당 운영자에게만 보임).
+        같은 clientMessageId·같은 text는 최초 응답 반환, 다른 text는 409 IDEMPOTENCY_CONFLICT.
       x-owner: B1
       requestBody:
         required: true
@@ -130,13 +215,15 @@ paths:
           $ref: '#/components/responses/Error'
         '403':
           $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
         '409':
           $ref: '#/components/responses/Error'
     get:
       tags: [Messages]
       operationId: listMessages
-      summary: 채팅 이력
-      description: 일반 시청자에게는 PUBLIC과 본인의 HELD·HIDDEN만, 담당 운영자에게는 전부 반환한다.
+      summary: 채팅 이력 (이 방송)
+      description: 일반 시청자에게는 PUBLIC과 본인의 HELD·HIDDEN만, 담당 운영자에게는 전부 반환한다. 재접속 조회에도 같은 가시성 인가를 적용한다.
       x-owner: B1
       parameters:
         - name: cursor
@@ -160,25 +247,38 @@ paths:
         '403':
           $ref: '#/components/responses/Error'
 
-  /api/channels/{channelId}/events:
+  /api/lives/{liveId}/events:
     parameters:
-      - $ref: '#/components/parameters/ChannelId'
+      - $ref: '#/components/parameters/LiveId'
     get:
       tags: [Streams]
-      operationId: subscribeChannel
-      summary: 채팅 SSE
+      operationId: subscribeLive
+      summary: 채팅 SSE (이 방송)
       description: |
-        이벤트: CHAT, MESSAGE_VISIBILITY_CHANGED, USER_KICKED(대상 본인에게만).
-        HELD·HIDDEN 메시지의 CHAT은 작성자·담당 운영자에게만 보낸다. 15초 heartbeat. 강퇴되면 서버가 연결을 닫는다.
+        모든 이벤트의 data는 SseEnvelope이고, x-sse-events는 그 payload schema다.
+        - CHAT: HELD·HIDDEN 메시지는 작성자·담당 운영자에게만. HELD 원문을 PUBLIC 이벤트로 먼저 보내지 않는다.
+        - MESSAGE_VISIBILITY_CHANGED: messageId·visibility·version만(원문 없음).
+        - MESSAGE_RESTORED: 실제 PUBLIC이 된 메시지. sentAt으로 화면의 시간순 자리에 넣는다.
+        - LIVE_ACCESS_BLOCKED: 강퇴 대상 본인에게만. 보낸 뒤 서버가 연결을 닫고 권한을 무효화한다(UI만 닫는 방식 아님).
+        - ACTION_APPLIED·ACTION_FAILED: 작성자 본인에게 자기 메시지·계정에 대한 실행 결과.
+        이 방송에서 live ban 중이면 403 KICKED(재입장 거부), 끝난 방송이면 409 LIVE_ENDED. 15초 heartbeat.
+        중복(eventId)과 오래된 entityVersion은 클라이언트가 무시한다.
       x-owner: B1
       x-sse-events:
         CHAT: '#/components/schemas/ChatEvent'
         MESSAGE_VISIBILITY_CHANGED: '#/components/schemas/VisibilityChangedEvent'
-        USER_KICKED: '#/components/schemas/UserKickedEvent'
+        MESSAGE_RESTORED: '#/components/schemas/ChatEvent'
+        LIVE_ACCESS_BLOCKED: '#/components/schemas/LiveAccessBlockedEvent'
+        ACTION_APPLIED: '#/components/schemas/ActionEvent'
+        ACTION_FAILED: '#/components/schemas/ActionEvent'
       responses:
         '200':
           $ref: '#/components/responses/EventStream'
         '403':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+        '409':
           $ref: '#/components/responses/Error'
 
   /api/guard/events:
@@ -187,19 +287,25 @@ paths:
       operationId: subscribeGuard
       summary: 관제 SSE (담당 운영자)
       description: |
-        이벤트: CASE_CREATED, CASE_UPDATED, TOOL_START, TOOL_END, KICK_REVIEW_REQUIRED, KICK_APPLIED, TASK_FAILED.
+        모든 이벤트의 data는 SseEnvelope이고, x-sse-events는 그 payload schema다.
         TOOL_START·TOOL_END는 Agent 진행 이벤트(평가 항목 "진행 이벤트")로, 원문 인자는 넣지 않는다.
+        CONTEXT_REVIEW_REQUIRED와 KICK_REVIEW_REQUIRED는 화면에서 따로 보여 준다.
+        REVIEW_DECIDED는 결정 저장을 알릴 뿐이고, 강퇴 완료는 ACTION_APPLIED(type=KICK)로만 표시한다.
+        v0.6의 KICK_APPLIED는 ACTION_APPLIED로 대체됐다(A-14).
       x-owner: B1 (연결), B2 (발행)
       x-sse-events:
         CASE_CREATED: '#/components/schemas/CaseEvent'
         CASE_UPDATED: '#/components/schemas/CaseEvent'
         TOOL_START: '#/components/schemas/ToolEvent'
         TOOL_END: '#/components/schemas/ToolEvent'
-        KICK_REVIEW_REQUIRED: '#/components/schemas/KickReviewEvent'
-        KICK_APPLIED: '#/components/schemas/KickReviewEvent'
         TASK_FAILED: '#/components/schemas/TaskFailedEvent'
+        CONTEXT_REVIEW_REQUIRED: '#/components/schemas/ContextReviewRequiredEvent'
+        KICK_REVIEW_REQUIRED: '#/components/schemas/KickReviewRequiredEvent'
+        REVIEW_DECIDED: '#/components/schemas/ReviewDecidedEvent'
+        ACTION_APPLIED: '#/components/schemas/ActionEvent'
+        ACTION_FAILED: '#/components/schemas/ActionEvent'
       parameters:
-        - name: channelId
+        - name: liveId
           in: query
           required: true
           schema:
@@ -217,15 +323,15 @@ paths:
       summary: 사건 목록 (담당 운영자)
       x-owner: B2
       parameters:
-        - name: channelId
+        - name: liveId
           in: query
           required: true
           schema:
             $ref: '#/components/schemas/Uuid'
-        - name: status
+        - name: confirmationStatus
           in: query
           schema:
-            $ref: '#/components/schemas/CaseStatus'
+            $ref: '#/components/schemas/ConfirmationStatus'
       responses:
         '200':
           description: 조회 성공
@@ -256,29 +362,75 @@ paths:
         '404':
           $ref: '#/components/responses/Error'
 
-  /api/cases/{caseId}/release:
+  /api/reviews:
+    get:
+      tags: [Reviews]
+      operationId: listReviews
+      summary: 검토 목록 (담당 운영자)
+      description: |
+        kind=CONTEXT는 문맥 확정 검토, kind=KICK은 강퇴 승인 검토. 화면에서 둘을 따로 보여 준다.
+        AI 정상 제안이어도 CONTEXT 검토는 결정 전까지 PENDING이다. threadId는 브라우저에 보내지 않는다(A-6).
+      x-owner: B2
+      parameters:
+        - name: liveId
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/Uuid'
+        - name: kind
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/ReviewKind'
+        - name: status
+          in: query
+          schema:
+            $ref: '#/components/schemas/ReviewStatus'
+      responses:
+        '200':
+          description: 조회 성공
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReviewListResponse'
+        '400':
+          $ref: '#/components/responses/Error'
+        '403':
+          $ref: '#/components/responses/Error'
+
+  /api/context-reviews/{reviewId}/decision:
     parameters:
-      - $ref: '#/components/parameters/CaseId'
+      - $ref: '#/components/parameters/ReviewId'
     post:
-      tags: [Cases]
-      operationId: releaseCase
-      summary: 오탐 해제 (운영자)
-      description: 사건 메시지를 PUBLIC으로 복원하고 누적 횟수에서 제외한다. 사람이 직접 하는 Backend 기능이며 Agent 도구가 아니다.
+      tags: [Reviews]
+      operationId: decideContextReview
+      summary: 문맥 검토 결정 (담당 운영자)
+      description: |
+        CONFIRM_NORMAL: 정상 확정, 이 사건의 hold 원인만 해제(다른 원인이 남아 있으면 HELD 유지).
+        CONFIRM_VIOLATION: 위반 확정, categories·evidenceMessageIds 필수(A-7). HIDE와 유형별 TIMEOUT 후 강퇴 집계를 확인한다.
+        DEFER: 보류. 최종 확정이 아니며 HELD와 검토 PENDING을 유지하고, 이후 최종 결정을 받을 수 있다.
+        결정을 저장한 뒤 Agent의 같은 threadId를 재개한다. 강퇴 승인을 겸하지 않는다.
+        같은 clientRequestId 재전송은 저장된 같은 결정을 반환한다. 최종 결정이 저장된 뒤 다른 요청은 409 IDEMPOTENCY_CONFLICT,
+        expectedReviewVersion이 다르면 409 STALE_VERSION. 담당 운영자 권한과 liveId 범위를 검사한다.
       x-owner: B2
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/ReleaseRequest'
+              $ref: '#/components/schemas/ContextDecisionRequest'
       responses:
-        '200':
-          description: 해제 완료
+        '202':
+          description: 결정 저장, 재개 접수
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/CaseSummaryResponse'
+                $ref: '#/components/schemas/DecisionResponse'
+        '400':
+          $ref: '#/components/responses/Error'
         '403':
+          $ref: '#/components/responses/Error'
+        '404':
           $ref: '#/components/responses/Error'
         '409':
           $ref: '#/components/responses/Error'
@@ -287,12 +439,15 @@ paths:
     parameters:
       - $ref: '#/components/parameters/ReviewId'
     post:
-      tags: [KickReviews]
+      tags: [Reviews]
       operationId: decideKickReview
       summary: 강퇴 검토 결정 (운영자)
       description: |
-        결정을 저장하고 Agent의 같은 thread를 재개하는 작업을 보낸다.
-        APPROVE면 Agent가 kick_user를 실행하고 KICK_APPLIED를 보낸다. REJECT면 강퇴 없이 종료하고 가림은 유지한다.
+        결정 저장과 기준 사건 소진을 함께 기록하고 Agent의 같은 threadId를 재개한다. 승인·거절 모두 소진한다.
+        APPROVE면 Agent가 원 기준을 재검증한 뒤 kick_user를 실행한다. 결정 저장 성공은 강퇴 성공이 아니며,
+        결과는 ACTION_APPLIED·ACTION_FAILED로 따로 알린다. REJECT면 강퇴 없이 끝나고 HIDE·TIMEOUT은 유지한다.
+        같은 clientRequestId 재전송은 저장된 같은 결정을 반환한다. 이미 결정된 검토에 다른 요청은 409 IDEMPOTENCY_CONFLICT,
+        expectedReviewVersion이 다르면 409 STALE_VERSION.
       x-owner: B2
       requestBody:
         required: true
@@ -302,12 +457,16 @@ paths:
               $ref: '#/components/schemas/KickDecisionRequest'
       responses:
         '202':
-          description: 결정 접수
+          description: 결정 저장, 재개 접수
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/KickReviewResponse'
+                $ref: '#/components/schemas/DecisionResponse'
+        '400':
+          $ref: '#/components/responses/Error'
         '403':
+          $ref: '#/components/responses/Error'
+        '404':
           $ref: '#/components/responses/Error'
         '409':
           $ref: '#/components/responses/Error'
@@ -462,7 +621,7 @@ paths:
       tags: [Internal]
       operationId: internalGetUserHistoryLegacy
       summary: Legacy user-history alias
-      description: Deprecated alias with the same TIMEOUT-only, excludes-current-case semantics as `/user-history`.
+      description: Deprecated alias with the same TIMEOUT-only, excludes-current-case semantics as `/user-history`. 삭제 여부는 B2 확인 후 정한다(A-12).
       deprecated: true
       x-implementation-status: partial
       x-owner: B2
@@ -612,10 +771,18 @@ paths:
     post:
       tags: [Internal]
       operationId: internalSubmitJudgment
-      summary: Planned legacy judgment contract (Agent server → Backend)
+      summary: Agent 출력 제출 (Agent server → Backend, CONTRACTS §5)
       description: |
-        Planned only; not implemented. An Agent context assessment is not a final judgment before the
-        human decision and does not automatically kick a user. Do not infer action or review behavior from this contract.
+        PII_INVESTIGATION·CONTEXT_REVIEW 사건의 AI 조사 결과를 제출한다. 판정 제안은 AI_PROPOSAL finding으로 저장하고
+        사람의 결정이나 BE 확정으로 덮어쓰지 않는다. 공개·제재 명령이 아니다.
+        - CONTEXT_REVIEW: 판정과 무관하게 CONTEXT 검토를 만들고(A-9) Agent는 interrupt한다. NO_VIOLATION이어도 HELD 유지.
+        - PII_INVESTIGATION: NO_VIOLATION은 이 사건의 hold 원인 해제, VIOLATION은 BE 검증 후 확정과 유형별 표 적용.
+          BE 확정으로 강퇴 기준 3건에 도달하면 KICK 검토를 만든다. 이 두 판정은 운영자 검토를 만들지 않는다(필수 승인으로 확장하지 않음).
+          messageFindings 중 하나라도 NEEDS_REVIEW면 사건을 확정하지 않고(confirmationStatus=PENDING) HELD를 유지하며,
+          이 사건에 기존 CONTEXT 검토(kind=CONTEXT, caseId=이 사건)를 만든다. 운영자는 문맥 결정 API로 결정한다(A-16).
+        본문 caseId는 경로와 같아야 하고, snapshotId·evidenceVersion이 현재 사건과 다르면 409 STALE_VERSION,
+        policyVersion이 활성 버전(v3.1)과 다르면 400 VALIDATION_FAILED다. 같은 snapshotId·evidenceVersion 재제출은 같은 결과를 반환한다.
+        TARGET 메시지마다 messageFindings가 정확히 하나 있어야 한다. 임의 TIMEOUT 기간이나 승인 여부는 받지 않는다.
       x-implementation-status: planned
       x-owner: B2
       security:
@@ -627,7 +794,19 @@ paths:
             schema:
               $ref: '#/components/schemas/JudgmentRequest'
       responses:
+        '200':
+          description: 제출 처리
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JudgmentResultResponse'
+        '400':
+          $ref: '#/components/responses/Error'
         '403':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+        '409':
           $ref: '#/components/responses/Error'
         '501':
           $ref: '#/components/responses/NotImplemented'
@@ -643,6 +822,8 @@ paths:
       description: |
         Planned, unimplemented legacy contract. Legacy kick execution is pending consolidation with
         canonical `POST /internal/actions/{actionId}/execute`; this path does not imply kick execution.
+        v1.0: deprecated. 24시간 강퇴(KickResultResponse.expiresAt)는 v3.1에 없다. 삭제 여부는 B2 확인 후 정한다(A-12).
+      deprecated: true
       x-owner: B2
       x-implementation-status: planned
       security:
@@ -678,6 +859,44 @@ paths:
         - serviceToken: []
       responses:
         '403':
+          $ref: '#/components/responses/Error'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+
+  /internal/kick-reviews/{reviewId}/revalidate:
+    parameters:
+      - $ref: '#/components/parameters/ReviewId'
+      - $ref: '#/components/parameters/TraceIdHeader'
+    post:
+      tags: [Internal]
+      operationId: internalRevalidateKickReview
+      summary: 강퇴 승인 재검증 (CONTRACTS §8·§9)
+      description: |
+        저장된 APPROVE 결정과 원 기준 집합(basisCaseIds)을 다시 검증한다. 신규 심사용 집계(소진 제외)를 쓰지 않는다.
+        검사: 같은 userId·liveId, 각 기준 사건의 확정 유지·취소 여부·24시간 범위, 소진이 이 review/decision의 것인지,
+        정책·증거 버전, 방송 진행 중 여부, 같은 action의 기존 성공 기록.
+        통과하면 valid=true와 kick 실행 명령에 넣을 validationRef를 발급한다. 실패하면 valid=false, validationRef=null이며
+        실행하지 않는다(후속 상태는 TBD-06). 승인 결정이 없으면 409 REVIEW_NOT_APPROVED.
+        kick 재시도 전에도 다시 호출한다.
+      x-implementation-status: planned
+      x-owner: B2
+      security:
+        - serviceToken: []
+      responses:
+        '200':
+          description: 재검증 결과
+          headers:
+            X-Trace-Id:
+              $ref: '#/components/headers/TraceId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KickRevalidationResponse'
+        '403':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+        '409':
           $ref: '#/components/responses/Error'
         '501':
           $ref: '#/components/responses/NotImplemented'
@@ -743,7 +962,7 @@ paths:
       description: |
         Deprecated contract stub (501); not the CONTEXT/KICK decision or resume API.
         Does not approve KICK, unconsume cases, or automatically undo existing HIDE/TIMEOUT actions.
-        Body caseId and decisionId must match the path.
+        Body caseId and decisionId must match the path. 삭제 여부는 B2 확인 후 정한다(A-12).
       deprecated: true
       x-implementation-status: stub
       x-owner: B2
@@ -811,6 +1030,12 @@ components:
       required: true
       schema:
         $ref: '#/components/schemas/Uuid'
+    LiveId:
+      name: liveId
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/Uuid'
     CaseId:
       name: caseId
       in: path
@@ -864,15 +1089,15 @@ components:
           schema:
             $ref: '#/components/schemas/NotImplementedErrorResponse'
     EventStream:
-      description: SSE. 각 이벤트는 `id`, `event`, `data`(JSON)로 구성된다.
+      description: SSE. 각 이벤트는 `id`, `event`, `data`로 구성되고 `data`는 SseEnvelope(JSON)다. `id`는 envelope의 eventId와 같다.
       content:
         text/event-stream:
           schema:
             type: string
           example: |
-            id: 42
+            id: 0d5b7c1e-8f2a-4c3b-9e1d-2a6f4b8c9d01
             event: MESSAGE_VISIBILITY_CHANGED
-            data: {"messageId":"33333333-3333-4333-8333-333333333333","visibility":"HIDDEN","version":2}
+            data: {"eventId":"0d5b7c1e-8f2a-4c3b-9e1d-2a6f4b8c9d01","occurredAt":"2026-10-21T03:00:00Z","entityVersion":2,"payload":{"messageId":"33333333-3333-4333-8333-333333333333","visibility":"HIDDEN","version":2}}
 
             : ping
 
@@ -898,10 +1123,59 @@ components:
       enum: [PUBLIC, HELD, HIDDEN]
     FilterResult:
       type: string
+      description: REVIEW는 v3.1 처리 경로에서 쓰지 않는다(새 의미를 부여하지 않음). 처리 경로는 HandlingRoute로 표현한다.
       enum: [PASS, REVIEW, HOLD, FLOOD]
+    HandlingRoute:
+      type: string
+      description: |
+        1차 필터가 정하는 처리 경로. 한 메시지에 하나.
+        우선순위 RULE_CONFIRMED > FLOOD_REVIEW > PII_INVESTIGATION > CONTEXT_REVIEW > PASS (TBD-02).
+      enum: [PASS, RULE_CONFIRMED, CONTEXT_REVIEW, PII_INVESTIGATION, FLOOD_REVIEW]
+    ConfirmationStatus:
+      type: string
+      description: 사건 확정 상태(E-3). DEFER는 확정이 아니므로 PENDING을 유지한다.
+      enum: [PENDING, CONFIRMED_VIOLATION, CONFIRMED_NORMAL, CANCELLED]
+    ReviewKind:
+      type: string
+      enum: [CONTEXT, KICK]
+    ReviewStatus:
+      type: string
+      description: 결정 상태. 실행 상태(ActionStatus)와 분리한다. 최종 결정이 저장될 때만 DECIDED.
+      enum: [PENDING, DECIDED]
+    ContextDecision:
+      type: string
+      description: DEFER는 공개 승인이 아니며 HELD를 유지한다.
+      enum: [CONFIRM_NORMAL, CONFIRM_VIOLATION, DEFER]
+    KickDecision:
+      type: string
+      enum: [APPROVE, REJECT]
+    ActionStatus:
+      type: string
+      description: 실행 상태. 결과 미확인은 Observation으로 구분한다.
+      enum: [PENDING, RUNNING, SUCCEEDED, FAILED]
+    Observation:
+      type: string
+      description: UNKNOWN이면 applied=null이고 실패로 단정하지 않는다.
+      enum: [CONFIRMED, UNKNOWN]
+    ModerationReasonCode:
+      type: string
+      description: |
+        작성자에게 보여 줄 처리 사유(A-3). PASS는 null.
+        PROFANITY_INCLUDED: 확실한 욕설 포함으로 숨김. 탐지 단어 자체는 다시 출력하지 않는다.
+        LINK_NOT_ALLOWED: 방송 내 링크 전송 금지. 피싱으로 검증했다는 주장을 넣지 않는다.
+        FLOOD_REPEATED: 같은 문장 반복(도배).
+        CONTEXT_PENDING: 문맥 확인 중(HELD).
+        PII_PENDING: 개인정보 확인 중(HELD). 안내에 원문과 탐지 값(전화번호·계좌·이메일 등)을 다시 노출하지 않는다(POLICY §4).
+      enum: [PROFANITY_INCLUDED, LINK_NOT_ALLOWED, FLOOD_REPEATED, CONTEXT_PENDING, PII_PENDING]
+    PolicyVersion:
+      type: string
+      description: 활성 정책 버전. v3.1 고정(TBD-08, 환경변수 LIVEGUARD_POLICY_VERSION).
+      const: v3.1
     MatchingTag:
       type: string
       description: |
+        v1.0 목표 값(ERD §6, E-8)은 UNOFFICIAL_URL을 공식 링크 포함 `LINK`로 바꾸고 `PII_PHONE`·`PII_ACCOUNT`·`PII_EMAIL`을 추가하는 것이다.
+        Java enum·필터·계약 테스트와 함께 contracts.enums PR에서 바꾸며, 그 전까지 아래 6종을 유지한다(A-15).
         1차 필터가 걸린 조건. 한 메시지에 여러 개가 붙을 수 있고, filterResult가 같아도 태그로 이유를 구분한다.
         ATTACK_TERM: 공격·비하 사전(애매한 표현, REVIEW).
         CERTAIN_PROFANITY: 확실한 욕설(HOLD).
@@ -911,6 +1185,7 @@ components:
       enum: [ATTACK_TERM, CERTAIN_PROFANITY, OFFICIAL_CLAIM, CREDENTIAL_REQUEST, UNOFFICIAL_URL, REPEATED_TEXT]
     CaseStatus:
       type: string
+      description: 사건 처리 진행 상태(`cases.status`). 확정 여부는 ConfirmationStatus로 본다. 값 정리는 B2 확인 후(A-8).
       enum: [ANALYZING, NO_ACTION, HIDDEN, NEEDS_REVIEW, KICK_REVIEW_PENDING, CLOSED, FAILED]
     Verdict:
       type: string
@@ -920,17 +1195,27 @@ components:
       enum: [PROFANITY, HARASSMENT, FLOOD, PHISHING, PII_EXPOSURE]
     KickReviewStatus:
       type: string
+      deprecated: true
+      description: v0.5 강퇴 검토 상태. ReviewStatus(결정)와 ActionStatus(실행)로 대체됐다. 레거시 KickResultResponse에서만 쓴다(A-12).
       enum: [PENDING, APPROVED, REJECTED, EXECUTED, FAILED]
     ErrorCode:
       type: string
       description: |
         INTERNAL_ERROR: 처리되지 않은 서버 오류. HTTP 500, retryable=false. 응답에 내부 정보는 담지 않는다.
         NOT_IMPLEMENTED: 계약 스텁이며 업무 로직을 실행하지 않는다. HTTP 501, retryable=false.
+        KICKED: 이 방송에서 강퇴됨(live ban). HTTP 403, retryable=false. 방송 종료까지 유효하므로 `until`을 보내지 않는다.
+        TIMED_OUT: TIMEOUT 중 전송 거부. HTTP 403, retryable=false, `until` = TIMEOUT 만료 시각.
+        429를 쓰지 않는다(클라이언트 Recovery가 429를 자동 재시도하므로, A-5).
+        LIVE_ENDED: 이미 끝난 방송에 대한 요청. HTTP 409, retryable=false.
+        LIVE_ALREADY_ACTIVE: 채널에 진행 중인 방송이 있는데 새 방송 시작. HTTP 409, retryable=false.
       enum:
         - VALIDATION_FAILED
         - UNAUTHENTICATED
         - FORBIDDEN
         - KICKED
+        - TIMED_OUT
+        - LIVE_ENDED
+        - LIVE_ALREADY_ACTIVE
         - NOT_FOUND
         - CASE_NOT_READY
         - STALE_VERSION
@@ -956,6 +1241,7 @@ components:
               type: boolean
             until:
               $ref: '#/components/schemas/Timestamp'
+              description: TIMED_OUT일 때만. TIMEOUT 만료 시각
             currentVersion:
               type: integer
         traceId:
@@ -1025,11 +1311,39 @@ components:
           type: string
           minLength: 1
           maxLength: 500
+    Live:
+      type: object
+      required: [liveId, channelId, startedAt, endedAt]
+      properties:
+        liveId:
+          $ref: '#/components/schemas/Uuid'
+        channelId:
+          $ref: '#/components/schemas/Uuid'
+        startedAt:
+          $ref: '#/components/schemas/Timestamp'
+        endedAt:
+          description: null이면 방송 중
+          oneOf:
+            - $ref: '#/components/schemas/Timestamp'
+            - type: 'null'
+    LiveResponse:
+      type: object
+      required: [data, traceId]
+      properties:
+        data:
+          $ref: '#/components/schemas/Live'
+        traceId:
+          type: string
     Message:
       type: object
-      required: [messageId, channelId, authorAlias, text, visibility, version, sentAt, isMine]
+      description: |
+        moderationReasonCode·moderationNotice·timeoutUntil·reviewStatus는 작성자 본인에게 보내는 응답에만 채우고,
+        다른 사람에게는 null이다. 안내에는 탐지 단어·개인정보 원문을 다시 넣지 않는다.
+      required: [messageId, liveId, channelId, authorAlias, text, visibility, version, sentAt, isMine]
       properties:
         messageId:
+          $ref: '#/components/schemas/Uuid'
+        liveId:
           $ref: '#/components/schemas/Uuid'
         channelId:
           $ref: '#/components/schemas/Uuid'
@@ -1046,6 +1360,24 @@ components:
           $ref: '#/components/schemas/Timestamp'
         isMine:
           type: boolean
+        moderationReasonCode:
+          description: PASS는 null
+          oneOf:
+            - $ref: '#/components/schemas/ModerationReasonCode'
+            - type: 'null'
+        moderationNotice:
+          type: [string, 'null']
+          description: 작성자에게 보여 줄 사유 문장. 예) "메시지에 금지된 욕설이 포함되어 숨김 처리되었습니다."
+        timeoutUntil:
+          description: 실제 TIMEOUT이 적용됐을 때만. 첫 욕설처럼 TIMEOUT이 없으면 null
+          oneOf:
+            - $ref: '#/components/schemas/Timestamp'
+            - type: 'null'
+        reviewStatus:
+          description: HELD 조사·결정 대기면 PENDING, 그 외 null (A-4)
+          oneOf:
+            - $ref: '#/components/schemas/ReviewStatus'
+            - type: 'null'
     SendMessageResponse:
       type: object
       required: [data, traceId]
@@ -1089,9 +1421,11 @@ components:
           examples: ['policy://0.5/community_policy/CP-2.1']
     CaseSummary:
       type: object
-      required: [caseId, channelId, userAlias, filterResult, status, version, createdAt]
+      required: [caseId, liveId, channelId, userAlias, filterResult, handlingRoute, status, confirmationStatus, version, createdAt]
       properties:
         caseId:
+          $ref: '#/components/schemas/Uuid'
+        liveId:
           $ref: '#/components/schemas/Uuid'
         channelId:
           $ref: '#/components/schemas/Uuid'
@@ -1099,8 +1433,12 @@ components:
           type: string
         filterResult:
           $ref: '#/components/schemas/FilterResult'
+        handlingRoute:
+          $ref: '#/components/schemas/HandlingRoute'
         status:
           $ref: '#/components/schemas/CaseStatus'
+        confirmationStatus:
+          $ref: '#/components/schemas/ConfirmationStatus'
         verdict:
           oneOf:
             - $ref: '#/components/schemas/Verdict'
@@ -1113,35 +1451,115 @@ components:
           type: integer
         createdAt:
           $ref: '#/components/schemas/Timestamp'
-    KickReview:
+    ContextReview:
       type: object
-      required: [reviewId, channelId, userAlias, status, summary, caseIds, version, createdAt]
+      description: 문맥 확정 검토. AI 정상 제안(aiVerdict=NO_VIOLATION)이어도 운영자 결정 전까지 PENDING이다.
+      required: [reviewId, kind, liveId, caseId, aiVerdict, evidenceVersion, status, version, createdAt]
       properties:
         reviewId:
           $ref: '#/components/schemas/Uuid'
-        channelId:
+        kind:
+          type: string
+          const: CONTEXT
+        liveId:
+          $ref: '#/components/schemas/Uuid'
+        caseId:
+          $ref: '#/components/schemas/Uuid'
+        aiVerdict:
+          $ref: '#/components/schemas/Verdict'
+        evidenceVersion:
+          type: integer
+          minimum: 1
+        status:
+          $ref: '#/components/schemas/ReviewStatus'
+        version:
+          type: integer
+          description: 결정 요청의 expectedReviewVersion과 비교 (reviews.version)
+        createdAt:
+          $ref: '#/components/schemas/Timestamp'
+    KickReview:
+      type: object
+      description: |
+        강퇴 승인 검토. basisCaseIds는 심사 요청 때 고정한 기준 사건이며 승인 실행 근거를 새 사건으로 바꾸지 않는다.
+        결정 상태(status)와 실제 강퇴 결과(ACTION_APPLIED·ACTION_FAILED)는 따로 본다. 강퇴는 방송 종료까지라 만료 시각이 없다.
+      required: [reviewId, kind, liveId, userAlias, basisCaseIds, basisSnapshotId, status, summary, version, createdAt]
+      properties:
+        reviewId:
+          $ref: '#/components/schemas/Uuid'
+        kind:
+          type: string
+          const: KICK
+        liveId:
           $ref: '#/components/schemas/Uuid'
         userAlias:
           type: string
-        status:
-          $ref: '#/components/schemas/KickReviewStatus'
-        summary:
-          type: string
-          description: Agent가 작성한 검토 요약 (위반 3건의 근거)
-        caseIds:
+        basisCaseIds:
           type: array
+          minItems: 3
+          uniqueItems: true
           items:
             $ref: '#/components/schemas/Uuid'
+        basisSnapshotId:
+          $ref: '#/components/schemas/Uuid'
+        status:
+          $ref: '#/components/schemas/ReviewStatus'
+        summary:
+          type: string
+          description: Agent가 작성한 검토 요약 (기준 사건의 근거)
         decisionReason:
           type: [string, 'null']
-        kickExpiresAt:
-          oneOf:
-            - $ref: '#/components/schemas/Timestamp'
-            - type: 'null'
         version:
           type: integer
+          description: 결정 요청의 expectedReviewVersion과 비교 (reviews.version)
         createdAt:
           $ref: '#/components/schemas/Timestamp'
+    Review:
+      oneOf:
+        - $ref: '#/components/schemas/ContextReview'
+        - $ref: '#/components/schemas/KickReview'
+      discriminator:
+        propertyName: kind
+        mapping:
+          CONTEXT: '#/components/schemas/ContextReview'
+          KICK: '#/components/schemas/KickReview'
+    ReviewListResponse:
+      type: object
+      required: [data, traceId]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Review'
+        traceId:
+          type: string
+    Decision:
+      type: object
+      description: 서버에 저장된 운영자 결정. 재개는 이 decisionId로 업무 DB 저장본을 읽는다.
+      required: [decisionId, reviewId, kind, value, operatorId, decidedAt]
+      properties:
+        decisionId:
+          $ref: '#/components/schemas/Uuid'
+        reviewId:
+          $ref: '#/components/schemas/Uuid'
+        kind:
+          $ref: '#/components/schemas/ReviewKind'
+        value:
+          description: kind=CONTEXT면 ContextDecision, kind=KICK이면 KickDecision
+          oneOf:
+            - $ref: '#/components/schemas/ContextDecision'
+            - $ref: '#/components/schemas/KickDecision'
+        operatorId:
+          $ref: '#/components/schemas/Uuid'
+        decidedAt:
+          $ref: '#/components/schemas/Timestamp'
+    DecisionResponse:
+      type: object
+      required: [data, traceId]
+      properties:
+        data:
+          $ref: '#/components/schemas/Decision'
+        traceId:
+          type: string
     CaseDetail:
       allOf:
         - $ref: '#/components/schemas/CaseSummary'
@@ -1181,14 +1599,6 @@ components:
             $ref: '#/components/schemas/CaseSummary'
         traceId:
           type: string
-    CaseSummaryResponse:
-      type: object
-      required: [data, traceId]
-      properties:
-        data:
-          $ref: '#/components/schemas/CaseSummary'
-        traceId:
-          type: string
     CaseDetailResponse:
       type: object
       required: [data, traceId]
@@ -1197,48 +1607,84 @@ components:
           $ref: '#/components/schemas/CaseDetail'
         traceId:
           type: string
-    ReleaseRequest:
+    ContextDecisionRequest:
       type: object
-      required: [expectedVersion, reason]
+      description: CONFIRM_VIOLATION이면 서버가 검증할 categories·evidenceMessageIds가 필수다(A-7). 다른 결정에서는 보내지 않는다.
+      required: [clientRequestId, expectedReviewVersion, decision, reason]
       additionalProperties: false
+      allOf:
+        - if:
+            properties: { decision: { const: CONFIRM_VIOLATION } }
+            required: [decision]
+          then:
+            required: [categories, evidenceMessageIds]
+          else:
+            not:
+              anyOf:
+                - required: [categories]
+                - required: [evidenceMessageIds]
       properties:
-        expectedVersion:
-          type: integer
-        reason:
-          type: string
-          minLength: 1
-          maxLength: 500
-    KickDecisionRequest:
-      type: object
-      required: [decision, reason, expectedVersion, clientRequestId]
-      additionalProperties: false
-      properties:
-        decision:
-          type: string
-          enum: [APPROVE, REJECT]
-        reason:
-          type: string
-          minLength: 1
-          maxLength: 500
-        expectedVersion:
-          type: integer
         clientRequestId:
           $ref: '#/components/schemas/Uuid'
-    KickReviewResponse:
-      type: object
-      required: [data, traceId]
-      properties:
-        data:
-          $ref: '#/components/schemas/KickReview'
-        traceId:
+        expectedReviewVersion:
+          type: integer
+        decision:
+          $ref: '#/components/schemas/ContextDecision'
+        reason:
           type: string
+          minLength: 1
+          maxLength: 500
+        categories:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/Category'
+        evidenceMessageIds:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/Uuid'
+    KickDecisionRequest:
+      type: object
+      required: [clientRequestId, expectedReviewVersion, decision, reason]
+      additionalProperties: false
+      properties:
+        clientRequestId:
+          $ref: '#/components/schemas/Uuid'
+        expectedReviewVersion:
+          type: integer
+        decision:
+          $ref: '#/components/schemas/KickDecision'
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 500
 
     # ----- SSE payload -----
+    SseEnvelope:
+      type: object
+      description: 모든 SSE 이벤트 data의 공통 형태(CONTRACTS §12). payload는 이벤트 이름별 schema(x-sse-events).
+      required: [eventId, occurredAt, entityVersion, payload]
+      properties:
+        eventId:
+          $ref: '#/components/schemas/Uuid'
+        occurredAt:
+          $ref: '#/components/schemas/Timestamp'
+        entityVersion:
+          type: [integer, 'null']
+          description: 대상 엔티티(메시지·사건·검토·action)의 version. 버전이 없는 이벤트(TOOL_*, LIVE_ACCESS_BLOCKED 등)는 null
+        payload:
+          type: object
     ChatEvent:
       type: object
-      required: [messageId, authorAlias, text, visibility, version, sentAt]
+      description: CHAT과 MESSAGE_RESTORED의 payload
+      required: [messageId, liveId, authorAlias, text, visibility, version, sentAt]
       properties:
         messageId:
+          $ref: '#/components/schemas/Uuid'
+        liveId:
           $ref: '#/components/schemas/Uuid'
         authorAlias:
           type: string
@@ -1252,10 +1698,9 @@ components:
           $ref: '#/components/schemas/Timestamp'
     VisibilityChangedEvent:
       type: object
-      description: |
-        이미 공개됐던 메시지를 가릴 때는 ID만, PUBLIC으로 복원할 때는 text·authorAlias·sentAt 포함.
-        복원 이벤트의 sentAt으로 화면의 시간순 자리에 끼워 넣는다.
+      description: 원문 없이 ID만. PUBLIC 복원은 MESSAGE_RESTORED(ChatEvent)로 보낸다.
       required: [messageId, visibility, version]
+      additionalProperties: false
       properties:
         messageId:
           $ref: '#/components/schemas/Uuid'
@@ -1263,27 +1708,45 @@ components:
           $ref: '#/components/schemas/Visibility'
         version:
           type: integer
-        text:
-          type: string
-        authorAlias:
-          type: string
-        sentAt:
-          $ref: '#/components/schemas/Timestamp'
-          description: 복원(PUBLIC)일 때만 포함. 원래 전송 시각
-    UserKickedEvent:
+    LiveAccessBlockedEvent:
       type: object
-      required: [until]
+      description: 이 방송에서 강퇴됨. 방송 종료까지 입장·채팅 금지이며 만료 시각이 없다. 안내 문구는 FE가 표시한다(A-14).
+      required: [liveId, activeUntilLiveEnd]
       properties:
-        until:
-          $ref: '#/components/schemas/Timestamp'
+        liveId:
+          $ref: '#/components/schemas/Uuid'
+        activeUntilLiveEnd:
+          type: boolean
+          const: true
+    ActionEvent:
+      type: object
+      description: ACTION_APPLIED·ACTION_FAILED의 payload. observation=UNKNOWN이면 결과 미확인이며 실패로 표시하지 않는다.
+      required: [actionId, liveId, type, status, observation]
+      properties:
+        actionId:
+          $ref: '#/components/schemas/Uuid'
+        liveId:
+          $ref: '#/components/schemas/Uuid'
+        type:
+          $ref: '#/components/schemas/ActionType'
+        status:
+          $ref: '#/components/schemas/ActionStatus'
+        observation:
+          $ref: '#/components/schemas/Observation'
     CaseEvent:
       type: object
-      required: [caseId, status, version]
+      required: [caseId, liveId, status, handlingRoute, confirmationStatus, version]
       properties:
         caseId:
           $ref: '#/components/schemas/Uuid'
+        liveId:
+          $ref: '#/components/schemas/Uuid'
         status:
           $ref: '#/components/schemas/CaseStatus'
+        handlingRoute:
+          $ref: '#/components/schemas/HandlingRoute'
+        confirmationStatus:
+          $ref: '#/components/schemas/ConfirmationStatus'
         filterResult:
           $ref: '#/components/schemas/FilterResult'
         version:
@@ -1305,18 +1768,42 @@ components:
         elapsedMs:
           type: integer
           description: TOOL_END에만
-    KickReviewEvent:
+    ContextReviewRequiredEvent:
       type: object
-      required: [reviewId, caseId, status]
+      description: 담당 운영자에게. AI 정상 제안이어도 결정이 필요하다.
+      required: [reviewId, caseId, aiVerdict]
       properties:
         reviewId:
           $ref: '#/components/schemas/Uuid'
         caseId:
           $ref: '#/components/schemas/Uuid'
-        status:
-          $ref: '#/components/schemas/KickReviewStatus'
-        kickExpiresAt:
-          $ref: '#/components/schemas/Timestamp'
+        aiVerdict:
+          $ref: '#/components/schemas/Verdict'
+    KickReviewRequiredEvent:
+      type: object
+      description: 강퇴 승인 운영자에게. count는 통합 사건 수(다섯 유형 통합, 현재 포함).
+      required: [reviewId, count]
+      properties:
+        reviewId:
+          $ref: '#/components/schemas/Uuid'
+        count:
+          type: integer
+          minimum: 3
+    ReviewDecidedEvent:
+      type: object
+      description: 결정 저장 알림. 강퇴 완료를 뜻하지 않는다.
+      required: [reviewId, reviewKind, decisionId, value]
+      properties:
+        reviewId:
+          $ref: '#/components/schemas/Uuid'
+        reviewKind:
+          $ref: '#/components/schemas/ReviewKind'
+        decisionId:
+          $ref: '#/components/schemas/Uuid'
+        value:
+          oneOf:
+            - $ref: '#/components/schemas/ContextDecision'
+            - $ref: '#/components/schemas/KickDecision'
     TaskFailedEvent:
       type: object
       required: [caseId, stage, errorCode]
@@ -1362,12 +1849,9 @@ components:
           type: integer
           minimum: 1
         policyVersion:
-          type: string
-          minLength: 1
-          description: Nonblank policy version supplied by the current snapshot; no version value is settled here.
+          $ref: '#/components/schemas/PolicyVersion'
         handlingRoute:
-          type: string
-          enum: [PASS, RULE_CONFIRMED, CONTEXT_REVIEW, PII_INVESTIGATION, FLOOD_REVIEW]
+          $ref: '#/components/schemas/HandlingRoute'
         filterResult:
           $ref: '#/components/schemas/FilterResult'
         matchingTags:
@@ -1442,7 +1926,10 @@ components:
           format: uuid
     UserHistory:
       type: object
-      description: TIMEOUT history by category, excluding the current case; consumed kick-review cases remain included.
+      description: |
+        TIMEOUT history by category, excluding the current case; consumed kick-review cases remain included.
+        v1.0 목표: 범위는 같은 userId·liveId의 방송 전체(TBD-03)라 windowHours를 없애고, violationCount는 CONTRACTS 이름에 맞춘다.
+        Java 계약 테스트와 함께 contracts.enums PR에서 바꾼다(A-13, B2 확인 요청).
       required: [violationCount, windowHours, recentCases]
       properties:
         violationCount:
@@ -1459,14 +1946,15 @@ components:
             $ref: '#/components/schemas/UserHistoryRecentCase'
     UserHistoryRecentCase:
       type: object
-      required: [caseId, category, judgedAt]
+      required: [caseId, category, confirmedAt]
       properties:
         caseId:
           $ref: '#/components/schemas/Uuid'
         category:
           $ref: '#/components/schemas/Category'
-        judgedAt:
+        confirmedAt:
           $ref: '#/components/schemas/Timestamp'
+          description: BE 확정 시각(findings.confirmed_at). v0.6의 judgedAt을 대체한다(A-13)
     UserHistoryResponse:
       type: object
       required: [data, traceId]
@@ -1589,9 +2077,10 @@ components:
     KickEligibility:
       type: object
       description: |
-        Distinct confirmed cases for the same user/channel/live across all five categories in the fixed
-        24-hour window, including the current case. Revoked and consumed cases are excluded; TIMEOUT
+        Distinct confirmed cases for the same user/live across all five categories in the fixed
+        24-hour window, including the current case. Revoked, consumed and reserved cases are excluded; TIMEOUT
         expiry alone does not revoke a case. Eligibility does not authorize KICK.
+        v1.0 목표: violationCount → count(CONTRACTS §3). Java record·계약 테스트와 함께 contracts.enums PR에서 바꾼다(A-13, B2 확인 요청).
       required: [userId, channelId, liveId, asOf, windowHours, violationCount, eligibleCaseIds]
       properties:
         userId:
@@ -1699,9 +2188,7 @@ components:
           type: integer
           minimum: 1
         policyVersion:
-          type: string
-          minLength: 1
-          description: Nonblank, without a settled or hard-coded policy version.
+          $ref: '#/components/schemas/PolicyVersion'
         idempotencyKey:
           type: string
           minLength: 1
@@ -1817,11 +2304,9 @@ components:
         type:
           $ref: '#/components/schemas/ActionType'
         status:
-          type: string
-          enum: [PENDING, RUNNING, SUCCEEDED, FAILED]
+          $ref: '#/components/schemas/ActionStatus'
         observation:
-          type: string
-          enum: [CONFIRMED, UNKNOWN]
+          $ref: '#/components/schemas/Observation'
         applied:
           type: [boolean, 'null']
         attemptCount:
@@ -1905,79 +2390,150 @@ components:
           format: uuid
     JudgmentRequest:
       type: object
+      description: Agent 출력(CONTRACTS §5). TARGET 메시지마다 messageFindings 하나.
+      required: [caseId, liveId, handlingRoute, snapshotId, evidenceVersion, policyVersion, messageFindings]
+      additionalProperties: false
+      properties:
+        caseId:
+          $ref: '#/components/schemas/Uuid'
+        liveId:
+          $ref: '#/components/schemas/Uuid'
+        handlingRoute:
+          description: 사건의 handlingRoute와 같아야 한다. AI 조사 경로만 제출한다
+          type: string
+          enum: [CONTEXT_REVIEW, PII_INVESTIGATION]
+        snapshotId:
+          $ref: '#/components/schemas/Uuid'
+        evidenceVersion:
+          type: integer
+          minimum: 1
+        policyVersion:
+          $ref: '#/components/schemas/PolicyVersion'
+        messageFindings:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/MessageFinding'
+    MessageFinding:
+      type: object
       description: |
-        verdict별 검증 (위반 시 400 VALIDATION_FAILED):
-        - VIOLATION: category 필수, evidenceMessageIds 1개 이상, policyIds 1개 이상
+        verdict별 검증 (어기면 400 VALIDATION_FAILED):
+        - VIOLATION: categories 1개 이상, policyIds 1개 이상(서버가 존재·버전 검증)
         - NEEDS_REVIEW: missingFacts 1개 이상
-        - NO_VIOLATION: 추가 필수 항목 없음
-      required: [expectedVersion, verdict, evidenceMessageIds, policyIds, reason, traceId]
+        - NO_VIOLATION: categories는 빈 배열
+      required: [messageId, verdict, categories, policyIds, reason, missingFacts]
       additionalProperties: false
       allOf:
         - if:
             properties: { verdict: { const: VIOLATION } }
+            required: [verdict]
           then:
-            required: [category]
             properties:
-              category: { $ref: '#/components/schemas/Category' }
-              evidenceMessageIds: { minItems: 1 }
+              categories: { minItems: 1 }
               policyIds: { minItems: 1 }
         - if:
             properties: { verdict: { const: NEEDS_REVIEW } }
+            required: [verdict]
           then:
-            required: [missingFacts]
             properties:
               missingFacts: { minItems: 1 }
+        - if:
+            properties: { verdict: { const: NO_VIOLATION } }
+            required: [verdict]
+          then:
+            properties:
+              categories: { maxItems: 0 }
       properties:
-        expectedVersion:
-          type: integer
+        messageId:
+          $ref: '#/components/schemas/Uuid'
         verdict:
           $ref: '#/components/schemas/Verdict'
-        category:
-          description: VIOLATION이면 필수
-          oneOf:
-            - $ref: '#/components/schemas/Category'
-            - type: 'null'
-        evidenceMessageIds:
+        categories:
           type: array
+          uniqueItems: true
           items:
-            $ref: '#/components/schemas/Uuid'
+            $ref: '#/components/schemas/Category'
         policyIds:
           type: array
-          description: VIOLATION이면 1개 이상. 서버가 존재·버전을 검증
           items:
             type: string
-        policySnapshots:
-          type: array
-          items:
-            $ref: '#/components/schemas/PolicySnapshot'
         reason:
           type: string
         missingFacts:
           type: array
           items:
             type: string
-        traceId:
-          type: string
     JudgmentResultResponse:
       type: object
       required: [data, traceId]
       properties:
         data:
           type: object
-          required: [caseStatus, violationCount, kickReviewId]
+          description: |
+            이 제출로 만들어진 검토(A-9, A-16).
+            - CONTEXT_REVIEW: CONTEXT 검토
+            - PII_INVESTIGATION + NEEDS_REVIEW(하나라도): CONTEXT 검토. 결정은 POST /api/context-reviews/{reviewId}/decision
+            - PII_INVESTIGATION + VIOLATION이 BE 확정돼 강퇴 기준 3건 도달: KICK 검토
+            그 외(PII의 NO_VIOLATION, 3건 미만 VIOLATION)는 reviewId·reviewKind 둘 다 null.
+            값이 있으면 Agent는 그 reviewId로 interrupt한다.
+          required: [confirmationStatus, reviewId, reviewKind]
           properties:
-            caseStatus:
-              $ref: '#/components/schemas/CaseStatus'
-            violationCount:
-              type: integer
-            kickReviewId:
-              type: [string, 'null']
-              format: uuid
-              description: 누적 3회 도달 시 생성된 강퇴 검토 ID. Agent는 이 값이 있으면 interrupt 노드로 간다
+            confirmationStatus:
+              $ref: '#/components/schemas/ConfirmationStatus'
+            reviewId:
+              oneOf:
+                - $ref: '#/components/schemas/Uuid'
+                - type: 'null'
+            reviewKind:
+              oneOf:
+                - $ref: '#/components/schemas/ReviewKind'
+                - type: 'null'
         traceId:
           type: string
+    KickRevalidation:
+      type: object
+      required: [reviewId, decisionId, valid, validationRef, basisCaseIds]
+      properties:
+        reviewId:
+          $ref: '#/components/schemas/Uuid'
+        decisionId:
+          $ref: '#/components/schemas/Uuid'
+        valid:
+          type: boolean
+        validationRef:
+          description: valid=true일 때만. kick 실행 명령(BusinessActionCommand.validationRef)에 넣는다
+          oneOf:
+            - $ref: '#/components/schemas/Uuid'
+            - type: 'null'
+        basisCaseIds:
+          type: array
+          uniqueItems: true
+          description: 검증한 원 기준 집합(새 사건으로 바꾸지 않음)
+          items:
+            $ref: '#/components/schemas/Uuid'
+      allOf:
+        - if:
+            properties: { valid: { const: true } }
+            required: [valid]
+          then:
+            properties:
+              validationRef: { $ref: '#/components/schemas/Uuid' }
+          else:
+            properties:
+              validationRef: { type: 'null' }
+    KickRevalidationResponse:
+      type: object
+      required: [data, traceId]
+      properties:
+        data:
+          $ref: '#/components/schemas/KickRevalidation'
+        traceId:
+          type: string
+          format: uuid
     KickResultResponse:
       type: object
+      deprecated: true
+      description: 레거시 /internal/kick-reviews/{reviewId}/execute 전용(24시간 강퇴). v3.1에 없으며 B2 확인 후 삭제한다(A-12).
       required: [data, traceId]
       properties:
         data:

@@ -15,7 +15,7 @@
   ├ PASS              → PUBLIC, Agent 미호출
   ├ RULE_CONFIRMED    → 확실한 욕설·링크: BE가 같은 처리 안에서 위반 확정 → HIDDEN + 유형별 표
   ├ FLOOD_REVIEW      → 같은 userId·liveId 10초 안 같은 문장 3회째부터 HELD → BE 규칙으로 확정(TBD-11) → 중복 HIDE (+표)
-  ├ PII_INVESTIGATION → HELD → AI 조사 → 정상은 자기 원인 해제 / 위반은 BE 검증 후 확정 / 부족하면 HELD 유지
+  ├ PII_INVESTIGATION → HELD → AI 조사 → 정상은 자기 원인 해제 / 위반은 BE 검증 후 확정 / NEEDS_REVIEW → HELD 유지 + CONTEXT 검토 생성(A-16)
   └ CONTEXT_REVIEW    → HELD → AI 조사 → 판정과 무관하게 운영자 결정(interrupt) → 정상 확정 시 해제 / 위반 확정 시 HIDE + 표
 확정 사건 저장 → 같은 userId·liveId 최근 24시간 통합 사건 3건 이상 → 강퇴 심사(예약, interrupt)
              → 운영자 승인·거절(결정 + 소진) → 같은 thread_id 재개 → 승인이면 재검증 후 kick_user → 방송 종료까지 live ban
@@ -86,9 +86,9 @@ erDiagram
 | `case_messages` | `case_id`·`message_id` PK, `owned`, `is_target` | V200 유지. `is_target` = 제재 대상(TARGET), 아니면 증거. 메시지는 한 사건만 소유(`owned`) |
 | `findings` | `id` PK, `case_id` FK, `category`(5종), `source`(AI_PROPOSAL, BACKEND), `verdict`, `status`(PROPOSED, CONFIRMED, REVOKED), `policy_version`, `evidence_reference`, `evidence_version`, `created_at`, **`confirmed_at`**, **`revoked_at`** | V200 기준. `confirmed_at`·`revoked_at` 추가. 부분 유형 취소는 finding 단위. 유효 finding이 0개면 사건 취소(TBD-04) |
 | `finding_events` | `id` PK, `finding_id` FK, `event_type`, `decision_reference`, `reason`, `created_at` | V200 유지. 감사 이력 |
-| **`reviews`** | `review_id` PK, `kind`(ReviewKind), `live_id` FK, `case_id` FK(nullable), `thread_id`, `status`(ReviewStatus) | **신규. 검토 요청의 공통 부모.** `case_id`는 CONTEXT에서 검토 대상 사건이고 KICK에서는 비워 둔다(기준 사건은 `review_basis`). `status`는 최종 결정이 저장될 때만 DECIDED가 된다(DEFER는 PENDING 유지) |
+| **`reviews`** | `review_id` PK, `kind`(ReviewKind), `live_id` FK, `case_id` FK(nullable), `thread_id`, `status`(ReviewStatus), **`version`** | **신규. 검토 요청의 공통 부모.** `case_id`는 CONTEXT에서 검토 대상 사건이고 KICK에서는 비워 둔다(기준 사건은 `review_basis`). `status`는 최종 결정이 저장될 때만 DECIDED가 된다(DEFER는 PENDING 유지). `version`은 두 종류 공통의 낙관적 잠금 값으로, 결정 요청의 `expectedReviewVersion`과 비교한다(A-6) |
 | **`context_reviews`** | `review_id` PK·FK(`reviews`), `ai_verdict`, `evidence_version` | **신규.** `reviews.kind = CONTEXT`인 검토의 1:1 하위. AI 정상 제안이어도 결정 대기 |
-| **`kick_reviews`** | `review_id` PK·FK(`reviews`), `basis_snapshot_id`, `version` | **신규.** `reviews.kind = KICK`인 검토의 1:1 하위. 실제 심사 기준 집합은 `review_basis`로 고정 |
+| **`kick_reviews`** | `review_id` PK·FK(`reviews`), `basis_snapshot_id` | **신규.** `reviews.kind = KICK`인 검토의 1:1 하위. 실제 심사 기준 집합은 `review_basis`로 고정. KickReview의 `version`은 `reviews.version` |
 | **`review_basis`** | `review_id` FK(`reviews`), `case_id` FK | **신규.** `basisCaseIds`(KICK 검토). 3건 초과 시 확정 시각이 가장 오래된 3건(TBD-06) |
 | **`reservations`** | `review_id` FK(`reviews`), `case_id` FK, `state`(RESERVED, CONSUMED, RELEASED) | **신규(E-4).** 대기 중 다른 심사가 같은 사건을 쓰지 못하게 함 |
 | **`decisions`** | `decision_id` PK, `review_id` FK(`reviews`), `value`(ContextDecision 또는 KickDecision), `operator_id`, `decided_at`, `client_request_id` | **신규(E-5).** 한 검토에 DEFER 이력이 여러 건일 수 있고 최종 결정은 1건. 종류(ReviewKind)는 `reviews.kind`로 조회 |
@@ -202,7 +202,7 @@ WHERE c.live_id = :liveId AND c.user_id = :userId AND c.id <> :currentCaseId
 | --- | --- | --- | --- |
 | RULE_CONFIRMED | BE 규칙 | `findings`(BACKEND, CONFIRMED), `actions`(HIDE, 표에 따라 TIMEOUT), `timeouts` | 같은 처리 안에서 HIDDEN |
 | FLOOD_REVIEW | BE 규칙(TBD-11) | 위와 같음 + `flood_marks` | 3번째 이후 중복 HIDE, 첫 두 메시지는 공개 유지 |
-| PII_INVESTIGATION | AI 판정 → BE 검증 | AI 제안은 `findings`(AI_PROPOSAL), 확정은 BACKEND | 정상이면 자기 원인 해제, 부족하면 HELD 유지 |
+| PII_INVESTIGATION | AI 판정 → BE 검증 | AI 제안은 `findings`(AI_PROPOSAL), 확정은 BACKEND. NEEDS_REVIEW면 `reviews`(kind=CONTEXT)·`context_reviews` | 정상이면 자기 원인 해제, NEEDS_REVIEW → HELD 유지 + CONTEXT 검토 생성(A-16), 운영자 결정은 문맥 결정과 같음 |
 | CONTEXT_REVIEW | 운영자 결정 | `reviews`, `context_reviews`, `decisions`(ContextDecision), 확정 시 `findings`(BACKEND) | 정상 확정 시 자기 원인 해제, 위반 확정 시 HIDE + 표, DEFER는 HELD 유지 |
 | 강퇴 | 운영자 승인 + 재검증 | `reviews`, `kick_reviews`, `review_basis`, `reservations`, `decisions`, `consumptions`, `actions`(KICK), `live_bans` | 기존 HIDE·TIMEOUT 유지 |
 
