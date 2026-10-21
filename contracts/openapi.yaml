@@ -1490,7 +1490,7 @@ components:
           description: Nonblank fact key.
         value:
           type: string
-          enum: [TRUE, FALSE, UNKNOWN]
+          enum: ['TRUE', 'FALSE', UNKNOWN]
         sourceRefs:
           type: array
           description: Required to be non-empty for TRUE/FALSE; UNKNOWN may have no source references.
@@ -1501,7 +1501,7 @@ components:
         - if:
             properties:
               value:
-                enum: [TRUE, FALSE]
+                enum: ['TRUE', 'FALSE']
             required: [value]
           then:
             properties:
