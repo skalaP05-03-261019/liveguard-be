@@ -229,10 +229,11 @@ class CasePersistenceTest {
 		UUID id = message();
 		sink.open(flood(id, List.of()));
 		assertThrows(InvalidContractException.class, () -> sink.open(new CandidateRequest(
-				UUID.randomUUID(), USER, id, FilterResult.FLOOD, List.of("REPEATED_TEXT"),
+				UUID.randomUUID(), UUID.randomUUID(), USER, id, FilterResult.FLOOD, List.of("REPEATED_TEXT"),
 				"norm-v1+dict-v2", NOW, List.of())));
 		assertThrows(InvalidContractException.class, () -> sink.open(new CandidateRequest(
-				CHANNEL, USER, message(), FilterResult.PASS, List.of(), "norm-v1+dict-v2", NOW, List.of())));
+				CHANNEL, UUID.randomUUID(), USER, message(), FilterResult.PASS, List.of(), "norm-v1+dict-v2", NOW,
+				List.of())));
 	}
 
 	@Test
@@ -254,7 +255,7 @@ class CasePersistenceTest {
 	}
 
 	private CandidateRequest flood(UUID messageId, List<UUID> related) {
-		return new CandidateRequest(CHANNEL, USER, messageId, FilterResult.FLOOD,
+		return new CandidateRequest(CHANNEL, UUID.randomUUID(), USER, messageId, FilterResult.FLOOD,
 				List.of("REPEATED_TEXT"), "norm-v1+dict-v2", NOW, related);
 	}
 

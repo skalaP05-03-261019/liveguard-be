@@ -106,9 +106,10 @@ class MessageFilteringTest {
 		UUID moderator = UUID.fromString("10000000-0000-4000-8000-000000000002");
 		insert(moderator, "응원해요", Instant.now().minusSeconds(1));
 		insert(moderator, "응원해요", Instant.now().minusSeconds(1));
-		jdbc.update("INSERT INTO platform.messages (channel_id, author_id, client_message_id, text, normalized_text, "
-				+ "filter_result, visibility, sent_at) VALUES (?, ?, ?, '응원해요', '응원해요', 'PASS', 'PUBLIC', ?)",
-				CHANNEL_B, VIEWER, UUID.randomUUID(), Timestamp.from(Instant.now()));
+		jdbc.update("INSERT INTO platform.messages (channel_id, live_id, author_id, client_message_id, text, "
+				+ "normalized_text, filter_result, visibility, sent_at) VALUES (?, (SELECT id FROM platform.lives WHERE channel_id = ? AND ended_at IS NULL), ?, ?, '응원해요', "
+				+ "'응원해요', 'PASS', 'PUBLIC', ?)",
+				CHANNEL_B, CHANNEL_B, VIEWER, UUID.randomUUID(), Timestamp.from(Instant.now()));
 
 		mockMvc.perform(send(CHANNEL_A, UUID.randomUUID(), "응원해요", login(mockMvc, "viewer")))
 				.andExpect(status().isCreated())
@@ -224,9 +225,12 @@ class MessageFilteringTest {
 	}
 
 	private void insert(UUID author, String text, Instant sentAt) {
-		jdbc.update("INSERT INTO platform.messages (channel_id, author_id, client_message_id, text, normalized_text, "
-				+ "filter_result, visibility, sent_at) VALUES (?, ?, ?, ?, ?, 'PASS', 'PUBLIC', ?)",
-				CHANNEL_A, author, UUID.randomUUID(), text, TextNormalizer.normalize(text), Timestamp.from(sentAt));
+		// 도배는 같은 방송 범위라 시드 채널의 진행 중 방송에 넣는다
+		jdbc.update("INSERT INTO platform.messages (channel_id, live_id, author_id, client_message_id, text, "
+				+ "normalized_text, filter_result, visibility, sent_at) VALUES (?, (SELECT id FROM platform.lives WHERE channel_id = ? AND ended_at IS NULL), ?, ?, ?, ?, "
+				+ "'PASS', 'PUBLIC', ?)",
+				CHANNEL_A, CHANNEL_A, author, UUID.randomUUID(), text, TextNormalizer.normalize(text),
+				Timestamp.from(sentAt));
 	}
 
 	private MockHttpServletRequestBuilder send(UUID channelId, UUID clientMessageId, String text,

@@ -107,7 +107,8 @@ class MessageService {
 		Instant sentAt = clock.instant().truncatedTo(ChronoUnit.MICROS);
 		String normalizedText = TextNormalizer.normalize(request.text());
 		messages.lockAuthorInChannel(channelId, author.userId());
-		List<UUID> sameTextInWindow = messages.sameTextMessageIds(channelId, author.userId(), normalizedText,
+		// 도배는 같은 사용자·방송 범위다. 이전 방송과 방송 도입 전(live_id NULL) 메시지는 세지 않는다
+		List<UUID> sameTextInWindow = messages.sameTextMessageIds(live.liveId(), author.userId(), normalizedText,
 				sentAt.minus(FLOOD_WINDOW));
 		FilterDecision decision = filter.classify(new FilterInput(request.text(), normalizedText,
 				messages.officialHosts(channelId), sameTextInWindow.size() + 1));
@@ -141,7 +142,7 @@ class MessageService {
 			List<UUID> related) {
 		UUID caseId;
 		try {
-			caseId = candidateSink.open(new CandidateRequest(channelId, author.userId(), stored.id(),
+			caseId = candidateSink.open(new CandidateRequest(channelId, stored.liveId(), author.userId(), stored.id(),
 					decision.result(), decision.matchingTags(), MessageFilter.version(), stored.sentAt(), related));
 		} catch (ApiException ex) {
 			throw ex;

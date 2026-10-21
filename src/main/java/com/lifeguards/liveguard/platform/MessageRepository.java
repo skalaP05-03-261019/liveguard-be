@@ -56,12 +56,12 @@ class MessageRepository {
 				.single();
 	}
 
-	/** {@code since} 이후(초과) 같은 사용자·채널의 같은 정규화 문장 메시지 id (오래된 순). */
-	List<UUID> sameTextMessageIds(UUID channelId, UUID authorId, String normalizedText, Instant since) {
+	/** {@code since} 이후(초과) 같은 사용자·방송의 같은 정규화 문장 메시지 id (오래된 순). */
+	List<UUID> sameTextMessageIds(UUID liveId, UUID authorId, String normalizedText, Instant since) {
 		return jdbc.sql("SELECT id FROM platform.messages "
-				+ "WHERE channel_id = ? AND author_id = ? AND normalized_text = ? AND sent_at > ? "
+				+ "WHERE live_id = ? AND author_id = ? AND normalized_text = ? AND sent_at > ? "
 				+ "ORDER BY sent_at, id")
-				.params(channelId, authorId, normalizedText, Timestamp.from(since))
+				.params(liveId, authorId, normalizedText, Timestamp.from(since))
 				.query(UUID.class)
 				.list();
 	}
