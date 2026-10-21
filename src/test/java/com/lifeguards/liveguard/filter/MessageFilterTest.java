@@ -211,6 +211,12 @@ class MessageFilterTest {
 	}
 
 	@Test
+	void versionCombinesNormalizationAndDictionaryVersions() {
+		assertEquals(TextNormalizer.VERSION + "+" + FilterDictionary.VERSION, MessageFilter.version());
+		assertEquals("norm-v1+dict-v2", MessageFilter.version());
+	}
+
+	@Test
 	void plainChatIsPass() {
 		FilterDecision decision = classify("오늘 무대 좋았어요");
 

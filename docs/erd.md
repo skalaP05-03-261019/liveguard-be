@@ -151,7 +151,7 @@ WHERE channel_id = :channelId AND user_id = :userId
 ```
 1. cases.version = expectedVersion 확인 (다르면 409)
 2. verdict 저장
-3. VIOLATION    → 사건 메시지 visibility = HIDDEN, counted = true
+3. VIOLATION    → 사건 메시지 visibility = HIDDEN (filter_result=PASS인 증거 메시지는 제외), counted = true
    NO_VIOLATION → HELD 메시지를 PUBLIC으로
    NEEDS_REVIEW → 그대로
 4. 누적 횟수 ≥ 3 이고 PENDING 검토가 없으면
@@ -167,6 +167,43 @@ SELECT max(expires_at) FROM guard.kicks
 WHERE channel_id = :channelId AND user_id = :userId
   AND revoked_at IS NULL AND expires_at > :now;   -- :now는 주입 가능한 Clock
 ```
+
+후보 전달(`CandidateSink.open`)과 FLOOD 사건 묶기 — BE1 이슈 #15에서 확정:
+
+| 항목 | 내용 |
+| --- | --- |
+| 호출 조건 | 1차 필터가 PASS가 아니고 **새로 저장된** 메시지. 메시지 저장과 같은 트랜잭션. 재전송은 호출하지 않음 |
+| 전달 값 | `channelId`, `userId`, `messageId`, `filterResult`, `matchingTags`(`MatchingTag` 6종), `filterVersion`, `sentAt`, `relatedMessageIds` |
+| `filterVersion` | 정규화·사전 버전 조합. 예: `norm-v1+dict-v2` (재현·감사용) |
+| `sentAt` | 서버가 요청을 받아 주입 Clock으로 정한 UTC 시각(마이크로초). 클라이언트 시각이 아님. 사건 생성 시각(`cases.created_at`)과 다름. 락 전에 정해지고 재전송 응답과 같음 |
+| 이번 범위에서 없는 것 | `liveId`(방송 단위는 Phase 2, 범위는 채널 + 최근 24시간), `handlingRoute`, `policyVersion`(판정 제출 시 `policySnapshots`로 저장), `normalizedTextHash` |
+
+FLOOD 판정에 쓰는 10초 창 (`platform.messages`, 실제 쿼리):
+
+```sql
+SELECT id FROM platform.messages
+WHERE channel_id = :channelId AND author_id = :authorId AND normalized_text = :normalizedText
+  AND sent_at > :sentAt - interval '10 seconds'     -- 하한 제외: 정확히 10초 전 메시지는 불포함
+ORDER BY sent_at, id;                               -- relatedMessageIds (오래된 순)
+-- 결과 행 수 + 1(현재 메시지) >= 3 이면 FLOOD (HOLD가 아닐 때). 상한은 없음(동시 요청 시 sentAt 순서 역전 가능, 제출 후 개선)
+```
+
+사건 묶기: `relatedMessageIds` 중 판정 전(`ANALYZING`) 사건에 연결된 메시지가 있으면 **그 caseId를 재사용**하고, 없으면
+새 사건을 만든다(여러 개면 가장 최근 메시지에 연결된 사건). B1은 반환된 caseId를 현재 메시지와 `case_id IS NULL`인
+관련 메시지에만 기록한다.
+
+| 도착(초) | 메시지 | `relatedMessageIds` | 결과 |
+| --- | --- | --- | --- |
+| 0 | m1 | - | PASS (창 안 1건) |
+| 1 | m2 | - | PASS (2건) |
+| 2 | m3 | `[m1, m2]` | FLOOD, 새 사건 X. m1·m2·m3의 `case_id` = X (m1·m2는 공개 유지) |
+| 3 | m4 | `[m1, m2, m3]` | FLOOD, X가 `ANALYZING`이므로 X 재사용 |
+| 4 | m5 | `[m1, m2, m3, m4]` | FLOOD, X 재사용 → 3·4·5번째가 같은 사건, 누적 1회 |
+| 10 (m1이 0초일 때) | m6 | `[m2, m3, m4, m5]` | m1은 정확히 10초 전이라 창에서 빠짐. 나머지로 FLOOD, X 재사용 |
+
+X가 이미 판정(`HIDDEN` 등)됐으면 다음 도배 메시지는 새 사건 Y를 연다(X에 연결된 메시지의 `case_id`는 그대로).
+확실한 욕설·피싱 HOLD는 FLOOD보다 우선하므로 같은 욕설 반복은 FLOOD가 아니라 HOLD 여러 건이며
+`relatedMessageIds`는 비어 있다.
 
 ## 5. 담당
 

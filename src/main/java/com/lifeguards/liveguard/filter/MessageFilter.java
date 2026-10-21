@@ -34,6 +34,11 @@ public class MessageFilter {
 
 	private final FilterDictionary dictionary;
 
+	/** 판정에 쓴 정규화·사전 버전 조합 (예: norm-v1+dict-v2). 후보와 함께 전달해 재현·감사에 쓴다. */
+	public static String version() {
+		return TextNormalizer.VERSION + "+" + FilterDictionary.VERSION;
+	}
+
 	public MessageFilter() {
 		this(FilterDictionary.loadDefault());
 	}
