@@ -219,7 +219,7 @@ public class LiveService implements LivePlatformPort {
                 "(?s).*(01[016789][- .]?[0-9]{3,4}[-"
                     + " .]?[0-9]{4}|[\\w.+-]+@[\\w.-]+\\.[A-Za-z]{2,}).*")) {
       route = "PII_INVESTIGATION";
-      tags.add("PII_PATTERN");
+      tags.add(req.text().contains("@") ? "PII_EMAIL" : "PII_PHONE");
     }
     String visibility =
         route.equals("PASS") ? "PUBLIC" : route.equals("RULE_CONFIRMED") ? "HIDDEN" : "HELD";

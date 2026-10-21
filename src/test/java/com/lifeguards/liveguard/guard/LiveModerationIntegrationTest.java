@@ -18,9 +18,12 @@ import org.springframework.transaction.annotation.Transactional;
 
 @SpringBootTest(
     properties = {"LIVEGUARD_POLICY_VERSION=v3.1", "LIVEGUARD_TBD_FIXTURE_ENABLED=true"})
+@org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc
 @Import(TestcontainersConfiguration.class)
 @Transactional
 class LiveModerationIntegrationTest {
+  @Autowired org.springframework.test.web.servlet.MockMvc mvc;
+  @Autowired org.springframework.security.crypto.password.PasswordEncoder passwordEncoder;
   @Autowired LiveService lives;
   @Autowired LiveModerationService guard;
   @Autowired JdbcTemplate db;
@@ -126,6 +129,20 @@ class LiveModerationIntegrationTest {
     var result = guard.apply(r, request);
     assertEquals(result, guard.apply(r, request));
     return result;
+  }
+
+  @Test
+  void integrationModeCannotBypassLiveRestrictionsThroughDeprecatedChannelRoutes() throws Exception {
+    db.update("UPDATE platform.users SET password_hash=? WHERE id=?", passwordEncoder.encode("liveguard-local"), user);
+    var session = com.lifeguards.liveguard.support.LoginSupport.login(mvc, user.toString());
+    var base = "/api/channels/" + channel;
+    mvc.perform(com.lifeguards.liveguard.support.LoginSupport.withXsrf(mvc,
+        org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post(base + "/messages").session(session))
+        .contentType("application/json").content("{\"clientMessageId\":\""+UUID.randomUUID()+"\",\"text\":\"bypass\"}"))
+        .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isConflict());
+    for (String route : List.of("/messages", "/events"))
+      mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get(base+route).session(session))
+          .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isConflict());
   }
 
   @Test

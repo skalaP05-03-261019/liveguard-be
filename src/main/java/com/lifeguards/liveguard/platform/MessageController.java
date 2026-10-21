@@ -24,6 +24,14 @@ import com.lifeguards.liveguard.contracts.dto.response.MessagePage;
 @RequestMapping("/api/channels/{channelId}/messages")
 class MessageController {
 
+	@org.springframework.beans.factory.annotation.Value("${LIVEGUARD_TBD_FIXTURE_ENABLED:false}")
+	private boolean liveIntegrationEnabled;
+
+	private void requireLegacyMode() {
+		if (liveIntegrationEnabled) throw new com.lifeguards.liveguard.common.ApiException(
+			com.lifeguards.liveguard.contracts.enums.ErrorCode.CASE_NOT_READY, "Use the liveId API in integration mode");
+	}
+
 	private final MessageService messageService;
 
 	MessageController(MessageService messageService) {
@@ -33,6 +41,7 @@ class MessageController {
 	@PostMapping
 	ResponseEntity<ApiResponse<Message>> send(@PathVariable UUID channelId, @RequestBody SendMessageRequest request,
 			@AuthenticationPrincipal AuthenticatedUser user) {
+		requireLegacyMode();
 		Message message = messageService.send(channelId, user, request);
 		return ResponseEntity.status(HttpStatus.CREATED).body(new ApiResponse<>(message, TraceIdFilter.current()));
 	}
@@ -41,6 +50,7 @@ class MessageController {
 	@GetMapping
 	ApiResponse<MessagePage> history(@PathVariable UUID channelId, @RequestParam(required = false) String cursor,
 			@RequestParam(defaultValue = "50") int limit, @AuthenticationPrincipal AuthenticatedUser user) {
+		requireLegacyMode();
 		return new ApiResponse<>(messageService.history(channelId, user, cursor, limit), TraceIdFilter.current());
 	}
 
