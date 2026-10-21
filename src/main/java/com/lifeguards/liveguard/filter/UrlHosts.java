@@ -19,6 +19,10 @@ public final class UrlHosts {
 	private static final Pattern BARE_DOMAIN = Pattern.compile(
 			"(?<![\\p{L}\\p{N}@.\\-])((?:[\\p{L}\\p{N}](?:[\\p{L}\\p{N}\\-]*[\\p{L}\\p{N}])?\\.)+[A-Za-z]{2,63})(?![\\p{L}\\p{N}\\-])");
 
+	// 이메일은 링크가 아니라 PII 후보다(TBD-01). 점이 든 로컬 파트(first.last@…)가 bare 도메인으로 잡히지 않게 먼저 지운다
+	private static final Pattern EMAIL = Pattern.compile(
+			"[\\p{L}\\p{N}._%+\\-]+@(?:[\\p{L}\\p{N}](?:[\\p{L}\\p{N}\\-]*[\\p{L}\\p{N}])?\\.)+[A-Za-z]{2,63}");
+
 	private UrlHosts() {
 	}
 
@@ -33,7 +37,8 @@ public final class UrlHosts {
 		}
 		withScheme.appendTail(rest);
 
-		Matcher bare = BARE_DOMAIN.matcher(rest);
+		// scheme 있는 URL(user@host 포함)을 먼저 처리한 뒤에 이메일 구간을 지운다
+		Matcher bare = BARE_DOMAIN.matcher(EMAIL.matcher(rest).replaceAll(" "));
 		while (bare.find()) {
 			hosts.add(normalizeHost(bare.group(1)));
 		}

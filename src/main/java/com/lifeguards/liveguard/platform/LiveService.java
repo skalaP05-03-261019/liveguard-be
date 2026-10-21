@@ -203,15 +203,10 @@ public class LiveService implements LivePlatformPort {
     var d =
         filter.classify(
             new FilterInput(
-                req.text(), normalized, messages.officialHosts(live.channelId()), repeated));
-    String route =
-        d.result() == FilterResult.REVIEW
-            ? "CONTEXT_REVIEW"
-            : d.result() == FilterResult.HOLD
-                ? "RULE_CONFIRMED"
-                : d.result() == FilterResult.FLOOD ? "FLOOD_REVIEW" : "PASS";
+                req.text(), normalized, repeated));
+    String route = d.handlingRoute().name();
     List<String> tags = new ArrayList<>(d.matchingTags());
-    if(guard.floodRecurrence(id,user.userId(),normalized,at.toInstant())) { route="FLOOD_REVIEW";if(!tags.contains("REPEATED_TEXT"))tags.add("REPEATED_TEXT"); }
+    if(!route.equals("RULE_CONFIRMED")&&guard.floodRecurrence(id,user.userId(),normalized,at.toInstant())) { route="FLOOD_REVIEW";if(!tags.contains("REPEATED_TEXT"))tags.add("REPEATED_TEXT"); }
     if (!UrlHosts.extract(req.text()).isEmpty()) {
       route = "RULE_CONFIRMED";
       if (!tags.contains("LINK")) tags.add("LINK");
@@ -227,11 +222,12 @@ public class LiveService implements LivePlatformPort {
     if(route.equals("PASS")&&tags.contains("OFFICIAL_CLAIM")&&tags.contains("CREDENTIAL_REQUEST"))route="CONTEXT_REVIEW";
     String visibility =
         route.equals("PASS") ? "PUBLIC" : route.equals("RULE_CONFIRMED") ? "HIDDEN" : "HELD";
+    String reasonCode=switch(route){case "RULE_CONFIRMED"->d.moderationReasonCode().name();case "FLOOD_REVIEW"->"FLOOD_REPEATED";case "PII_INVESTIGATION"->"PII_PENDING";case "CONTEXT_REVIEW"->"CONTEXT_PENDING";default->null;};
     UUID message = UUID.randomUUID();
     db.sql(
             "INSERT INTO"
-                + " platform.messages(id,channel_id,live_id,author_id,client_message_id,text,normalized_text,filter_result,visibility,sent_at)"
-                + " VALUES(?,?,?,?,?,?,?,?,?,?)")
+                + " platform.messages(id,channel_id,live_id,author_id,client_message_id,text,normalized_text,filter_result,visibility,moderation_reason_code,sent_at)"
+                + " VALUES(?,?,?,?,?,?,?,?,?,?,?)")
         .params(
             message,
             live.channelId(),
@@ -242,6 +238,7 @@ public class LiveService implements LivePlatformPort {
             normalized,
             route.equals("PASS") ? "PASS" : route.equals("FLOOD_REVIEW") ? "FLOOD" : "HOLD",
             visibility,
+            reasonCode,
             at)
         .update();
     if (!route.equals("PASS")) {

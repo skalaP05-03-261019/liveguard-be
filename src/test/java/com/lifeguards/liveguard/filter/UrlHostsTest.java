@@ -33,6 +33,18 @@ class UrlHostsTest {
 	}
 
 	@Test
+	void ignoresEmailsWithDottedLocalPart() {
+		assertEquals(Set.of(), UrlHosts.extract("first.last@example.com"));
+		assertEquals(Set.of(), UrlHosts.extract("문의는 a.b.c+tag@sub.example.co.kr 로 주세요"));
+	}
+
+	@Test
+	void keepsLinksNextToEmails() {
+		assertEquals(Set.of("evil.test"), UrlHosts.extract("first.last@example.com evil.test/login"));
+		assertEquals(Set.of("evil.test"), UrlHosts.extract("https://first.last@evil.test/login"));
+	}
+
+	@Test
 	void keepsRepeatedCharactersInHost() {
 		assertEquals(Set.of("wwwww.example.com"), UrlHosts.extract("wwwww.example.com"));
 	}

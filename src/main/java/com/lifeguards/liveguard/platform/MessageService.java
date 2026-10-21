@@ -16,6 +16,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.lifeguards.liveguard.common.ApiException;
+import com.lifeguards.liveguard.common.PolicyProperties;
 import com.lifeguards.liveguard.common.security.AuthenticatedUser;
 import com.lifeguards.liveguard.contracts.dto.event.ChatEvent;
 import com.lifeguards.liveguard.contracts.dto.request.SendMessageRequest;
@@ -25,6 +26,8 @@ import com.lifeguards.liveguard.contracts.dto.response.MessagePage;
 import com.lifeguards.liveguard.contracts.enums.AuthorRole;
 import com.lifeguards.liveguard.contracts.enums.ErrorCode;
 import com.lifeguards.liveguard.contracts.enums.FilterResult;
+import com.lifeguards.liveguard.contracts.enums.ModerationReasonCode;
+import com.lifeguards.liveguard.contracts.enums.Visibility;
 import com.lifeguards.liveguard.contracts.exception.InvalidContractException;
 import com.lifeguards.liveguard.filter.FilterDecision;
 import com.lifeguards.liveguard.filter.FilterInput;
@@ -50,13 +53,14 @@ class MessageService {
 	private final CandidateSink candidateSink;
 	private final KickStatusQuery kickStatus;
 	private final ApplicationEventPublisher events;
+	private final PolicyProperties policy;
 	private final Clock clock;
 	private final LiveService moderation;
 	private final tools.jackson.databind.json.JsonMapper mapper;
 
 	MessageService(MessageRepository messages, JdbcLiveQuery lives, JdbcChannelMembershipQuery memberships,
 			MessageFilter filter, CandidateSink candidateSink, KickStatusQuery kickStatus, ApplicationEventPublisher events,
-			Clock clock, LiveService moderation, tools.jackson.databind.json.JsonMapper mapper) {
+            PolicyProperties policy, Clock clock, LiveService moderation, tools.jackson.databind.json.JsonMapper mapper) {
 		this.messages = messages;
 		this.lives = lives;
 		this.memberships = memberships;
@@ -64,6 +68,7 @@ class MessageService {
 		this.candidateSink = candidateSink;
 		this.kickStatus = kickStatus;
 		this.events = events;
+		this.policy = policy;
 		this.clock = clock;
 		this.moderation=moderation;
 		this.mapper=mapper;
@@ -120,11 +125,12 @@ class MessageService {
 		// 도배는 같은 사용자·방송 범위다. 이전 방송과 방송 도입 전(live_id NULL) 메시지는 세지 않는다
 		List<UUID> sameTextInWindow = messages.sameTextMessageIds(live.liveId(), author.userId(), normalizedText,
 				sentAt.minus(FLOOD_WINDOW));
-		FilterDecision decision = filter.classify(new FilterInput(request.text(), normalizedText,
-				messages.officialHosts(channelId), sameTextInWindow.size() + 1));
+		FilterDecision decision = filter.classify(
+				new FilterInput(request.text(), normalizedText, sameTextInWindow.size() + 1));
 		// 동시 재전송이면 아래 INSERT가 무시되고 저장된 결과를 돌려주므로 이번 판정은 쓰이지 않는다
 		var inserted = messages.insertIfAbsent(channelId, live.liveId(), author.userId(), request.clientMessageId(),
-				request.text(), normalizedText, decision.result(), decision.visibility(), sentAt);
+				request.text(), normalizedText, decision.result(), decision.visibility(), decision.moderationReasonCode(),
+				sentAt);
 		if (inserted.isPresent()) {
 			if (decision.result() != FilterResult.PASS) {
 				// FLOOD이면 창 안의 이전 메시지도 같은 사건에 연결한다. 그 외에는 빈 목록
@@ -153,7 +159,8 @@ class MessageService {
 		UUID caseId;
 		try {
 			caseId = candidateSink.open(new CandidateRequest(channelId, stored.liveId(), author.userId(), stored.id(),
-					decision.result(), decision.matchingTags(), MessageFilter.version(), stored.sentAt(), related));
+					decision.result(), decision.handlingRoute(), decision.ruleId(), decision.matchingTags(),
+					MessageFilter.version(), policy.version(), stored.sentAt(), related));
 		} catch (ApiException ex) {
 			throw ex;
 		} catch (RuntimeException ex) {
@@ -195,16 +202,23 @@ class MessageService {
 		String nextCursor = rows.size() > limit
 				? new MessageCursor(page.getLast().sentAt(), page.getLast().id()).encode()
 				: null;
-		List<Message> items = page.stream()
-				.map(row -> new Message(row.id(), row.liveId(), channelId, row.authorNickname(), row.text(), row.visibility(),
-						row.version(), row.sentAt(), row.authorId().equals(viewer.userId())))
-				.toList();
+		List<Message> items = page.stream().map(row -> {
+			boolean mine = row.authorId().equals(viewer.userId());
+			return new Message(row.id(), row.liveId(), channelId, row.authorNickname(), row.text(), row.visibility(),
+					row.version(), row.sentAt(), mine, reasonFor(mine, row.visibility(), row.moderationReasonCode()));
+		}).toList();
 		return new MessagePage(items, nextCursor);
 	}
 
 	private static Message toMessage(UUID channelId, AuthenticatedUser author, StoredMessage stored) {
 		return new Message(stored.id(), stored.liveId(), channelId, author.nickname(), stored.text(), stored.visibility(),
-				stored.version(), stored.sentAt(), true);
+				stored.version(), stored.sentAt(), true,
+				reasonFor(true, stored.visibility(), stored.moderationReasonCode()));
+	}
+
+	/** 사유는 작성자 본인에게만, 가려져 있는 동안만 보낸다. 운영자나 다른 시청자, 복구된 PUBLIC에는 null이다. */
+	private static ModerationReasonCode reasonFor(boolean mine, Visibility visibility, ModerationReasonCode stored) {
+		return mine && visibility != Visibility.PUBLIC ? stored : null;
 	}
 
 	private static ChatEvent toChatEvent(Message message) {

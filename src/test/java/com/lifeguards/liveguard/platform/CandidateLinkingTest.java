@@ -35,6 +35,7 @@ import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilde
 
 import com.lifeguards.liveguard.TestcontainersConfiguration;
 import com.lifeguards.liveguard.contracts.enums.FilterResult;
+import com.lifeguards.liveguard.contracts.enums.HandlingRoute;
 import com.lifeguards.liveguard.filter.MessageFilter;
 import com.lifeguards.liveguard.filter.TextNormalizer;
 import com.lifeguards.liveguard.platform.port.CandidateRequest;
@@ -86,11 +87,11 @@ class CandidateLinkingTest {
 	}
 
 	@Test
-	void reviewAndHoldOpenACaseAndStoreItsId() throws Exception {
+	void contextAndRuleCandidatesOpenACaseAndStoreItsId() throws Exception {
 		MockHttpSession viewer = login(mockMvc, "viewer");
 		UUID reviewCase = UUID.randomUUID();
 		UUID holdCase = UUID.randomUUID();
-		recording.behavior = request -> request.filterResult() == FilterResult.HOLD ? holdCase : reviewCase;
+		recording.behavior = request -> request.matchingTags().contains(MessageFilter.LINK) ? holdCase : reviewCase;
 
 		send("무대 미쳤다ㅋㅋ", viewer).andExpect(status().isCreated());
 		send(HOLD_TEXT, viewer).andExpect(status().isCreated());
@@ -99,7 +100,10 @@ class CandidateLinkingTest {
 		CandidateRequest review = recording.requests.get(0);
 		assertEquals(CHANNEL_A, review.channelId());
 		assertEquals(VIEWER, review.userId());
-		assertEquals(FilterResult.REVIEW, review.filterResult());
+		assertEquals(FilterResult.HOLD, review.filterResult());
+		assertEquals(HandlingRoute.CONTEXT_REVIEW, review.handlingRoute());
+		assertNull(review.ruleId());
+		assertEquals("v3.1", review.policyVersion());
 		assertEquals(List.of(MessageFilter.ATTACK_TERM), review.matchingTags());
 		assertEquals(List.of(), review.relatedMessageIds());
 		assertEquals(MessageFilter.version(), review.filterVersion());
@@ -110,6 +114,9 @@ class CandidateLinkingTest {
 
 		CandidateRequest hold = recording.requests.get(1);
 		assertEquals(FilterResult.HOLD, hold.filterResult());
+		assertEquals(HandlingRoute.RULE_CONFIRMED, hold.handlingRoute());
+		assertEquals(MessageFilter.RULE_LINK_BLOCKED, hold.ruleId());
+		assertEquals("v3.1", hold.policyVersion());
 		assertEquals(List.of(MessageFilter.OFFICIAL_CLAIM, MessageFilter.CREDENTIAL_REQUEST,
 				MessageFilter.LINK), hold.matchingTags());
 		assertEquals(holdCase, caseIdOf(HOLD_TEXT));

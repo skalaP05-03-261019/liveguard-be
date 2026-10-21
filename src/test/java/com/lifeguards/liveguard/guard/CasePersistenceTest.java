@@ -32,6 +32,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 import com.lifeguards.liveguard.TestcontainersConfiguration;
 import com.lifeguards.liveguard.contracts.enums.Category;
 import com.lifeguards.liveguard.contracts.enums.FilterResult;
+import com.lifeguards.liveguard.contracts.enums.HandlingRoute;
 import com.lifeguards.liveguard.contracts.enums.Verdict;
 import com.lifeguards.liveguard.contracts.exception.InvalidContractException;
 import com.lifeguards.liveguard.guard.FindingService.FindingInput;
@@ -229,11 +230,11 @@ class CasePersistenceTest {
 		UUID id = message();
 		sink.open(flood(id, List.of()));
 		assertThrows(InvalidContractException.class, () -> sink.open(new CandidateRequest(
-				UUID.randomUUID(), UUID.randomUUID(), USER, id, FilterResult.FLOOD, List.of("REPEATED_TEXT"),
-				"norm-v1+dict-v2", NOW, List.of())));
+				UUID.randomUUID(), UUID.randomUUID(), USER, id, FilterResult.FLOOD, HandlingRoute.FLOOD_REVIEW, null,
+				List.of("REPEATED_TEXT"), "norm-v1+dict-v2", "v3.1", NOW, List.of())));
 		assertThrows(InvalidContractException.class, () -> sink.open(new CandidateRequest(
-				CHANNEL, UUID.randomUUID(), USER, message(), FilterResult.PASS, List.of(), "norm-v1+dict-v2", NOW,
-				List.of())));
+				CHANNEL, UUID.randomUUID(), USER, message(), FilterResult.PASS, HandlingRoute.PASS, null, List.of(),
+				"norm-v1+dict-v2", "v3.1", NOW, List.of())));
 	}
 
 	@Test
@@ -256,7 +257,7 @@ class CasePersistenceTest {
 
 	private CandidateRequest flood(UUID messageId, List<UUID> related) {
 		return new CandidateRequest(CHANNEL, UUID.randomUUID(), USER, messageId, FilterResult.FLOOD,
-				List.of("REPEATED_TEXT"), "norm-v1+dict-v2", NOW, related);
+				HandlingRoute.FLOOD_REVIEW, null, List.of("REPEATED_TEXT"), "norm-v1+dict-v2", "v3.1", NOW, related);
 	}
 
 	private UUID message() {
