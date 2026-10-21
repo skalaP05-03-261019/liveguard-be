@@ -21,9 +21,9 @@ V102/V202는 기존 테이블·행을 보존하는 별도 통합 스키마다. E
 
 ## 병합 전 남은 항목
 
-이 PR은 Draft다. 전체 OpenAPI 응답 projection/페이지네이션과 내부 확장 계약의 팀 합의, KICK 사용자 target version의 실제 소유권·버전 연계(현재 고정 1), finding 취소 후 가림/제한 복구, FLOOD 그룹 최초 확정 흐름, PII의 서버 검증 사실 제공은 남아 있다. PII 패턴만으로 위반을 확정하지 않으며 모호하면 사람 CONTEXT 검토로 보낸다. KICK은 Java 통합 테스트를 통과했으나 실제 화면→MCP 전체 E2E 완료로 표시하지 않는다.
+이 PR은 Draft다. 전체 OpenAPI 응답 projection/페이지네이션과 내부 확장 계약의 팀 합의, KICK 사용자 target version의 실제 소유권·버전 연계(현재 고정 1), finding 취소 후 가림/제한 복구, FLOOD 그룹 최초 확정 흐름, PII의 서버 검증 사실 제공은 남아 있다. PII 패턴만으로 위반을 확정하지 않으며 모호하면 사람 CONTEXT 검토로 보낸다. 초기 KICK 검증은 Java 통합 테스트까지였고, 후속 실제 화면 시험에서 서로 다른 확정 사건 3건→별도 사람 승인→MCP 집행→대상 SSE 차단까지 통과했다. 이는 target version 소유권 등 남은 운영 계약의 해소를 뜻하지 않는다.
 
-`contracts/openapi.yaml` 원본 v1을 구현 완료로 주장하지 않는다. 현재 로컬 시험에 사용한 추가 projection과 내부 경로는 위 목록과 코드·Agent #48·FE #2에서 확인한다. 통합 증거는 Infra `evidence/v1-browser/report.json`에 있다.
+`contracts/openapi.yaml` 원본 v1을 구현 완료로 주장하지 않는다. 현재 로컬 시험에 사용한 추가 projection과 내부 경로는 위 목록과 코드·Agent #48·FE #2에서 확인한다. 통합 증거는 Infra `evidence/v1-browser-final/report.json`에 있다.
 
 ## 병행 팀원 PR
 
