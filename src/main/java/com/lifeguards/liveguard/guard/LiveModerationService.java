@@ -953,8 +953,10 @@ public class LiveModerationService implements LiveGuardPort {
       db.sql("UPDATE guard.live_reservations SET state='CONSUMED' WHERE review_id=?")
           .param(r)
           .update();
-    // AI 판정 없이 연 문맥 검토(A-25)는 재개할 Agent 대기 지점이 없으므로 BE가 결정을 바로 적용한다
-    boolean withoutJudgment = kind.equals("CONTEXT") && c.get("judgment") == null;
+    // 문맥·개인정보 사건은 Agent가 판정을 제출해야 그 thread가 결정을 기다린다. 판정이 없으면(A-25) 재개할 Agent 대기
+    // 지점이 없으므로 BE가 결정을 바로 적용한다. 규칙·도배 사건의 강퇴는 판정 없이 Agent가 분석 작업으로 기다린다
+    boolean withoutJudgment = c.get("judgment") == null
+        && Set.of("CONTEXT_REVIEW", "PII_INVESTIGATION").contains(c.get("handling_route"));
     if (!withoutJudgment) enqueue(c, r, d, kind);
     platform.emit(
         id(c.get("live_id")),
@@ -962,11 +964,19 @@ public class LiveModerationService implements LiveGuardPort {
         Map.of("reviewId", r, "decisionId", d, "kind", kind, "value", value),
         null,
         true);
-    if (withoutJudgment && !value.equals("DEFER")) {
+    if (withoutJudgment && kind.equals("CONTEXT") && !value.equals("DEFER")) {
       UUID cId = id(c.get("id"));
       // 아직 Agent에 닿지 않은 분석은 멈춘다. 전달이 불확실한 작업은 Agent가 받았을 수 있으므로 두고, 늦은 판정은 거절된다
       stopUndeliveredAnalysis("o.case_id=?", cId, "DECIDED_WITHOUT_JUDGMENT", now());
       applyContext(review(r, false), row(cId, false), decision(r, d, true));
+    }
+    if (withoutJudgment && kind.equals("KICK") && value.equals("APPROVE")) {
+      // Agent가 재개해 부르던 재검증·실행을 같은 요청에서 부른다. 승인 뒤에만 실행하는 것은 같다
+      var validated = revalidate(r, d);
+      if (Boolean.TRUE.equals(validated.get("valid"))) {
+        var command = (Map<String, Object>) validated.get("actionCommand");
+        execute(id(command.get("actionId")), command);
+      }
     }
     return decision(r, d, false);
   }

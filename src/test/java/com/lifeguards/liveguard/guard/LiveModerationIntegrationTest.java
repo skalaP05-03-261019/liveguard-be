@@ -819,6 +819,37 @@ class LiveModerationIntegrationTest {
     assertFalse(due.contains(ended));
   }
 
+  /** 확정 위반 2건 뒤 AI 판정 없이 세 번째 위반을 확정한다. 세 번째 사건에 강퇴 검토가 생긴다. */
+  UUID kickAfterViolationWithoutJudgment(UUID live) {
+    for(int i=0;i<2;i++) {
+      UUID c=candidate(live,"너 꺼져 강퇴 기준 "+i);UUID r=proposal(c,"VIOLATION");apply(c,r,decide(r,"CONFIRM_VIOLATION",1));
+      db.update("UPDATE guard.live_timeouts SET revoked_at=current_timestamp WHERE live_id=?",live);
+    }
+    UUID c=candidate(live,"너 꺼져 판정 없이 세 번째");
+    assertTrue(guard.openReviewWithoutJudgment(c,java.time.Duration.ZERO));
+    decide(contextReview(c),"CONFIRM_VIOLATION",1);
+    return db.queryForObject("SELECT id FROM guard.reviews WHERE case_id=? AND kind='KICK'",UUID.class,c);
+  }
+
+  @Test void approvedKickWithoutJudgmentIsExecutedByTheBackend() {
+    UUID live=lives.start(channel,moderator).liveId();
+    UUID kick=kickAfterViolationWithoutJudgment(live);
+    decide(kick,"APPROVE",1);
+    // 기다리는 Agent thread가 없으므로 재개 작업을 넣지 않고 BE가 재검증·실행한다
+    assertEquals(0,db.queryForObject("SELECT count(*) FROM guard.agent_task_outbox WHERE payload->>'reviewId'=?",Integer.class,kick.toString()));
+    assertEquals(1,db.queryForObject("SELECT count(*) FROM guard.live_kicks WHERE live_id=? AND user_id=? AND review_id=?",Integer.class,live,user,kick));
+    assertEquals("SUCCEEDED",db.queryForObject("SELECT status FROM guard.live_actions WHERE kind='KICK' AND decision_id=(SELECT id FROM guard.decisions WHERE review_id=?)",String.class,kick));
+    assertEquals(ErrorCode.KICKED,assertThrows(ApiException.class,()->guard.checkEntry(live,user)).code());
+  }
+
+  @Test void rejectedKickWithoutJudgmentExecutesNothing() {
+    UUID live=lives.start(channel,moderator).liveId();
+    UUID kick=kickAfterViolationWithoutJudgment(live);
+    decide(kick,"REJECT",1);
+    assertEquals(0,db.queryForObject("SELECT count(*) FROM guard.agent_task_outbox WHERE payload->>'reviewId'=?",Integer.class,kick.toString()));
+    assertEquals(0,db.queryForObject("SELECT count(*) FROM guard.live_kicks WHERE live_id=?",Integer.class,live));
+  }
+
   @Test void casesOfEndedLivesDoNotCrowdOutTheLiveInProgress() {
     UUID ended=lives.start(channel,moderator).liveId();
     UUID old=candidate(ended,"너 꺼져 지난 방송");
