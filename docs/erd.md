@@ -13,6 +13,10 @@
 검토·결정은 `guard.reviews/decisions`, 예약·소진은 `guard.live_reservations.state`,
 조치·제한은 `guard.live_actions/live_timeouts/live_kicks`, task/thread와 최신 snapshot 포인터는
 `guard.live_case_state`에 연결된다. V205의 `guard.case_snapshots`는 버전별 불변 마스킹 증거를 보존한다.
+Agent 작업 전달은 `guard.agent_task_outbox`(V201, 분석·재분석·검토 재개 작업과 전달 상태·시도 횟수)가 맡는다.
+V203의 `guard.live_user_state`는 같은 방송·사용자의 제재 대상 버전(targetVersion)을,
+`guard.finding_revocations`는 오판 취소 요청의 멱등 영수증(clientRequestId → 결과)을 저장한다.
+AI 판정 없이 승인된 강퇴(A-25)의 실행 명령은 별도 테이블 없이 `guard.live_actions`의 PENDING 행이다.
 `guard.candidates`는 live_id·handling_route·rule_id·policy_version·filter_version·matching_tags와
 전체 멱등 요청을 저장한다. 기존 미준비 provenance는 추정하지 않는다.
 현재 1차 필터가 미제공하는 PII 패턴 탐지는 이 구현에 새로 추가하지 않았다.
