@@ -4,7 +4,6 @@ import java.sql.Timestamp;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.util.Arrays;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -23,7 +22,6 @@ import com.lifeguards.liveguard.contracts.enums.Verdict;
 import com.lifeguards.liveguard.contracts.enums.Visibility;
 import com.lifeguards.liveguard.platform.port.LiveMessageQuery;
 import com.lifeguards.liveguard.platform.port.LiveQuery;
-import com.lifeguards.liveguard.platform.port.MessageView;
 
 @Repository
 class CaseQueryRepository {
@@ -87,29 +85,25 @@ class CaseQueryRepository {
 				.list();
 	}
 
-	List<MessageRow> messages(UUID caseId) {
+	/** 사건에 연결된 메시지. 방송 도입 전 사건(live_id 없음)의 메시지는 조회 포트로 읽을 수 없어 비어 있다. */
+	List<MessageRow> messages(CaseRow current) {
 		record Link(UUID messageId, boolean owned, boolean target) {
 		}
 		List<Link> links = jdbc.sql("SELECT message_id, owned, is_target FROM guard.case_messages WHERE case_id = ?")
-				.param(caseId)
+				.param(current.id())
 				.query((rs, n) -> new Link(rs.getObject("message_id", UUID.class), rs.getBoolean("owned"),
 						rs.getBoolean("is_target")))
 				.list();
-		UUID liveId = jdbc.sql("SELECT live_id FROM guard.cases WHERE id = ?").param(caseId).query(UUID.class)
-				.optional().orElse(null);
-		if (links.isEmpty() || liveId == null) {
+		if (links.isEmpty() || current.liveId() == null) {
 			return List.of();
 		}
-		// platform 메시지는 조회 포트로만 읽는다. 순서는 보낸 시각, 같으면 id(uuid 바이트 순서 = 문자열 순서)
-		Map<UUID, MessageView> views = messages.messages(liveId, links.stream().map(Link::messageId).toList())
-				.stream().collect(Collectors.toMap(MessageView::messageId, Function.identity()));
-		return links.stream()
-				.map(link -> {
-					MessageView view = views.get(link.messageId());
-					return new MessageRow(view.messageId(), view.authorId(), view.maskedText(), view.sentAt(),
-							view.visibility(), view.version(), link.owned(), link.target());
-				})
-				.sorted(Comparator.comparing(MessageRow::sentAt).thenComparing(row -> row.id().toString()))
+		Map<UUID, Link> byId = links.stream().collect(Collectors.toMap(Link::messageId, Function.identity()));
+		// platform 메시지는 조회 포트로만 읽는다
+		return messages.messages(current.liveId(), links.stream().map(Link::messageId).toList()).stream()
+				.sorted(MessageOrder.BY_SENT_AT)
+				.map(view -> new MessageRow(view.messageId(), view.authorId(), view.maskedText(), view.sentAt(),
+						view.visibility(), view.version(), byId.get(view.messageId()).owned(),
+						byId.get(view.messageId()).target()))
 				.toList();
 	}
 
