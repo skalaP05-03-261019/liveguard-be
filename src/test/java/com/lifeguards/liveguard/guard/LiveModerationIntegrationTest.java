@@ -913,13 +913,15 @@ class LiveModerationIntegrationTest {
     UUID kick=UUID.fromString(((Map<?,?>)applied.get("kickReview")).get("reviewId").toString());
     var card=guard.reviewCard(kick);
     assertEquals(cs.get(4),card.get("caseId"));
-    assertEquals(List.of(cs.get(1),cs.get(2),cs.get(3)).stream().map(UUID::toString).toList(),
-        ((List<?>)card.get("basisCaseIds")).stream().map(Object::toString).toList());
-    // 증거는 정상 사건 E가 아니라 가장 최근 기준 사건 D의 것이다
-    UUID dMessage=db.queryForObject("SELECT id FROM platform.messages WHERE case_id=?",UUID.class,cs.get(3));
-    assertEquals(List.of(dMessage.toString()),((List<?>)card.get("targetMessageIds")).stream().map(Object::toString).toList());
+    var basis=((List<?>)card.get("basisCaseIds")).stream().map(Object::toString).toList();
+    assertEquals(java.util.Set.of(cs.get(1).toString(),cs.get(2).toString(),cs.get(3).toString()),java.util.Set.copyOf(basis));
+    // 증거는 정상 사건 E가 아니라 가장 늦게 확정된 기준 사건(보통 D)의 것이다
+    UUID shown=UUID.fromString(basis.getLast());
+    UUID shownMessage=db.queryForObject("SELECT id FROM platform.messages WHERE case_id=?",UUID.class,shown);
+    assertEquals(List.of(shownMessage.toString()),((List<?>)card.get("targetMessageIds")).stream().map(Object::toString).toList());
+    assertNotEquals(db.queryForObject("SELECT id FROM platform.messages WHERE case_id=?",UUID.class,cs.get(4)),shownMessage);
     assertEquals(List.of("VIOLATION"),((List<Map<String,Object>>)card.get("findings")).stream().map(f->f.get("verdict")).toList());
-    assertEquals(db.queryForObject("SELECT evidence_version FROM guard.cases WHERE id=?",Integer.class,cs.get(3)),card.get("evidenceVersion"));
+    assertEquals(db.queryForObject("SELECT evidence_version FROM guard.cases WHERE id=?",Integer.class,shown),card.get("evidenceVersion"));
   }
 
   @Test void contextReviewVerdictAggregatesAllTargetFindings() {
