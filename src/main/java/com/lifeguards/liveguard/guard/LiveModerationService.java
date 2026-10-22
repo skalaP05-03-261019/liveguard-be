@@ -914,11 +914,12 @@ public class LiveModerationService implements LiveGuardPort {
   }
 
   /**
-   * 검토 카드의 AI 판정. AI 판정을 받지 못한 문맥 검토는 NEEDS_REVIEW(운영자 판단 필요)다(A-25). 규칙·도배 확정 사건은 판정이
-   * 없고 강퇴 카드는 확정 위반을 근거로 하므로 VIOLATION이다.
+   * 검토 카드의 AI 판정. 강퇴 카드는 확정 위반을 근거로 하므로 사건의 AI 판정과 관계없이 VIOLATION이다(운영자가 AI 정상 제안을
+   * 뒤집어 확정한 사건도 같다). AI 판정을 받지 못한 문맥 검토는 NEEDS_REVIEW(운영자 판단 필요)다(A-25).
    */
   private Object aiVerdict(Map<String, Object> c, String kind) {
-    if (c.get("judgment") == null) return kind.equals("CONTEXT") ? "NEEDS_REVIEW" : "VIOLATION";
+    if (kind.equals("KICK")) return "VIOLATION";
+    if (c.get("judgment") == null) return "NEEDS_REVIEW";
     return ((List<Map<String, Object>>) parse(c.get("judgment").toString()).get("messageFindings"))
         .getFirst()
         .get("verdict");

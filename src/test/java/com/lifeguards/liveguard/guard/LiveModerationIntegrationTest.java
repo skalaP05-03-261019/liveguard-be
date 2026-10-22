@@ -872,6 +872,22 @@ class LiveModerationIntegrationTest {
     assertEquals("VIOLATION",guard.reviewCard(kick).get("aiVerdict"));
   }
 
+  @Test void kickReviewCardShowsViolationEvenWhenOperatorOverrodeAiNormalProposal() {
+    UUID live=lives.start(channel,moderator).liveId();
+    for(int i=0;i<2;i++) {
+      UUID c=candidate(live,"너 꺼져 뒤집기 전 "+i);UUID r=proposal(c,"VIOLATION");apply(c,r,decide(r,"CONFIRM_VIOLATION",1));
+      db.update("UPDATE guard.live_timeouts SET revoked_at=current_timestamp WHERE live_id=?",live);
+    }
+    // 세 번째 사건은 AI가 정상으로 제안했지만 운영자가 위반으로 확정한다
+    UUID c=candidate(live,"너 꺼져 뒤집은 세 번째");UUID r=proposal(c,"NO_VIOLATION");
+    var applied=apply(c,r,decide(r,"CONFIRM_VIOLATION",1));
+    UUID kick=UUID.fromString(((Map<?,?>)applied.get("kickReview")).get("reviewId").toString());
+    assertEquals(c,db.queryForObject("SELECT case_id FROM guard.reviews WHERE id=?",UUID.class,kick));
+    assertEquals("VIOLATION",guard.reviewCard(kick).get("aiVerdict"));
+    // 문맥 검토 카드는 그대로 AI 제안을 보여 준다
+    assertEquals("NO_VIOLATION",guard.reviewCard(r).get("aiVerdict"));
+  }
+
   @Test void rejectedAnalysisOpensReviewBeforeTheDeadlineButLiveEndAndSupersedeDoNot() {
     UUID live=lives.start(channel,moderator).liveId();
     UUID rejected=candidate(live,"너 꺼져 거절된 분석"),ended=candidate(live,"너 꺼져 종료로 멈춤");
