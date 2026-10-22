@@ -115,7 +115,7 @@ class AgentOutboxTest {
 		});
 		server.start();
 		properties = properties(3, Duration.ofSeconds(1));
-		gateway = new AgentHttpGateway(properties, mapper);
+		gateway = new AgentHttpGateway(properties, mapper, clock);
 		worker = new AgentDeliveryWorker(repository, gateway, properties, clock);
 		behavior = exchange -> respond(exchange, 202, receipt(task, "QUEUED", false));
 	}
@@ -236,12 +236,12 @@ class AgentOutboxTest {
 		enqueue(task);
 		var first = repository.claim(NOW, NOW.plusSeconds(60)).orElseThrow();
 		assertTrue(repository.claim(NOW.plusSeconds(59), NOW.plusSeconds(120)).isEmpty());
-		assertFalse(repository.finish(first, "ACCEPTED", null, NOW, NOW.plusSeconds(60), false));
+		assertFalse(repository.finish(first, "ACCEPTED", null, NOW, NOW.plusSeconds(60), false, false));
 		var replacement = repository.claim(NOW.plusSeconds(60), NOW.plusSeconds(120)).orElseThrow();
 		assertEquals(2, replacement.attemptCount());
 		assertNotEquals(first.leaseToken(), replacement.leaseToken());
-		assertFalse(repository.finish(first, "FAILED", "OLD_OWNER", NOW, NOW.plusSeconds(61), false));
-		assertTrue(repository.finish(replacement, "ACCEPTED", null, NOW, NOW.plusSeconds(61), false));
+		assertFalse(repository.finish(first, "FAILED", "OLD_OWNER", NOW, NOW.plusSeconds(61), false, false));
+		assertTrue(repository.finish(replacement, "ACCEPTED", null, NOW, NOW.plusSeconds(61), false, false));
 		assertEquals("ACCEPTED", status(task));
 	}
 
@@ -285,7 +285,7 @@ class AgentOutboxTest {
 	void unreachableAttemptsDoNotSpendTheBudgetAndRecoveryKeepsTheFullBudget() throws Exception {
 		enqueue(task);
 		var unreachable = unreachableProperties(closedPort());
-		try (var down = new AgentHttpGateway(unreachable, mapper)) {
+		try (var down = new AgentHttpGateway(unreachable, mapper, clock)) {
 			var downWorker = new AgentDeliveryWorker(repository, down, unreachable, clock);
 			for (int i = 0; i < 6; i++) {
 				downWorker.deliverOne();
@@ -313,9 +313,27 @@ class AgentOutboxTest {
 	}
 
 	@Test
+	void uncertainDeliveryStillSpendsItsBudgetWhileTheAgentIsUnreachable() throws Exception {
+		enqueue(task);
+		jdbc.update("UPDATE guard.agent_task_outbox SET delivery_uncertain = true WHERE operation_id = ?",
+				task.operationId());
+		var unreachable = unreachableProperties(closedPort());
+		try (var down = new AgentHttpGateway(unreachable, mapper, clock)) {
+			var downWorker = new AgentDeliveryWorker(repository, down, unreachable, clock);
+			for (int i = 0; i < 3; i++) {
+				downWorker.deliverOne();
+				time.advance(Duration.ofMinutes(1));
+			}
+		}
+		// Agent가 이전 요청을 받았을 수 있으므로 닿지 않은 시도도 예산(3)에 들어가고, 다 쓰면 기존대로 멈춘다
+		assertEquals("UNKNOWN", status(task));
+		assertEquals(3, attempts(task));
+	}
+
+	@Test
 	void breakerSkipsTheNetworkAfterAConnectionFailureUntilTheBackoffPasses() throws Exception {
 		int port = closedPort();
-		try (var down = new AgentHttpGateway(unreachableProperties(port), mapper)) {
+		try (var down = new AgentHttpGateway(unreachableProperties(port), mapper, clock)) {
 			assertTrue(down.deliver(task, false, true).notSent());
 			AtomicInteger hits = new AtomicInteger();
 			HttpServer revived = HttpServer.create(new InetSocketAddress("127.0.0.1", port), 0);
@@ -330,7 +348,7 @@ class AgentOutboxTest {
 				assertTrue(skipped.notSent());
 				assertEquals(0, hits.get());
 				// 첫 차단 간격(initialBackoff 2초)이 지나면 다시 연결한다
-				Thread.sleep(2100);
+				time.advance(Duration.ofSeconds(2));
 				assertTrue(down.deliver(task, false, true).accepted());
 				assertEquals(1, hits.get());
 			} finally {
@@ -361,7 +379,7 @@ class AgentOutboxTest {
 		var claimed = repository.claim(id, NOW, NOW.plusSeconds(60)).orElseThrow();
 		assertTrue(worker.deliver(id));
 		assertEquals(1, attempts(task));
-		assertTrue(repository.finish(claimed, "RETRY", "HTTP_429", NOW.plusSeconds(10), NOW, false));
+		assertTrue(repository.finish(claimed, "RETRY", "HTTP_429", NOW.plusSeconds(10), NOW, false, false));
 		assertTrue(worker.deliver(id));
 		assertEquals(1, attempts(task));
 		time.advance(Duration.ofSeconds(10));
@@ -448,7 +466,7 @@ class AgentOutboxTest {
 				exchange.close();
 			}
 		};
-		try (var timedGateway = new AgentHttpGateway(properties(1, Duration.ofMillis(100)), mapper)) {
+		try (var timedGateway = new AgentHttpGateway(properties(1, Duration.ofMillis(100)), mapper, clock)) {
 			var timedWorker = new AgentDeliveryWorker(repository, timedGateway,
 					properties(1, Duration.ofMillis(100)), clock);
 			timedWorker.deliverOne();

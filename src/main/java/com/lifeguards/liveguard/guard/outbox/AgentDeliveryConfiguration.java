@@ -26,8 +26,8 @@ public class AgentDeliveryConfiguration {
 	@EnableScheduling
 	static class EnabledDelivery {
 		@Bean
-		AgentHttpGateway agentHttpGateway(AgentDeliveryProperties properties, JsonMapper mapper) {
-			return new AgentHttpGateway(properties, mapper);
+		AgentHttpGateway agentHttpGateway(AgentDeliveryProperties properties, JsonMapper mapper, Clock clock) {
+			return new AgentHttpGateway(properties, mapper, clock);
 		}
 
 		@Bean

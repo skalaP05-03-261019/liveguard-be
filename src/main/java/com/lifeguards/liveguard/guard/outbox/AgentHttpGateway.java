@@ -6,6 +6,9 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CompletionStage;
@@ -33,9 +36,9 @@ public class AgentHttpGateway implements AutoCloseable {
 			return new Result(true, false, false, null);
 		}
 
-		/** 이번 시도는 닿지 않았다. 이전 시도가 불확실했으면 그 표시는 유지한다(uncertain). */
-		static Result unreachable(boolean uncertain) {
-			return new Result(false, true, uncertain, "AGENT_UNREACHABLE", true);
+		/** 이번 시도는 닿지 않았다. 이전 시도의 불확실 표시는 워커가 유지한다. */
+		static Result unreachable() {
+			return new Result(false, true, false, "AGENT_UNREACHABLE", true);
 		}
 	}
 
@@ -48,22 +51,26 @@ public class AgentHttpGateway implements AutoCloseable {
 	private final AgentDeliveryProperties properties;
 	private final JsonMapper mapper;
 	private final HttpClient client;
+	private final Clock clock;
 	// 연결 차단기: Agent에 연결하지 못하면 그 뒤 일정 시간은 네트워크를 쓰지 않고 바로 "닿지 않음"으로 답한다.
 	// 연속으로 실패할수록 간격을 늘린다(최대 maxBackoff). 장애가 길어도 시도가 쌓여 새 작업을 밀어내지 않게 한다
 	private final Object breaker = new Object();
 	private int consecutiveUnreachable;
-	private long reopenAtNanos;
+	private Instant reopenAt = Instant.MIN;
+	// 응답을 받을 때마다 늘린다. 응답보다 먼저 시작한 연결 시도의 실패는 차단기를 다시 걸지 않는다
+	private long responses;
 
-	public AgentHttpGateway(AgentDeliveryProperties properties, JsonMapper mapper) {
+	public AgentHttpGateway(AgentDeliveryProperties properties, JsonMapper mapper, Clock clock) {
 		this.properties = properties;
 		this.mapper = mapper;
+		this.clock = clock;
 		this.client = HttpClient.newBuilder().connectTimeout(properties.connectTimeout())
 				.followRedirects(HttpClient.Redirect.NEVER).build();
 	}
 
 	public Result deliver(AgentTaskEnvelope envelope, boolean reconcileFirst, boolean allowPost) {
 		if (breakerOpen()) {
-			return Result.unreachable(reconcileFirst);
+			return Result.unreachable();
 		}
 		if (reconcileFirst) {
 			Reply reply = exchange(envelope, "/agent/tasks/" + envelope.taskId(), false);
@@ -114,7 +121,7 @@ public class AgentHttpGateway implements AutoCloseable {
 		}
 		if (reply.status() == 0 && "AGENT_UNREACHABLE".equals(reply.code())) {
 			// 보내지 못했으므로 이번 시도로 불확실해지지 않는다(이전 시도가 불확실했으면 그 표시는 유지된다)
-			return Result.unreachable(reconciliation);
+			return Result.unreachable();
 		}
 		if (reply.status() == 0 || Set.of(408, 429, 500, 502, 503, 504).contains(reply.status())) {
 			return new Result(false, true, reconciliation || reply.status() != 429,
@@ -141,10 +148,12 @@ public class AgentHttpGateway implements AutoCloseable {
 		} else {
 			builder.GET();
 		}
+		long seen = responsesSeen();
 		Reply reply = send(builder);
 		if ("AGENT_UNREACHABLE".equals(reply.code())) {
-			breakerTrip();
-		} else {
+			breakerTrip(seen);
+		} else if (reply.status() != 0) {
+			// 응답을 받았을 때만 복구로 본다(중단·전송 오류·응답 시간 초과는 Agent 상태를 알려 주지 않는다)
 			breakerReset();
 		}
 		return reply;
@@ -217,24 +226,34 @@ public class AgentHttpGateway implements AutoCloseable {
 		}
 	}
 
-	/** 지금 연결 차단 중인지. 차단 중이면 다음 연결 시도 시각까지 남은 시간이 있다. */
+	/** 지금 연결 차단 중인지. */
 	private boolean breakerOpen() {
 		synchronized (breaker) {
-			return consecutiveUnreachable > 0 && System.nanoTime() - reopenAtNanos < 0;
+			return consecutiveUnreachable > 0 && clock.instant().isBefore(reopenAt);
 		}
 	}
 
-	/** 다음 시도까지 기다릴 시간. 연결 차단 중이면 차단이 풀리는 시각까지, 아니면 기본 재시도 간격이다. */
-	java.time.Duration unreachableBackoff() {
+	/** 닿지 않은 작업을 다시 시도할 때까지 기다릴 시간. 차단이 풀리는 시각까지 남은 시간이며, 최소 initialBackoff다. */
+	Duration unreachableBackoff() {
 		synchronized (breaker) {
-			return properties.backoff(Math.max(1, consecutiveUnreachable));
+			Duration remaining = Duration.between(clock.instant(), reopenAt);
+			return remaining.compareTo(properties.initialBackoff()) > 0 ? remaining : properties.initialBackoff();
 		}
 	}
 
-	private void breakerTrip() {
+	private long responsesSeen() {
 		synchronized (breaker) {
+			return responses;
+		}
+	}
+
+	private void breakerTrip(long seenBefore) {
+		synchronized (breaker) {
+			if (responses != seenBefore) {
+				return;
+			}
 			consecutiveUnreachable++;
-			reopenAtNanos = System.nanoTime() + properties.backoff(consecutiveUnreachable).toNanos();
+			reopenAt = clock.instant().plus(properties.backoff(consecutiveUnreachable));
 			if (consecutiveUnreachable == 1) {
 				// 차단을 시작할 때 한 번만 남긴다(주소·포트 설정 오류도 여기서 드러난다)
 				log.error("Agent unreachable; pausing delivery attempts: baseUrl={}", properties.baseUrl());
@@ -244,6 +263,7 @@ public class AgentHttpGateway implements AutoCloseable {
 
 	private void breakerReset() {
 		synchronized (breaker) {
+			responses++;
 			if (consecutiveUnreachable > 0) {
 				log.info("Agent reachable again after {} failed connection attempts", consecutiveUnreachable);
 			}
