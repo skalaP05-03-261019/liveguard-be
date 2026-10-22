@@ -282,7 +282,7 @@ class AgentOutboxTest {
 	}
 
 	@Test
-	void unreachableAgentIsACertainNonDeliveryAndFailsWithoutUncertainty() throws Exception {
+	void unreachableAgentKeepsRetryingPastTheBudgetAndDeliversOnceItIsBack() throws Exception {
 		enqueue(task);
 		int closedPort;
 		try (var socket = new java.net.ServerSocket(0)) {
@@ -293,69 +293,23 @@ class AgentOutboxTest {
 				Duration.ofSeconds(1), Duration.ofSeconds(2), Duration.ofSeconds(10), 3, 5, 2);
 		try (var down = new AgentHttpGateway(unreachable, mapper)) {
 			var downWorker = new AgentDeliveryWorker(repository, down, unreachable, clock);
-			for (int i = 0; i < 3; i++) {
+			for (int i = 0; i < 6; i++) {
 				downWorker.deliverOne();
 				time.advance(Duration.ofMinutes(1));
 			}
 		}
-		// 연결 거부는 요청이 닿지 않은 것이므로 UNKNOWN이 아니라 FAILED, 불확실 표시도 없다
-		assertEquals("FAILED", status(task));
+		// 연결 거부는 요청이 닿지 않은 것이므로 예산(3)을 넘어도 끝내지 않고, 불확실 표시 없이 최대 간격(10초)으로 다시 시도한다
+		assertEquals("RETRY", status(task));
 		assertEquals("AGENT_UNREACHABLE", errorCode(task));
 		assertFalse(uncertain(task));
-	}
+		assertEquals(6, attempts(task));
+		assertTrue(jdbc.queryForObject("SELECT next_attempt_at <= ? FROM guard.agent_task_outbox WHERE operation_id = ?",
+				Boolean.class, java.sql.Timestamp.from(time.instant()), task.operationId()));
 
-	@Test
-	void revivalResendsAStalledCurrentTaskOnceTheAgentIsBack() {
-		enqueue(task);
-		bindAsCurrentTask(task);
-		stall(task, "FAILED", "AGENT_UNREACHABLE", false);
-
-		assertEquals(0, worker.revive(Duration.ofMinutes(10)), "아직 오래되지 않았으면 그대로 둔다");
-		time.advance(Duration.ofMinutes(10));
-		assertEquals(1, worker.revive(Duration.ofMinutes(10)));
-		assertEquals("RETRY", status(task));
-		assertEquals(0, attempts(task));
-
+		// Agent가 다시 뜨면 다음 시도에서 바로 보낸다(이전 시도는 모두 닿지 않았으므로 POST 예산에 묶이지 않는다)
 		worker.deliverOne();
 		assertEquals("ACCEPTED", status(task));
 		assertEquals(List.of("POST"), methods);
-	}
-
-	@Test
-	void revivedUncertainTaskIsReconciledBeforeAnyNewPost() {
-		enqueue(task);
-		bindAsCurrentTask(task);
-		stall(task, "UNKNOWN", "AGENT_TRANSPORT_ERROR", true);
-		time.advance(Duration.ofMinutes(10));
-		worker.revive(Duration.ofMinutes(1));
-		// Agent가 이미 받아 둔 작업이면 다시 보내지 않고 조회만으로 접수 처리한다
-		behavior = exchange -> respond(exchange, 200, receipt(task, "QUEUED", null));
-
-		worker.deliverOne();
-
-		assertEquals("ACCEPTED", status(task));
-		assertEquals(List.of("GET"), methods);
-	}
-
-	@Test
-	void revivalSkipsSupersededNonTransientAndNonCurrentTasks() {
-		UUID otherCase = UUID.randomUUID();
-		CaseFixtures.insertCase(jdbc, otherCase, CHANNEL, USER);
-		var superseded = task(otherCase, Kind.ANALYZE, UUID.randomUUID(), "thread-" + UUID.randomUUID());
-		var conflict = task(task.caseId(), Kind.RESUME_REVIEW, task.taskId(), task.threadId());
-		enqueue(task);
-		enqueue(superseded);
-		enqueue(conflict);
-		bindAsCurrentTask(task);
-		stall(task, "FAILED", "SUPERSEDED", false);
-		stall(conflict, "FAILED", "AGENT_HTTP_409", false);
-		// otherCase의 현재 작업은 다른 task라 superseded는 더 이상 현재 작업이 아니다
-		jdbc.update("INSERT INTO guard.live_case_state(case_id, task_id, thread_id, snapshot) VALUES (?, ?, ?, '{}'::jsonb)",
-				otherCase, UUID.randomUUID(), "thread-" + UUID.randomUUID());
-		stall(superseded, "UNKNOWN", "AGENT_TRANSPORT_ERROR", true);
-		time.advance(Duration.ofMinutes(10));
-
-		assertEquals(0, worker.revive(Duration.ofMinutes(1)));
 	}
 
 	@Test
@@ -580,19 +534,6 @@ class AgentOutboxTest {
 	private boolean uncertain(AgentTaskEnvelope envelope) {
 		return jdbc.queryForObject("SELECT delivery_uncertain FROM guard.agent_task_outbox WHERE operation_id = ?",
 				Boolean.class, envelope.operationId());
-	}
-
-	/** 사건의 현재 Agent 작업으로 등록한다(live_case_state). */
-	private void bindAsCurrentTask(AgentTaskEnvelope envelope) {
-		jdbc.update("INSERT INTO guard.live_case_state(case_id, task_id, thread_id, snapshot) VALUES (?, ?, ?, '{}'::jsonb)",
-				envelope.caseId(), envelope.taskId(), envelope.threadId());
-	}
-
-	/** 재시도 예산을 다 쓰고 멈춘 상태로 만든다(지금 시각에 마지막으로 바뀜). */
-	private void stall(AgentTaskEnvelope envelope, String status, String code, boolean uncertain) {
-		jdbc.update("UPDATE guard.agent_task_outbox SET status = ?, last_error_code = ?, attempt_count = 3, "
-				+ "delivery_uncertain = ?, updated_at = ? WHERE operation_id = ?",
-				status, code, uncertain, java.sql.Timestamp.from(time.instant()), envelope.operationId());
 	}
 
 	private int attempts(AgentTaskEnvelope envelope) {

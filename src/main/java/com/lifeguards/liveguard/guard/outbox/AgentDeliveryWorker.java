@@ -28,16 +28,6 @@ public class AgentDeliveryWorker {
 		return deliver(null);
 	}
 
-	/** 전송 문제로 멈춘 현재 작업을 다시 보낼 수 있게 한다(Agent 재기동 후 복구). 개수만 남긴다. */
-	public int revive(java.time.Duration staleAfter) {
-		var now = clock.instant();
-		int revived = repository.revive(now, now.minus(staleAfter));
-		if (revived > 0) {
-			log.info("Agent delivery revived stalled tasks: count={}", revived);
-		}
-		return revived;
-	}
-
 	/** True means an outcome was persisted, or no eligible row exists for this notification. */
 	public boolean deliver(UUID id) {
 		if (TransactionSynchronizationManager.isActualTransactionActive()) {
@@ -51,10 +41,15 @@ public class AgentDeliveryWorker {
 			return id != null;
 		}
 		var delivery = claimed.get();
+		// POST 예산은 전달이 불확실한 행에만 적용한다(Agent가 받았을 수 있는 작업을 거듭 보내지 않는다). 이전 시도가 모두
+		// 확실히 닿지 않았으면 다시 보내도 두 번 실행될 수 없다
 		var result = gateway.deliver(delivery.envelope(), delivery.uncertain(),
-				delivery.attemptCount() <= properties.maxAttempts());
+				!delivery.uncertain() || delivery.attemptCount() <= properties.maxAttempts());
 		var now = clock.instant();
-		boolean retry = result.retryable() && delivery.attemptCount() < properties.maxAttempts();
+		// Agent에 닿지 않은 실패(AGENT_UNREACHABLE)는 끝내지 않고 최대 간격으로 계속 시도한다. Agent 재시작·배포가 예산보다
+		// 길어도 분석이 멈추지 않게 한다. 방송 종료·대체 처리는 RETRY 행을 정리한다
+		boolean unreachable = "AGENT_UNREACHABLE".equals(result.code()) && !result.uncertain() && !delivery.uncertain();
+		boolean retry = result.retryable() && (unreachable || delivery.attemptCount() < properties.maxAttempts());
 		boolean uncertain = result.uncertain() || delivery.uncertain();
 		String status = result.accepted() ? "ACCEPTED" : retry ? "RETRY"
 				: uncertain ? "UNKNOWN" : "FAILED";

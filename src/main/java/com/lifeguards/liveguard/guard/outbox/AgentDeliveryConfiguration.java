@@ -36,39 +36,11 @@ public class AgentDeliveryConfiguration {
 			return new AgentDeliveryWorker(repository, gateway, properties, clock);
 		}
 
-		@Bean
-		DeliveryRevival deliveryRevival(AgentDeliveryWorker worker,
-				@org.springframework.beans.factory.annotation.Value("${liveguard.agent.delivery.revive-after:60s}")
-				String reviveAfter) {
-			return new DeliveryRevival(worker, org.springframework.boot.convert.DurationStyle.detectAndParse(reviveAfter));
-		}
-
 		@Bean(destroyMethod = "close")
 		@ConditionalOnProperty(prefix = "liveguard.agent.delivery", name = "transport",
 				havingValue = "db", matchIfMissing = true)
 		DeliveryScheduler deliveryScheduler(AgentDeliveryWorker worker, AgentDeliveryProperties properties) {
 			return new DeliveryScheduler(worker, properties);
-		}
-	}
-
-	/** Agent가 재시도 예산보다 오래 내려가 있던 작업을 주기적으로 다시 보낸다(DB·Rabbit 전송 공통, outbox가 기준). */
-	static class DeliveryRevival {
-		private static final Logger log = LoggerFactory.getLogger(DeliveryRevival.class);
-		private final AgentDeliveryWorker worker;
-		private final java.time.Duration reviveAfter;
-
-		DeliveryRevival(AgentDeliveryWorker worker, java.time.Duration reviveAfter) {
-			this.worker = worker;
-			this.reviveAfter = reviveAfter;
-		}
-
-		@Scheduled(fixedDelayString = "${liveguard.agent.delivery.revive-interval:30s}")
-		public void revive() {
-			try {
-				worker.revive(reviveAfter);
-			} catch (RuntimeException ex) {
-				log.error("Agent delivery revival failed: type={}", ex.getClass().getName());
-			}
 		}
 	}
 

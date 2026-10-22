@@ -128,9 +128,11 @@ public class AgentHttpGateway implements AutoCloseable {
 			}
 		} catch (ExecutionException ex) {
 			// 연결 자체가 안 됐으면(거부·연결 시간 초과) 요청은 Agent에 닿지 않았다. 전달 여부가 확실하다
-			if (ex.getCause() instanceof java.net.ConnectException
-					|| ex.getCause() instanceof java.net.http.HttpConnectTimeoutException) {
-				return new Reply(0, null, "AGENT_UNREACHABLE");
+			for (Throwable cause = ex.getCause(); cause != null; cause = cause.getCause()) {
+				if (cause instanceof java.net.ConnectException
+						|| cause instanceof java.net.http.HttpConnectTimeoutException) {
+					return new Reply(0, null, "AGENT_UNREACHABLE");
+				}
 			}
 			return new Reply(0, null, "AGENT_TRANSPORT_ERROR");
 		} catch (TimeoutException ex) {
