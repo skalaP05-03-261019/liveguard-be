@@ -432,7 +432,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CaseListResponse'
+        '400':
+          description: VALIDATION_FAILED (confirmationStatus 값이 계약에 없음)
+          $ref: '#/components/responses/Error'
         '403':
+          $ref: '#/components/responses/Error'
+        '409':
+          description: CASE_NOT_READY (목록의 한 사건이라도 불변 증거가 현재 사건과 맞지 않음)
           $ref: '#/components/responses/Error'
 
   /api/cases/{caseId}:
@@ -453,6 +459,9 @@ paths:
         '403':
           $ref: '#/components/responses/Error'
         '404':
+          $ref: '#/components/responses/Error'
+        '409':
+          description: CASE_NOT_READY (불변 증거가 현재 사건과 맞지 않음)
           $ref: '#/components/responses/Error'
 
   /api/reviews:
@@ -1716,7 +1725,7 @@ components:
       allOf:
         - $ref: '#/components/schemas/CaseSummary'
         - type: object
-          required: [messages, reason, evidenceMessageIds, policySnapshots, violationCount]
+          required: [messages, reason, evidenceMessageIds, targetMessageIds, findings, policySnapshots, confirmedFindings, violationCount, kickReview]
           properties:
             messages:
               type: array
@@ -1730,7 +1739,7 @@ components:
                 $ref: '#/components/schemas/Uuid'
             targetMessageIds:
               type: array
-              description: 이 사건의 대상 메시지(보낸 순서). 문맥 검토의 targetMessageIds와 같다
+              description: 이 사건의 지금 대상 메시지 id(보낸 순서). messages는 접수 당시 증거 사본이다
               items:
                 $ref: '#/components/schemas/Uuid'
             findings:
@@ -1748,13 +1757,26 @@ components:
                 $ref: '#/components/schemas/ConfirmedFinding'
             violationCount:
               type: integer
-              description: 판정 시점의 최근 24시간 누적 위반 사건 수
+              description: |
+                같은 방송에서 이 사용자의 다른 사건 중 취소되지 않은 확정 위반이 있는 사건 수(현재 사건 제외, 조회 시점 기준).
+                TIMEOUT 이력과 같은 범위다(TBD-03). 강퇴 집계(KickEligibility, 최근 24시간·현재 포함)와 다르다.
             kickReview:
-              oneOf:
-                - $ref: '#/components/schemas/KickReview'
-                - type: 'null'
+              $ref: '#/components/schemas/KickReviewState'
             traceUrl:
               type: [string, 'null']
+    KickReviewState:
+      type: object
+      description: 이 사건에 걸린 대기 중 강퇴 검토. 없으면 required=false만 있다
+      required: [required]
+      properties:
+        required:
+          type: boolean
+        reviewId:
+          $ref: '#/components/schemas/Uuid'
+        basisCaseIds:
+          type: array
+          items:
+            $ref: '#/components/schemas/Uuid'
     CaseListResponse:
       type: object
       required: [data, traceId]
