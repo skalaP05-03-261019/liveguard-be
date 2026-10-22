@@ -587,6 +587,32 @@ class LiveModerationIntegrationTest {
   }
 
   @Test
+  void caseListFiltersByConfirmationStatus() throws Exception {
+    UUID live=lives.start(channel,moderator).liveId();
+    UUID pending=candidate(live,"너 꺼져 확인 대기");
+    UUID confirmed=candidate(live,"씨발 확정");
+    db.update("UPDATE platform.users SET password_hash=? WHERE id=?",passwordEncoder.encode("liveguard-local"),operator);
+    var session=com.lifeguards.liveguard.support.LoginSupport.login(mvc,operator.toString());
+    var get=(java.util.function.Function<String,org.springframework.test.web.servlet.ResultActions>)query->{
+      try {
+        return mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/cases?liveId="+live+query).session(session));
+      } catch(Exception e) { throw new IllegalStateException(e); }
+    };
+    get.apply("").andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.length()").value(2));
+    get.apply("&confirmationStatus=PENDING")
+      .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.length()").value(1))
+      .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data[0].caseId").value(pending.toString()));
+    get.apply("&confirmationStatus=CONFIRMED_VIOLATION")
+      .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.length()").value(1))
+      .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data[0].caseId").value(confirmed.toString()));
+    get.apply("&confirmationStatus=CANCELLED").andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.length()").value(0));
+    // enum에 없는 값은 400 VALIDATION_FAILED
+    get.apply("&confirmationStatus=WHATEVER")
+      .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isBadRequest())
+      .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.error.code").value("VALIDATION_FAILED"));
+  }
+
+  @Test
   void kickedViewerCannotReadOrSubscribeThroughLegacyChannelPaths() throws Exception {
     UUID live=lives.start(channel,moderator).liveId();
     kick(live);

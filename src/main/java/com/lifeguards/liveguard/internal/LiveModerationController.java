@@ -31,8 +31,10 @@ class LiveModerationController {
   }
 
   @GetMapping("/api/cases")
-  ApiResponse<?> cases(@RequestParam UUID liveId, @AuthenticationPrincipal AuthenticatedUser user) {
-    return wrap(live.cases(liveId, user));
+  ApiResponse<?> cases(@RequestParam UUID liveId,
+      @RequestParam(required=false) com.lifeguards.liveguard.contracts.enums.ConfirmationStatus confirmationStatus,
+      @AuthenticationPrincipal AuthenticatedUser user) {
+    return wrap(live.cases(liveId, confirmationStatus, user));
   }
 
   @GetMapping("/api/cases/{caseId}")
