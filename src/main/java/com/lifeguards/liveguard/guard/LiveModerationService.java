@@ -25,13 +25,14 @@ public class LiveModerationService implements LiveGuardPort {
   private final AgentTaskOutbox outbox;
   private final FindingService findings;
   private final PolicyProperties policy;
+  private final LiveMessageQuery messages;
 
   public LiveModerationService(
       JdbcClient db,
       Clock clock,
       @Lazy LivePlatformPort platform,
       JsonMapper json,
-      AgentTaskOutbox outbox, FindingService findings, PolicyProperties policy) {
+      AgentTaskOutbox outbox, FindingService findings, PolicyProperties policy, LiveMessageQuery messages) {
     this.db = db;
     this.clock = clock;
     this.platform = platform;
@@ -39,6 +40,7 @@ public class LiveModerationService implements LiveGuardPort {
     this.outbox = outbox;
     this.findings = findings;
     this.policy = policy;
+    this.messages = messages;
   }
 
   private Timestamp now() {
@@ -151,9 +153,12 @@ public class LiveModerationService implements LiveGuardPort {
         throw error(ErrorCode.IDEMPOTENCY_CONFLICT,"Candidate provenance differs or is unavailable");
       return id(prior.get().get("case_id"));
     }
-    var stored=db.sql("SELECT m.normalized_text FROM platform.messages m JOIN platform.lives l ON l.id=m.live_id WHERE m.id=? AND m.live_id=? AND m.channel_id=? AND m.author_id=? AND m.sent_at=? AND m.filter_result=? AND l.channel_id=m.channel_id")
-      .params(message,live,channel,user,Timestamp.from(at),request.filterResult().name()).query(String.class).optional();
-    if(stored.isEmpty())throw new com.lifeguards.liveguard.contracts.exception.InvalidContractException("Candidate message scope or filter provenance differs");
+    // platform 메시지는 조회 포트로만 읽는다(다른 방송이거나 없는 메시지면 포트가 실패한다)
+    MessageView stored=messageInLive(live,List.of(message),"Candidate message scope or filter provenance differs").getFirst();
+    // 방송·채널 일치는 messages(live_id, channel_id) → lives(id, channel_id) FK가 보장한다. 저장 시각은 마이크로초다
+    if(!stored.channelId().equals(channel)||!stored.authorId().equals(user)||!stored.sentAt().equals(micros(at))
+        ||stored.filterResult()!=request.filterResult())
+      throw new com.lifeguards.liveguard.contracts.exception.InvalidContractException("Candidate message scope or filter provenance differs");
     if(!this.policy.version().equals(policy))
       throw error(ErrorCode.VALIDATION_FAILED,"Candidate policy version is not active");
     platform.lockScope(live);
@@ -167,10 +172,12 @@ public class LiveModerationService implements LiveGuardPort {
       return id(concurrent.get().get("case_id"));
     }
     platform.lockActive(live);
-    String normalizedText=stored.get();
-    for(UUID related:request.relatedMessageIds()) {
-      boolean valid=db.sql("SELECT EXISTS(SELECT 1 FROM platform.messages WHERE id=? AND live_id=? AND channel_id=? AND author_id=? AND normalized_text=? AND sent_at>? AND sent_at<=?)")
-        .params(related,live,channel,user,normalizedText,Timestamp.from(at.minusSeconds(10)),Timestamp.from(at)).query(Boolean.class).single();
+    // 도배 표식(flood_marks.text_hash)과 같은 norm-v1 문장 해시. 정규화 문장 자체는 포트가 넘기지 않는다
+    String normalizedHash=stored.normalizedTextHash();
+    for(MessageView related:messageInLive(live,request.relatedMessageIds(),"Related message is outside candidate scope")) {
+      boolean valid=related.channelId().equals(channel)&&related.authorId().equals(user)
+        &&related.normalizedTextHash().equals(normalizedHash)
+        &&related.sentAt().isAfter(at.minusSeconds(10))&&!related.sentAt().isAfter(at);
       if(!valid)throw new com.lifeguards.liveguard.contracts.exception.InvalidContractException("Related message is outside candidate scope");
     }
     if(route.equals("RULE_CONFIRMED")
@@ -179,7 +186,7 @@ public class LiveModerationService implements LiveGuardPort {
       throw new com.lifeguards.liveguard.contracts.exception.InvalidContractException("Known rule and matching evidence required");
     if(route.equals("FLOOD_REVIEW")) {
       var existing=db.sql("SELECT m.case_id FROM guard.flood_marks m WHERE m.live_id=? AND m.user_id=? AND m.text_hash=? AND m.last_sent_at>? AND EXISTS(SELECT 1 FROM guard.findings f WHERE f.case_id=m.case_id AND f.category='FLOOD' AND f.status='CONFIRMED') ORDER BY m.confirmed_at DESC LIMIT 1")
-        .params(live,user,textHash(normalizedText),Timestamp.from(at.minusSeconds(10))).query(UUID.class).optional();
+        .params(live,user,normalizedHash,Timestamp.from(at.minusSeconds(10))).query(UUID.class).optional();
       if(existing.isPresent()) {
         UUID owner=existing.get();
         UUID nextSnapshot=UUID.randomUUID();
@@ -210,7 +217,7 @@ public class LiveModerationService implements LiveGuardPort {
     if(route.equals("FLOOD_REVIEW")) {
       confirm(row(c,true),List.of("FLOOD"),"rule:flood:"+message);
       db.sql("INSERT INTO guard.flood_marks(live_id,user_id,text_hash,case_id,confirmed_at,last_sent_at) VALUES(?,?,?,?,?,?)")
-        .params(live,user,textHash(normalizedText),c,now(),Timestamp.from(at)).update();
+        .params(live,user,normalizedHash,c,now(),Timestamp.from(at)).update();
       if(Boolean.TRUE.equals(ensureKick(c).get("required")))enqueue(row(c,false),null,null,null);
     } else if (route.equals("RULE_CONFIRMED")) {
       List<String> ruleCategories=new ArrayList<>();
@@ -270,8 +277,30 @@ public class LiveModerationService implements LiveGuardPort {
   }
 
   private List<Map<String,Object>> currentTargets(UUID c) {
-    return db.sql("SELECT m.id,m.visibility,m.version FROM guard.case_messages cm JOIN platform.messages m ON m.id=cm.message_id WHERE cm.case_id=? AND cm.owned AND cm.is_target ORDER BY m.sent_at,m.id")
-      .param(c).query((rs,n)->Map.<String,Object>of("messageId",rs.getObject(1,UUID.class),"visibility",rs.getString(2),"version",rs.getInt(3))).list();
+    var rows=db.sql("SELECT cm.message_id,c.live_id FROM guard.case_messages cm JOIN guard.cases c ON c.id=cm.case_id"
+        + " WHERE cm.case_id=? AND cm.owned AND cm.is_target")
+      .param(c).query((rs,n)->Map.entry(rs.getObject(1,UUID.class),Optional.ofNullable(rs.getObject(2,UUID.class)))).list();
+    if(rows.isEmpty()||rows.getFirst().getValue().isEmpty())return List.of();
+    // 지금의 가시성·버전은 조회 포트로 읽는다
+    return messages.messages(rows.getFirst().getValue().get(),rows.stream().map(Map.Entry::getKey).toList()).stream()
+      .sorted(MessageOrder.BY_SENT_AT)
+      .map(v->Map.<String,Object>of("messageId",v.messageId(),"visibility",v.visibility().name(),"version",v.version()))
+      .toList();
+  }
+
+  /** PostgreSQL timestamptz처럼 마이크로초로 반올림한다. */
+  private static Instant micros(Instant at) {
+    return at.plusNanos(500).truncatedTo(java.time.temporal.ChronoUnit.MICROS);
+  }
+
+  /** 조회 포트로 이 방송의 메시지를 읽는다. 다른 방송이거나 없는 메시지면 후보 계약 위반으로 본다. */
+  private List<MessageView> messageInLive(UUID live,List<UUID> ids,String violation) {
+    try {
+      return messages.messages(live,ids);
+    } catch(ApiException ex) {
+      // 다른 방송(VALIDATION_FAILED)인지 없는 메시지(NOT_FOUND)인지 남긴다. 본문은 싣지 않는다
+      throw new com.lifeguards.liveguard.contracts.exception.InvalidContractException(violation+" ("+ex.code()+")");
+    }
   }
 
   private String textHash(String text) {

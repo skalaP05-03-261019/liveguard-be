@@ -5,8 +5,11 @@ import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
@@ -17,6 +20,8 @@ import com.lifeguards.liveguard.contracts.enums.FilterResult;
 import com.lifeguards.liveguard.contracts.enums.HandlingRoute;
 import com.lifeguards.liveguard.contracts.enums.Verdict;
 import com.lifeguards.liveguard.contracts.enums.Visibility;
+import com.lifeguards.liveguard.platform.port.LiveMessageQuery;
+import com.lifeguards.liveguard.platform.port.LiveQuery;
 
 @Repository
 class CaseQueryRepository {
@@ -29,7 +34,8 @@ class CaseQueryRepository {
 			String filterVersion, UUID snapshotId, int evidenceVersion, Instant sentAt) {
 	}
 
-	record MessageRow(UUID id, UUID authorId, String text, Instant sentAt, Visibility visibility,
+	/** maskedText는 조회 포트가 마스킹한 본문이다(원문은 platform 밖으로 나오지 않는다). */
+	record MessageRow(UUID id, UUID authorId, String maskedText, Instant sentAt, Visibility visibility,
 			int version, boolean owned, boolean target) {
 	}
 
@@ -42,9 +48,13 @@ class CaseQueryRepository {
 	}
 
 	private final JdbcClient jdbc;
+	private final LiveQuery lives;
+	private final LiveMessageQuery messages;
 
-	CaseQueryRepository(JdbcClient jdbc) {
+	CaseQueryRepository(JdbcClient jdbc, LiveQuery lives, LiveMessageQuery messages) {
 		this.jdbc = jdbc;
+		this.lives = lives;
+		this.messages = messages;
 	}
 
 	Optional<CaseRow> find(UUID caseId) {
@@ -60,8 +70,8 @@ class CaseQueryRepository {
 	}
 
 	boolean hasLiveScope(CaseRow current) {
-		return jdbc.sql("SELECT EXISTS(SELECT 1 FROM platform.lives WHERE id=? AND channel_id=?)")
-			.params(current.liveId(),current.channelId()).query(Boolean.class).single();
+		return current.liveId() != null && lives.find(current.liveId())
+				.map(live -> live.channelId().equals(current.channelId())).orElse(false);
 	}
 
 	List<CandidateRow> candidates(UUID caseId) {
@@ -75,18 +85,31 @@ class CaseQueryRepository {
 				.list();
 	}
 
-	List<MessageRow> messages(UUID caseId) {
-		return jdbc.sql("""
-				SELECT m.id, m.author_id, m.text, m.sent_at, m.visibility, m.version, cm.owned, cm.is_target
-				FROM guard.case_messages cm JOIN platform.messages m ON m.id = cm.message_id
-				WHERE cm.case_id = ? ORDER BY m.sent_at, m.id
-				""").param(caseId)
-				.query((rs, n) -> new MessageRow(rs.getObject("id", UUID.class),
-						rs.getObject("author_id", UUID.class), rs.getString("text"),
-						rs.getObject("sent_at", OffsetDateTime.class).toInstant(),
-						Visibility.valueOf(rs.getString("visibility")), rs.getInt("version"),
-						rs.getBoolean("owned"), rs.getBoolean("is_target")))
+	/** 사건에 연결된 메시지. 방송 도입 전 사건(live_id 없음)의 메시지는 조회 포트로 읽을 수 없어 비어 있다. */
+	List<MessageRow> messages(CaseRow current) {
+		record Link(UUID messageId, boolean owned, boolean target) {
+		}
+		List<Link> links = jdbc.sql("SELECT message_id, owned, is_target FROM guard.case_messages WHERE case_id = ?")
+				.param(current.id())
+				.query((rs, n) -> new Link(rs.getObject("message_id", UUID.class), rs.getBoolean("owned"),
+						rs.getBoolean("is_target")))
 				.list();
+		if (links.isEmpty() || current.liveId() == null) {
+			return List.of();
+		}
+		Map<UUID, Link> byId = links.stream().collect(Collectors.toMap(Link::messageId, Function.identity()));
+		// platform 메시지는 조회 포트로만 읽는다
+		return messages.messages(current.liveId(), links.stream().map(Link::messageId).toList()).stream()
+				.sorted(MessageOrder.BY_SENT_AT)
+				.map(view -> new MessageRow(view.messageId(), view.authorId(), view.maskedText(), view.sentAt(),
+						view.visibility(), view.version(), byId.get(view.messageId()).owned(),
+						byId.get(view.messageId()).target()))
+				.toList();
+	}
+
+	boolean hasTarget(UUID caseId) {
+		return jdbc.sql("SELECT EXISTS(SELECT 1 FROM guard.case_messages WHERE case_id = ? AND is_target)")
+				.param(caseId).query(Boolean.class).single();
 	}
 
 	List<FindingRow> findings(UUID caseId) {
@@ -129,10 +152,13 @@ class CaseQueryRepository {
 	}
 
 	List<UUID> kickBasis(UUID channelId, UUID userId, UUID liveId, Instant since, Instant asOf) {
+		// 끝난 방송의 사건은 강퇴 기준이 아니다. 방송 상태는 조회 포트로 확인한다
+		if (lives.find(liveId).map(live -> live.endedAt() != null).orElse(true)) {
+			return List.of();
+		}
 		return jdbc.sql("""
 				SELECT c.id FROM guard.cases c
 				WHERE c.channel_id = ? AND c.user_id = ? AND c.live_id = ?
-					AND EXISTS (SELECT 1 FROM platform.lives l WHERE l.id=c.live_id AND l.ended_at IS NULL)
 					AND EXISTS (SELECT 1 FROM guard.findings f WHERE f.case_id = c.id
 						AND f.source = 'BACKEND' AND f.status = 'CONFIRMED' AND f.verdict = 'VIOLATION'
 						AND f.revoked_at IS NULL AND f.confirmed_at > ? AND f.confirmed_at <= ?)
