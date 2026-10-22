@@ -290,9 +290,11 @@ class MessageFilterTest {
 	}
 
 	@Test
-	void versionCombinesNormalizationAndDictionaryVersions() {
-		assertEquals(TextNormalizer.VERSION + "+" + FilterDictionary.VERSION, MessageFilter.version());
-		assertEquals("norm-v1+dict-v2", MessageFilter.version());
+	void versionCombinesNormalizationDictionaryAndRulesVersions() {
+		assertEquals(TextNormalizer.VERSION + "+" + FilterDictionary.VERSION + "+" + MessageFilter.RULES_VERSION,
+				MessageFilter.version());
+		// #48(개인정보 후보) 이후 판정이라 이전 기록(norm-v1+dict-v2)과 구분된다
+		assertEquals("norm-v1+dict-v2+rules-v2", MessageFilter.version());
 	}
 
 	@ParameterizedTest
