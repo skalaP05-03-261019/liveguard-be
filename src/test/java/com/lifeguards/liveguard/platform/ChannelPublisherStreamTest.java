@@ -109,15 +109,82 @@ class ChannelPublisherStreamTest {
 
 		change(caseId, "PUBLIC");
 
-		// 지금은 ID만 담은 변경 알림이 먼저 오고, 원문·작성자·보낸 시각을 담은 복원 알림이 뒤따른다(#50 후속에서 하나로 정리)
+		// 복원은 원문·작성자·보낸 시각을 담은 알림 하나다(ID만 담은 알림이 먼저 오지 않는다)
 		for (Lines lines : streams.all()) {
-			String data = lines.await(line -> line.startsWith("data:") && line.contains("\"text\""));
+			assertEquals(MESSAGE_EVENT, lines.await(line -> line.startsWith("event:")));
+			String data = lines.await(line -> line.startsWith("data:"));
 			assertTrue(data.contains("\"messageId\":\"" + message + "\""));
 			assertTrue(data.contains("\"visibility\":\"PUBLIC\"") && data.contains("\"version\":2"));
 			assertTrue(data.contains("\"text\":\"복원될 메시지\"") && data.contains("\"authorAlias\":\"시청자\""));
 			assertTrue(data.contains("\"sentAt\":\"" + T0.plusSeconds(5) + "\""), data);
 		}
 		assertTrue(otherViewer.get("/api/channels/" + CHANNEL_A + "/messages").body().contains("복원될 메시지"));
+		assertFalse(streams.author.drainFor(Duration.ofMillis(500)).stream().anyMatch(line -> line.startsWith("event:")));
+	}
+
+	@Test
+	void hidingAHeldMessageOnlyReachesTheAuthorAndModerator() throws Exception {
+		UUID heldCase = UUID.randomUUID();
+		UUID sentinelCase = UUID.randomUUID();
+		UUID held = insert(CHANNEL_A, VIEWER, "held text", "HELD", heldCase, 0);
+		UUID sentinel = insert(CHANNEL_A, VIEWER, "sentinel", "PUBLIC", sentinelCase, 1);
+		Streams streams = subscribeAll();
+
+		change(heldCase, "HIDDEN");
+		change(sentinelCase, "HIDDEN");
+
+		// 작성자·운영자는 두 알림을 모두 받는다
+		for (Lines lines : List.of(streams.author, streams.moderator)) {
+			assertTrue(lines.await(line -> line.startsWith("data:")).contains(held.toString()));
+			assertTrue(lines.await(line -> line.startsWith("data:")).contains(sentinel.toString()));
+		}
+		// 다른 시청자는 HELD 메시지를 본 적이 없으므로 그 알림도 받지 않는다. 첫 알림이 곧 sentinel이다
+		assertTrue(streams.otherViewer.await(line -> line.startsWith("data:")).contains(sentinel.toString()));
+	}
+
+	@Test
+	void liveStreamHidingAHeldMessageOnlyReachesTheAuthorAndModerator() throws Exception {
+		UUID heldCase = UUID.randomUUID();
+		UUID sentinelCase = UUID.randomUUID();
+		UUID held = insert(CHANNEL_A, VIEWER, "held text", "HELD", heldCase, 0);
+		UUID sentinel = insert(CHANNEL_A, VIEWER, "sentinel", "PUBLIC", sentinelCase, 1);
+		String path = "/api/lives/" + liveOf(CHANNEL_A) + "/events";
+		Lines author = subscribePath(Client.login(port, "viewer"), path);
+		Lines otherViewer = subscribePath(Client.login(port, "viewer3"), path);
+		Lines moderator = subscribePath(Client.login(port, "moderator"), path);
+		for (Lines lines : List.of(author, otherViewer, moderator)) {
+			lines.await(":connected"::equals);
+		}
+
+		change(heldCase, "HIDDEN");
+		change(sentinelCase, "HIDDEN");
+
+		for (Lines lines : List.of(author, moderator)) {
+			assertEquals(MESSAGE_EVENT, lines.await(line -> line.startsWith("event:")));
+			assertTrue(lines.await(line -> line.startsWith("data:")).contains(held.toString()));
+			assertEquals(MESSAGE_EVENT, lines.await(line -> line.startsWith("event:")));
+			assertTrue(lines.await(line -> line.startsWith("data:")).contains(sentinel.toString()));
+		}
+		// 다른 시청자는 HELD 메시지를 본 적이 없으므로 그 알림도 받지 않는다. 첫 알림이 곧 sentinel이다
+		assertEquals(MESSAGE_EVENT, otherViewer.await(line -> line.startsWith("event:")));
+		String first = otherViewer.await(line -> line.startsWith("data:"));
+		assertTrue(first.contains(sentinel.toString()) && !first.contains(held.toString()), first);
+	}
+
+	@Test
+	void liveStreamGetsOnlyMessageRestoredOnRestore() throws Exception {
+		UUID caseId = UUID.randomUUID();
+		UUID message = insert(CHANNEL_A, VIEWER, "방송 복원", "HELD", caseId, 6);
+		Lines otherViewer = subscribePath(Client.login(port, "viewer3"), "/api/lives/" + liveOf(CHANNEL_A) + "/events");
+		otherViewer.await(":connected"::equals);
+
+		change(caseId, "PUBLIC");
+
+		// 계약: PUBLIC 복원은 MESSAGE_RESTORED(ChatEvent)로 보낸다
+		assertEquals("event:MESSAGE_RESTORED", otherViewer.await(line -> line.startsWith("event:")));
+		assertTrue(otherViewer.await(line -> line.startsWith("data:")).contains(message.toString()));
+		assertFalse(otherViewer.drainFor(Duration.ofMillis(500)).stream()
+				.anyMatch(line -> line.equals("event:MESSAGE_VISIBILITY_CHANGED")));
 	}
 
 	@Test
@@ -293,9 +360,12 @@ class ChannelPublisherStreamTest {
 	}
 
 	private Lines subscribe(Client client, UUID channelId) throws Exception {
+		return subscribePath(client, "/api/channels/" + channelId + "/events");
+	}
+
+	private Lines subscribePath(Client client, String path) throws Exception {
 		HttpResponse<Stream<String>> response = client.http.send(
-				client.request("/api/channels/" + channelId + "/events").header("Accept", "text/event-stream").GET()
-						.build(),
+				client.request(path).header("Accept", "text/event-stream").GET().build(),
 				HttpResponse.BodyHandlers.ofLines());
 		assertEquals(200, response.statusCode());
 		openStreams.add(response.body());

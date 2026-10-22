@@ -1,6 +1,7 @@
 package com.lifeguards.liveguard.platform;
 
 import java.time.Duration;
+import java.time.Instant;
 import java.util.UUID;
 
 import org.springframework.beans.factory.annotation.Value;
@@ -12,6 +13,7 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import com.lifeguards.liveguard.contracts.dto.event.ChatEvent;
 import com.lifeguards.liveguard.contracts.dto.event.UserKickedEvent;
+import com.lifeguards.liveguard.contracts.dto.event.VisibilityChangedEvent;
 import com.lifeguards.liveguard.contracts.enums.Visibility;
 
 import jakarta.annotation.PreDestroy;
@@ -70,9 +72,19 @@ class ChannelEventHub {
   void integrated(UUID channelId,UUID author,boolean restricted,String event,java.util.Map<String,Object> data) {
     if(event.equals("LIVE_ACCESS_BLOCKED")) {
       registry.broadcast(channelId,s->s.userId().equals(author),"USER_KICKED",new UserKickedEvent(null),true);
-    } else if(java.util.Set.of("CHAT","MESSAGE_VISIBILITY_CHANGED","MESSAGE_RESTORED","LIVE_ENDED").contains(event)) {
-      String name=event.equals("MESSAGE_RESTORED")?"MESSAGE_VISIBILITY_CHANGED":event;
-      registry.broadcast(channelId,s->!restricted||s.operator()||s.userId().equals(author),name,data,event.equals("LIVE_ENDED"));
+    } else if(event.equals("MESSAGE_VISIBILITY_CHANGED")||event.equals("MESSAGE_RESTORED")) {
+      // 0.6 형태는 둘 다 MESSAGE_VISIBILITY_CHANGED다. 복원이면 원문·작성자·보낸 시각을 함께 싣는다
+      UUID messageId=(UUID)data.get("messageId");
+      Visibility visibility=Visibility.valueOf(data.get("visibility").toString());
+      int version=((Number)data.get("version")).intValue();
+      VisibilityChangedEvent payload=event.equals("MESSAGE_RESTORED")
+          ? new VisibilityChangedEvent(messageId,visibility,version,(String)data.get("text"),
+              (String)data.get("authorAlias"),(Instant)data.get("sentAt"))
+          : new VisibilityChangedEvent(messageId,visibility,version,null,null,null);
+      registry.broadcast(channelId,s->!restricted||s.operator()||s.userId().equals(author),"MESSAGE_VISIBILITY_CHANGED",payload);
+    } else if(event.equals("LIVE_ENDED")) {
+      // CHAT은 메시지 커밋 이벤트(onMessageCreated)로 따로 보낸다
+      registry.broadcast(channelId,s->true,event,data,true);
     }
   }
 

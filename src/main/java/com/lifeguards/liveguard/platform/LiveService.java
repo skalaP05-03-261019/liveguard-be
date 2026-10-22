@@ -416,24 +416,30 @@ public class LiveService implements LivePlatformPort {
   }
 
   private void changeVisibility(UUID caseId,String visibility,boolean revoked) {
-    if (visibility.equals("PUBLIC"))
+    boolean release = visibility.equals("PUBLIC");
+    if (release)
       db.sql(
               "UPDATE platform.message_hold_reasons SET released_at=? WHERE case_id=? AND"
                   + " released_at IS NULL AND (reason<>'RULE_CONFIRMED' OR ?)")
           .params(now(), caseId, revoked)
           .update();
-    // 소유 사건(case_id)이 아니어도 이 사건의 원인이 걸려 있던 메시지를 본다. 소유 사건이 먼저 풀리고
-    // 다른 사건의 원인이 마지막으로 남았다가 풀리는 경우, case_id만 보면 그 메시지가 복구되지 않는다
-    var ids =
-        db.sql(
-                "SELECT id FROM platform.messages WHERE case_id=? OR id IN (SELECT"
-                    + " message_id FROM platform.message_hold_reasons WHERE case_id=?)"
-                    + " ORDER BY id FOR UPDATE")
-            .params(caseId, caseId)
-            .query(UUID.class)
+    // 해제할 때는 소유 사건(case_id)이 아니어도 이 사건의 원인이 걸려 있던 메시지를 본다. 소유 사건이 먼저 풀리고
+    // 다른 사건의 원인이 마지막으로 남았다가 풀리는 경우, case_id만 보면 그 메시지가 복구되지 않는다.
+    // 가릴 때는 이 사건의 원인이 이미 풀린 메시지는 소유 여부와 상관없이 다시 가리지 않는다
+    String scope =
+        release
+            ? "case_id=:case OR id IN (SELECT message_id FROM platform.message_hold_reasons WHERE case_id=:case)"
+            : "(case_id=:case OR id IN (SELECT message_id FROM platform.message_hold_reasons WHERE case_id=:case"
+                + " AND released_at IS NULL)) AND NOT EXISTS (SELECT 1 FROM platform.message_hold_reasons h"
+                + " WHERE h.message_id=platform.messages.id AND h.case_id=:case AND h.released_at IS NOT NULL)";
+    var targets =
+        db.sql("SELECT id,visibility,author_id FROM platform.messages WHERE " + scope + " ORDER BY id FOR UPDATE")
+            .param("case", caseId)
+            .query((r, n) -> new Object[] {r.getObject(1, UUID.class), r.getString(2), r.getObject(3, UUID.class)})
             .list();
-    for (UUID id : ids) {
-      if (visibility.equals("PUBLIC")
+    for (Object[] target : targets) {
+      UUID id = (UUID) target[0];
+      if (release
           && db.sql(
                       "SELECT count(*) FROM platform.message_hold_reasons WHERE message_id=? AND"
                           + " released_at IS NULL")
@@ -450,13 +456,18 @@ public class LiveService implements LivePlatformPort {
       if (changed > 0) {
         var data = message(id, new UUID(0, 0));
         UUID liveId = (UUID) data.get("liveId");
-        emit(
-            liveId,
-            "MESSAGE_VISIBILITY_CHANGED",
-            Map.of("messageId", id, "visibility", visibility, "version", data.get("version")),
-            null,
-            false);
-        if (visibility.equals("PUBLIC")) emit(liveId, "MESSAGE_RESTORED", chatEvent(data), null, false);
+        if (release) {
+          // 계약: PUBLIC 복원은 MESSAGE_RESTORED(ChatEvent) 하나로 보낸다
+          emit(liveId, "MESSAGE_RESTORED", chatEvent(data), null, false);
+        } else {
+          // 원문 없이 ID만. 공개였던 메시지면 모두에게, 처음부터 가려져 있던 메시지면 그것을 본 작성자·담당 운영자에게만
+          emit(
+              liveId,
+              "MESSAGE_VISIBILITY_CHANGED",
+              Map.of("messageId", id, "visibility", visibility, "version", data.get("version")),
+              (UUID) target[2],
+              !"PUBLIC".equals(target[1]));
+        }
       }
     }
   }
@@ -482,8 +493,9 @@ public class LiveService implements LivePlatformPort {
                 event,
                 envelope,
                 event.equals("LIVE_ENDED"));
-          if(!event.equals("CHAT"))legacyEvents.integrated(live(id).channelId(),author,restricted,event,data);
           events.broadcast(id, s -> true, event, envelope);
+          // 기존 채널 SSE(0.6 형태) 변환은 마지막에 한다. 변환이 실패해도 방송·관제 스트림 전달은 끝나 있다
+          if(!event.equals("CHAT"))legacyEvents.integrated(live(id).channelId(),author,restricted,event,data);
         });
   }
 

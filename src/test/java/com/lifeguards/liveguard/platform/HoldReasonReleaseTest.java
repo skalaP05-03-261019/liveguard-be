@@ -106,6 +106,30 @@ class HoldReasonReleaseTest {
 		assertNotNull(releasedAt(caseB));
 	}
 
+	@Test
+	void hidingForACaseWhoseReasonWasAlreadyReleasedLeavesTheMessageAlone() {
+		addReason(caseA, "CONTEXT_REVIEW");
+		addReason(caseB, "FLOOD_REVIEW");
+		platform.visibility(caseB, "PUBLIC");
+
+		// B는 이 메시지를 소유하지 않고 B의 원인은 이미 풀렸다. 이후 B가 가려져도 이 메시지는 그대로다
+		platform.visibility(caseB, "HIDDEN");
+
+		assertEquals("HELD", visibility());
+		assertEquals(1, version());
+	}
+
+	@Test
+	void hidingForACaseWithAnActiveReasonHidesTheMessageEvenIfAnotherCaseOwnsIt() {
+		addReason(caseA, "CONTEXT_REVIEW");
+		addReason(caseB, "FLOOD_REVIEW");
+
+		platform.visibility(caseB, "HIDDEN");
+
+		assertEquals("HIDDEN", visibility());
+		assertEquals(2, version());
+	}
+
 	private void addReason(UUID caseId, String reason) {
 		jdbc.update("INSERT INTO platform.message_hold_reasons (message_id, case_id, reason, created_at) "
 				+ "VALUES (?, ?, ?, now())", message, caseId, reason);
