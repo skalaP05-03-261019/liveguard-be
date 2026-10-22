@@ -5,8 +5,11 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.UUID;
 
@@ -22,6 +25,7 @@ import org.springframework.test.context.ActiveProfiles;
 import com.lifeguards.liveguard.TestcontainersConfiguration;
 import com.lifeguards.liveguard.common.ApiException;
 import com.lifeguards.liveguard.contracts.enums.ErrorCode;
+import com.lifeguards.liveguard.contracts.enums.FilterResult;
 import com.lifeguards.liveguard.contracts.enums.Visibility;
 import com.lifeguards.liveguard.platform.port.LiveMessageQuery;
 import com.lifeguards.liveguard.platform.port.MessageView;
@@ -81,6 +85,19 @@ class LiveMessageQueryTest {
 				views.stream().map(MessageView::maskedText).toList());
 		assertEquals(List.of(VIEWER, VIEWER, MODERATOR), views.stream().map(MessageView::authorId).toList());
 		assertEquals(T0.plusSeconds(3), views.get(0).sentAt());
+	}
+
+	@Test
+	void givesChannelFilterResultAndNormalizedTextHashButNotTheNormalizedText() throws Exception {
+		UUID id = insert(live, VIEWER, "도배 문장", "HELD", 1, 1);
+
+		MessageView view = query.messages(live, List.of(id)).getFirst();
+
+		assertEquals(channel, view.channelId());
+		assertEquals(FilterResult.HOLD, view.filterResult());
+		// guard의 flood_marks.text_hash와 같은 값이어야 도배 표식과 바로 비교할 수 있다
+		assertEquals(HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+				.digest("도배 문장".getBytes(StandardCharsets.UTF_8))), view.normalizedTextHash());
 	}
 
 	@Test
