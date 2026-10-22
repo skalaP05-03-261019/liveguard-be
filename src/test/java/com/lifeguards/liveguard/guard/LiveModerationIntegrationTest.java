@@ -593,6 +593,28 @@ class LiveModerationIntegrationTest {
     return mvc.perform(get("/api/cases?liveId="+live+query).session(session));
   }
 
+  @Test void caseListIsTheSameAsEachCaseDetail() {
+    UUID live=lives.start(channel,moderator).liveId();
+    candidate(live,"너 꺼져 판정 대기");
+    UUID judged=candidate(live,"너 꺼져 판정 받음");proposal(judged,"NEEDS_REVIEW");
+    // 확정 위반 3건(강퇴 검토 대기 포함), 오판 취소, 다른 시청자의 사건을 섞는다
+    for(int i=0;i<3;i++){UUID c=candidate(live,"너 꺼져 누적 "+i);UUID r=proposal(c,"VIOLATION");apply(c,r,decide(r,"CONFIRM_VIOLATION",1));
+      db.update("UPDATE guard.live_timeouts SET revoked_at=current_timestamp WHERE live_id=?",live);}
+    UUID revoked=candidate(live,"씨발 취소");
+    recovery.revoke(confirmedFinding(revoked),revokeRequest(revoked),moderator);
+    db.update("UPDATE guard.live_timeouts SET revoked_at=current_timestamp WHERE live_id=?",live);
+    lives.send(live,second,new SendMessageRequest(UUID.randomUUID(),"너 꺼져 다른 시청자"));
+    // 같은 문장 세 번째에 도배 사건(관련 메시지 2건 포함)
+    for(int i=0;i<3;i++)lives.send(live,second,new SendMessageRequest(UUID.randomUUID(),"같은 말 반복"));
+    var listed=guard.cases(live,null,moderator);
+    assertEquals(8,listed.size());
+    assertTrue(listed.stream().anyMatch(c->Boolean.TRUE.equals(((Map<?,?>)c.get("kickReview")).get("required"))));
+    assertTrue(listed.stream().anyMatch(c->c.get("handlingRoute").equals("FLOOD_REVIEW")));
+    // 목록은 사건마다 detail()을 부르지 않고 모아 읽지만 결과는 같아야 한다
+    for(var item:listed)
+      assertEquals(guard.detail(UUID.fromString(item.get("caseId").toString()),moderator),item);
+  }
+
   @Test
   void caseListFiltersByConfirmationStatus() throws Exception {
     UUID live=lives.start(channel,moderator).liveId();

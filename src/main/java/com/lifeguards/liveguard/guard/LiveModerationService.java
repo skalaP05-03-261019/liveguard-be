@@ -68,6 +68,10 @@ public class LiveModerationService implements LiveGuardPort {
     return new ApiException(c, m);
   }
 
+  private static final String CASE_ROW = "SELECT"
+      + " c.*,s.task_id,s.thread_id,s.snapshot::text,s.confirmation_status,s.judgment::text,s.judgment_receipt::text,s.applied_result::text"
+      + " FROM guard.cases c JOIN guard.live_case_state s ON s.case_id=c.id";
+
   Map<String, Object> row(UUID c, boolean lock) {
     if(lock) {
       var scope=db.sql("SELECT live_id,user_id FROM guard.cases WHERE id=?").param(c)
@@ -76,11 +80,7 @@ public class LiveModerationService implements LiveGuardPort {
       platform.lockScope(id(scope.get("live_id")));
       scopeLock(id(scope.get("live_id")),id(scope.get("user_id")));
     }
-    return db.sql(
-            "SELECT"
-                + " c.*,s.task_id,s.thread_id,s.snapshot::text,s.confirmation_status,s.judgment::text,s.judgment_receipt::text,s.applied_result::text"
-                + " FROM guard.cases c JOIN guard.live_case_state s ON s.case_id=c.id WHERE c.id=?"
-                + (lock ? " FOR UPDATE OF c,s" : ""))
+    return db.sql(CASE_ROW + " WHERE c.id=?" + (lock ? " FOR UPDATE OF c,s" : ""))
         .param(c)
         .query(new org.springframework.jdbc.core.ColumnMapRowMapper())
         .optional()
@@ -288,7 +288,11 @@ public class LiveModerationService implements LiveGuardPort {
       .param(c).query((rs,n)->Map.entry(rs.getObject(1,UUID.class),Optional.ofNullable(rs.getObject(2,UUID.class)))).list();
     if(rows.isEmpty()||rows.getFirst().getValue().isEmpty())return List.of();
     // 지금의 가시성·버전은 조회 포트로 읽는다
-    return messages.messages(rows.getFirst().getValue().get(),rows.stream().map(Map.Entry::getKey).toList()).stream()
+    return targetViews(messages.messages(rows.getFirst().getValue().get(),rows.stream().map(Map.Entry::getKey).toList()));
+  }
+
+  private static List<Map<String,Object>> targetViews(List<MessageView> views) {
+    return views.stream()
       .sorted(MessageOrder.BY_SENT_AT)
       .map(v->Map.<String,Object>of("messageId",v.messageId(),"visibility",v.visibility().name(),"version",v.version()))
       .toList();
@@ -378,20 +382,30 @@ public class LiveModerationService implements LiveGuardPort {
     var current = row(c, false);
     if(current.get("live_id")==null||current.get("policy_version")==null||current.get("handling_route")==null)
       throw error(ErrorCode.CASE_NOT_READY,"Case provenance is unavailable");
+    Map<String, Object> stored = parse(current.get("snapshot").toString());
+    boolean frozen=db.sql("SELECT EXISTS(SELECT 1 FROM guard.case_snapshots WHERE snapshot_id=? AND case_id=? AND evidence_version=? AND snapshot=?::jsonb)")
+          .params(current.get("snapshot_id"),c,current.get("evidence_version"),encode(stored)).query(Boolean.class).single();
+    boolean candidate=db.sql("SELECT EXISTS(SELECT 1 FROM guard.candidates WHERE case_id=? AND snapshot_id=? AND evidence_version=? AND request IS NOT NULL)")
+          .params(c,current.get("snapshot_id"),current.get("evidence_version")).query(Boolean.class).single();
+    return verifiedSnapshot(current, frozen, candidate, currentTargets(c), kickFor(c));
+  }
+
+  /** 저장된 snapshot이 현재 사건·불변 증거·후보 요청과 맞는지 확인하고 확정 상태·강퇴 검토를 붙인다. */
+  private Map<String, Object> verifiedSnapshot(Map<String, Object> current, boolean frozen, boolean candidate,
+      List<Map<String,Object>> targets, Map<String, Object> kick) {
+    if(current.get("live_id")==null||current.get("policy_version")==null||current.get("handling_route")==null)
+      throw error(ErrorCode.CASE_NOT_READY,"Case provenance is unavailable");
     Map<String, Object> result = new LinkedHashMap<>(parse(current.get("snapshot").toString()));
     if(!Objects.toString(current.get("snapshot_id")).equals(Objects.toString(result.get("snapshotId")))
         || !Objects.toString(current.get("evidence_version")).equals(Objects.toString(result.get("evidenceVersion")))
-        || !db.sql("SELECT EXISTS(SELECT 1 FROM guard.case_snapshots WHERE snapshot_id=? AND case_id=? AND evidence_version=? AND snapshot=?::jsonb)")
-          .params(current.get("snapshot_id"),c,current.get("evidence_version"),encode(result)).query(Boolean.class).single()
-        || !db.sql("SELECT EXISTS(SELECT 1 FROM guard.candidates WHERE case_id=? AND snapshot_id=? AND evidence_version=? AND request IS NOT NULL)")
-          .params(c,current.get("snapshot_id"),current.get("evidence_version")).query(Boolean.class).single()
+        || !frozen || !candidate
         || !Objects.toString(current.get("live_id")).equals(Objects.toString(result.get("liveId")))
         || !Objects.toString(current.get("policy_version")).equals(Objects.toString(result.get("policyVersion")))
         || !Objects.toString(current.get("handling_route")).equals(Objects.toString(result.get("handlingRoute")))
-        || currentTargets(c).isEmpty())
+        || targets.isEmpty())
       throw error(ErrorCode.CASE_NOT_READY,"Immutable current evidence or targets are unavailable");
     result.put("confirmationStatus", current.get("confirmation_status"));
-    result.put("kickReview", kickFor(c));
+    result.put("kickReview", kick);
     return parse(encode(result));
   }
 
@@ -520,39 +534,90 @@ public class LiveModerationService implements LiveGuardPort {
     // confirmationStatus가 없으면 전체, 있으면 그 확정 상태의 사건만(openapi listCases)
     List<Object> params = new ArrayList<>(List.of(live));
     if (confirmation != null) params.add(confirmation.name());
-    return db
-        .sql(
-            "SELECT c.id FROM guard.cases c JOIN guard.live_case_state s ON s.case_id=c.id WHERE c.live_id=?"
-                + (confirmation == null ? "" : " AND s.confirmation_status=?")
-                + " ORDER BY c.created_at DESC, c.id DESC")
-        .params(params)
-        .query(UUID.class)
-        .list()
-        .stream()
-        .map(c -> detail(c, user))
-        .toList();
+    var rows = db.sql(CASE_ROW + " WHERE c.live_id=?"
+            + (confirmation == null ? "" : " AND s.confirmation_status=?")
+            + " ORDER BY c.created_at DESC, c.id DESC")
+        .params(params).query(new org.springframework.jdbc.core.ColumnMapRowMapper()).list();
+    if (rows.isEmpty()) return List.of();
+    // 사건마다 detail()을 부르지 않고 같은 재료를 한 번씩 모아 읽는다. 조립은 detail()과 같은 caseDetail()이 한다
+    List<UUID> ids = rows.stream().map(r -> id(r.get("id"))).toList();
+    String idArray = String.join(",", ids.stream().map(UUID::toString).toList());
+    Set<UUID> frozen = new HashSet<>(db.sql("SELECT c.id FROM guard.cases c JOIN guard.live_case_state s ON s.case_id=c.id"
+            + " JOIN guard.case_snapshots cs ON cs.snapshot_id=c.snapshot_id AND cs.case_id=c.id AND cs.evidence_version=c.evidence_version"
+            + " AND cs.snapshot=s.snapshot WHERE c.id=ANY(string_to_array(?,',')::uuid[])")
+        .param(idArray).query(UUID.class).list());
+    Set<UUID> candidates = new HashSet<>(db.sql("SELECT DISTINCT c.id FROM guard.cases c JOIN guard.candidates k ON k.case_id=c.id"
+            + " AND k.snapshot_id=c.snapshot_id AND k.evidence_version=c.evidence_version AND k.request IS NOT NULL"
+            + " WHERE c.id=ANY(string_to_array(?,',')::uuid[])")
+        .param(idArray).query(UUID.class).list());
+    Map<UUID, List<UUID>> targetIds = new HashMap<>();
+    db.sql("SELECT case_id,message_id FROM guard.case_messages WHERE case_id=ANY(string_to_array(?,',')::uuid[]) AND owned AND is_target")
+        .param(idArray).query((rs, n) -> targetIds.computeIfAbsent(rs.getObject(1, UUID.class), k -> new ArrayList<>())
+            .add(rs.getObject(2, UUID.class))).list();
+    Map<UUID, MessageView> views = new HashMap<>();
+    var allTargets = targetIds.values().stream().flatMap(List::stream).distinct().toList();
+    if (!allTargets.isEmpty())
+      messages.messages(live, allTargets).forEach(v -> views.put(v.messageId(), v));
+    Map<UUID, Map<String, Object>> kicks = new HashMap<>();
+    db.sql("SELECT * FROM guard.reviews WHERE case_id=ANY(string_to_array(?,',')::uuid[]) AND kind='KICK' AND status='PENDING'")
+        .param(idArray).query(new org.springframework.jdbc.core.ColumnMapRowMapper()).list()
+        .forEach(r -> kicks.put(id(r.get("case_id")),
+            Map.of("required", true, "reviewId", id(r.get("id")), "basisCaseIds", basis(r))));
+    Map<UUID, List<Map<String, Object>>> confirmed = new HashMap<>();
+    db.sql(CONFIRMED_FINDINGS + " WHERE case_id=ANY(string_to_array(?,',')::uuid[]) AND source='BACKEND' ORDER BY created_at,id")
+        .param(idArray).query((rs, n) -> confirmed.computeIfAbsent(rs.getObject("case_id", UUID.class), k -> new ArrayList<>())
+            .add(confirmedFinding(rs))).list();
+    // 누적 수(userHistory): 같은 사용자의 다른 사건 중 확정 위반이 있는 사건 수
+    Map<UUID, Set<UUID>> violatingByUser = new HashMap<>();
+    db.sql("SELECT DISTINCT c.user_id,c.id FROM guard.cases c JOIN guard.findings f ON f.case_id=c.id WHERE c.live_id=?"
+            + " AND f.source='BACKEND' AND f.status='CONFIRMED' AND f.verdict='VIOLATION' AND f.revoked_at IS NULL AND f.confirmed_at<=?")
+        .params(live, now()).query((rs, n) -> violatingByUser.computeIfAbsent(rs.getObject(1, UUID.class), k -> new HashSet<>())
+            .add(rs.getObject(2, UUID.class))).list();
+    List<Map<String, Object>> result = new ArrayList<>();
+    for (var current : rows) {
+      UUID c = id(current.get("id"));
+      var targets = targetViews(targetIds.getOrDefault(c, List.of()).stream().map(views::get).filter(Objects::nonNull).toList());
+      var kick = kicks.getOrDefault(c, Map.of("required", false));
+      var others = violatingByUser.getOrDefault(id(current.get("user_id")), Set.of());
+      int violations = others.size() - (others.contains(c) ? 1 : 0);
+      result.add(caseDetail(current, verifiedSnapshot(current, frozen.contains(c), candidates.contains(c), targets, kick),
+          targets, confirmed.getOrDefault(c, List.of()), violations, user));
+    }
+    return result;
+  }
+
+  private static final String CONFIRMED_FINDINGS = "SELECT case_id,id,category,status,confirmed_at,revoked_at FROM guard.findings";
+
+  private static Map<String, Object> confirmedFinding(java.sql.ResultSet r) throws java.sql.SQLException {
+    Map<String,Object> f=new LinkedHashMap<>();f.put("findingId",r.getObject("id"));f.put("category",r.getString("category"));
+    f.put("status",r.getString("status"));f.put("confirmedAt",r.getTimestamp("confirmed_at"));f.put("revokedAt",r.getTimestamp("revoked_at"));
+    return f;
   }
 
   @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ)
   public Map<String, Object> detail(UUID c, AuthenticatedUser user) {
     var current = row(c, false);
     platform.authorize(id(current.get("live_id")), user.userId(), true);
-    var data = new LinkedHashMap<>(snapshot(c));
-    var targets=currentTargets(c);
+    var snapshot = snapshot(c);
+    var findingsOfCase = db.sql(CONFIRMED_FINDINGS + " WHERE case_id=? AND source='BACKEND' ORDER BY created_at,id")
+      .param(c).query((r,n)->confirmedFinding(r)).list();
+    return caseDetail(current, snapshot, currentTargets(c), findingsOfCase, userHistory(c).violationCount(), user);
+  }
+
+  /** 사건 상세(CaseDetail) 조립. 단건 상세와 목록이 같은 모양을 내도록 재료만 받아 만든다. */
+  private Map<String, Object> caseDetail(Map<String, Object> current, Map<String, Object> snapshot,
+      List<Map<String,Object>> targets, List<Map<String,Object>> confirmedFindings, int violationCount, AuthenticatedUser user) {
+    var data = new LinkedHashMap<>(snapshot);
     data.put("targets",targets);
     data.put("targetMessageIds",targets.stream().map(t->t.get("messageId")).toList());
     data.put("targetVersions",targets.stream().collect(java.util.stream.Collectors.toMap(t->t.get("messageId").toString(),t->t.get("version"))));
     data.put("status", current.get("status"));
     data.put("version",current.get("version"));
-    data.put("confirmedFindings",db.sql("SELECT id,category,status,confirmed_at,revoked_at FROM guard.findings WHERE case_id=? AND source='BACKEND' ORDER BY created_at,id")
-      .param(c).query((r,n)->{
-        Map<String,Object> f=new LinkedHashMap<>();f.put("findingId",r.getObject("id"));f.put("category",r.getString("category"));
-        f.put("status",r.getString("status"));f.put("confirmedAt",r.getTimestamp("confirmed_at"));f.put("revokedAt",r.getTimestamp("revoked_at"));return f;
-      }).list());
+    data.put("confirmedFindings",confirmedFindings);
     data.put("occurredAt", current.get("occurred_at"));
     data.put("createdAt",current.get("created_at"));data.put("userAlias","U1");
     data.put("reason",null);data.put("policySnapshots",List.of());
-    data.put("evidenceMessageIds",data.get("targetMessageIds"));data.put("violationCount",userHistory(c).violationCount());
+    data.put("evidenceMessageIds",data.get("targetMessageIds"));data.put("violationCount",violationCount);
     List<Map<String,Object>> browserMessages=new ArrayList<>();
     for(var m:(List<Map<String,Object>>)data.get("messages")){
       var copy=new LinkedHashMap<>(m);copy.put("channelId",current.get("channel_id"));copy.put("liveId",current.get("live_id"));
