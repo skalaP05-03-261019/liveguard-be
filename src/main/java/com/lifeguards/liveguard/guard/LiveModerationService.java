@@ -12,6 +12,7 @@ import org.springframework.context.annotation.Lazy;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.annotation.Isolation;
 import tools.jackson.databind.json.JsonMapper;
 
 @Service
@@ -22,18 +23,22 @@ public class LiveModerationService implements LiveGuardPort {
   private final LivePlatformPort platform;
   private final JsonMapper json;
   private final AgentTaskOutbox outbox;
+  private final FindingService findings;
+  private final PolicyProperties policy;
 
   public LiveModerationService(
       JdbcClient db,
       Clock clock,
       @Lazy LivePlatformPort platform,
       JsonMapper json,
-      AgentTaskOutbox outbox) {
+      AgentTaskOutbox outbox, FindingService findings, PolicyProperties policy) {
     this.db = db;
     this.clock = clock;
     this.platform = platform;
     this.json = json;
     this.outbox = outbox;
+    this.findings = findings;
+    this.policy = policy;
   }
 
   private Timestamp now() {
@@ -96,6 +101,7 @@ public class LiveModerationService implements LiveGuardPort {
 
   @Override
   public void checkEntry(UUID live, UUID user) {
+    if(platform.live(live).endedAt()!=null)return;
     if (db.sql("SELECT count(*) FROM guard.live_kicks WHERE live_id=? AND user_id=?")
             .params(live, user)
             .query(Integer.class)
@@ -106,6 +112,7 @@ public class LiveModerationService implements LiveGuardPort {
   @Override
   public void checkAccess(UUID live, UUID user) {
     checkEntry(live, user);
+    if(platform.live(live).endedAt()!=null)return;
     var until =
         db.sql(
                 "SELECT max(expires_at) FROM guard.live_timeouts WHERE live_id=? AND user_id=? AND"
@@ -119,33 +126,72 @@ public class LiveModerationService implements LiveGuardPort {
   }
 
   @Override public Instant timeoutUntil(UUID live,UUID user) {
+    if(platform.live(live).endedAt()!=null)return null;
     var value=db.sql("SELECT max(expires_at) FROM guard.live_timeouts WHERE live_id=? AND user_id=? AND revoked_at IS NULL AND expires_at>?")
       .params(live,user,now()).query((r,n)->r.getTimestamp(1)).optional();
     return value.map(Timestamp::toInstant).orElse(null);
   }
 
   @Override
-  public UUID candidate(
-      UUID live,
-      UUID channel,
-      UUID user,
-      UUID message,
-      String route,
-      String policy,
-      List<String> tags,
-      Instant at, String normalizedText) {
+  public UUID candidate(CandidateRequest request) {
+    com.lifeguards.liveguard.contracts.dto.DtoValidation.requireNonNull(request,"request");
+    UUID live=request.liveId(), channel=request.channelId(), user=request.userId(), message=request.messageId();
+    String route=request.handlingRoute().name(), policy=request.policyVersion();
+    List<String> tags=request.matchingTags();
+    Instant at=request.sentAt();
+    if(request.filterResult()==FilterResult.PASS
+        || request.filterResult()!=FilterResult.FLOOD&&!request.relatedMessageIds().isEmpty()
+        || request.relatedMessageIds().contains(message)
+        || request.relatedMessageIds().stream().distinct().count()!=request.relatedMessageIds().size())
+      throw new com.lifeguards.liveguard.contracts.exception.InvalidContractException("Invalid candidate evidence");
+    var prior=db.sql("SELECT case_id,request::text FROM guard.candidates WHERE message_id=?")
+      .param(message).query(new org.springframework.jdbc.core.ColumnMapRowMapper()).optional();
+    if(prior.isPresent()) {
+      if(prior.get().get("request")==null||!json.readTree(encode(request)).equals(json.readTree(prior.get().get("request").toString())))
+        throw error(ErrorCode.IDEMPOTENCY_CONFLICT,"Candidate provenance differs or is unavailable");
+      return id(prior.get().get("case_id"));
+    }
+    var stored=db.sql("SELECT m.normalized_text FROM platform.messages m JOIN platform.lives l ON l.id=m.live_id WHERE m.id=? AND m.live_id=? AND m.channel_id=? AND m.author_id=? AND m.sent_at=? AND m.filter_result=? AND l.channel_id=m.channel_id")
+      .params(message,live,channel,user,Timestamp.from(at),request.filterResult().name()).query(String.class).optional();
+    if(stored.isEmpty())throw new com.lifeguards.liveguard.contracts.exception.InvalidContractException("Candidate message scope or filter provenance differs");
+    if(!this.policy.version().equals(policy))
+      throw error(ErrorCode.VALIDATION_FAILED,"Candidate policy version is not active");
     platform.lockScope(live);
-    scopeLock(live, user);
+    scopeLock(live,user);
+    // Another opener can commit while this call waits for the live/scope lock.
+    var concurrent=db.sql("SELECT case_id,request::text FROM guard.candidates WHERE message_id=?")
+      .param(message).query(new org.springframework.jdbc.core.ColumnMapRowMapper()).optional();
+    if(concurrent.isPresent()) {
+      if(concurrent.get().get("request")==null||!json.readTree(encode(request)).equals(json.readTree(concurrent.get().get("request").toString())))
+        throw error(ErrorCode.IDEMPOTENCY_CONFLICT,"Candidate provenance differs");
+      return id(concurrent.get().get("case_id"));
+    }
+    platform.lockActive(live);
+    String normalizedText=stored.get();
+    for(UUID related:request.relatedMessageIds()) {
+      boolean valid=db.sql("SELECT EXISTS(SELECT 1 FROM platform.messages WHERE id=? AND live_id=? AND channel_id=? AND author_id=? AND normalized_text=? AND sent_at>? AND sent_at<=?)")
+        .params(related,live,channel,user,normalizedText,Timestamp.from(at.minusSeconds(10)),Timestamp.from(at)).query(Boolean.class).single();
+      if(!valid)throw new com.lifeguards.liveguard.contracts.exception.InvalidContractException("Related message is outside candidate scope");
+    }
+    if(route.equals("RULE_CONFIRMED")
+        && !(com.lifeguards.liveguard.filter.MessageFilter.RULE_CERTAIN_PROFANITY.equals(request.ruleId())&&tags.contains("CERTAIN_PROFANITY")
+          || com.lifeguards.liveguard.filter.MessageFilter.RULE_LINK_BLOCKED.equals(request.ruleId())&&tags.contains("LINK")))
+      throw new com.lifeguards.liveguard.contracts.exception.InvalidContractException("Known rule and matching evidence required");
     if(route.equals("FLOOD_REVIEW")) {
       var existing=db.sql("SELECT m.case_id FROM guard.flood_marks m WHERE m.live_id=? AND m.user_id=? AND m.text_hash=? AND m.last_sent_at>? AND EXISTS(SELECT 1 FROM guard.findings f WHERE f.case_id=m.case_id AND f.category='FLOOD' AND f.status='CONFIRMED') ORDER BY m.confirmed_at DESC LIMIT 1")
         .params(live,user,textHash(normalizedText),Timestamp.from(at.minusSeconds(10))).query(UUID.class).optional();
       if(existing.isPresent()) {
-        UUID owner=existing.get();platform.bindCase(message,owner,route);
-        db.sql("INSERT INTO guard.case_messages(case_id,message_id,owned,is_target) VALUES(?,?,true,true)").params(owner,message).update();
-        db.sql("INSERT INTO guard.candidates(message_id,case_id,filter_result,matching_tags,filter_version,related_message_ids,sent_at,snapshot_id,evidence_version) VALUES(?,?,'FLOOD',ARRAY['REPEATED_TEXT'],'norm-v1+dict-v2','{}',?,?,1)")
-          .params(message,owner,Timestamp.from(at),UUID.randomUUID()).update();
+        UUID owner=existing.get();
+        UUID nextSnapshot=UUID.randomUUID();
+        int evidence=db.sql("UPDATE guard.cases SET evidence_version=evidence_version+1,version=version+1,snapshot_id=? WHERE id=? RETURNING evidence_version")
+          .params(nextSnapshot,owner).query(Integer.class).single();
+        linkEvidence(owner,request);
+        persistCandidate(owner,nextSnapshot,evidence,request);
         db.sql("UPDATE guard.flood_marks SET last_sent_at=? WHERE case_id=?").params(Timestamp.from(at),owner).update();
-        platform.visibility(owner,"HIDDEN");return owner;
+        platform.visibility(owner,"HIDDEN");
+        freeze(owner,request,nextSnapshot,evidence);
+        platform.emit(live,"CASE_UPDATED",caseEvent(owner),null,true);
+        return owner;
       }
     }
     UUID c = UUID.randomUUID(), snapshot = UUID.randomUUID(), task = UUID.randomUUID();
@@ -156,60 +202,11 @@ public class LiveModerationService implements LiveGuardPort {
                 + " VALUES(?,?,?,?,?,?,?,?,?)")
         .params(c, channel, user, live, policy, route, snapshot, Timestamp.from(at), now())
         .update();
-    db.sql(
-            "INSERT INTO"
-                + " guard.candidates(message_id,case_id,filter_result,matching_tags,filter_version,related_message_ids,sent_at,snapshot_id,evidence_version)"
-                + " VALUES(?,?,?,string_to_array(?,','),?,'{}',?,?,1)")
-        .params(
-            message,
-            c,
-            route.equals("FLOOD_REVIEW") ? "FLOOD" : "HOLD",
-            String.join(",", tags),
-            "norm-v1+dict-v2",
-            Timestamp.from(at),
-            snapshot)
-        .update();
-    db.sql(
-            "INSERT INTO guard.case_messages(case_id,message_id,owned,is_target)"
-                + " VALUES(?,?,true,true)")
-        .params(c, message)
-        .update();
-    platform.bindCase(message,c,route);
-    var messages = platform.snapshot(live, message, user);
-    Map<String, Object> frozen = new LinkedHashMap<>();
-    frozen.put("caseId", c);
-    frozen.put("channelId", channel);
-    frozen.put("liveId", live);
-    frozen.put("userId", user);
-    frozen.put("snapshotId", snapshot);
-    frozen.put("evidenceVersion", 1);
-    frozen.put("policyVersion", policy);
-    frozen.put("handlingRoute", route);
-    frozen.put("filterResult", route.equals("FLOOD_REVIEW") ? "FLOOD" : "HOLD");
-    frozen.put("matchingTags", tags);
-    frozen.put("version", 1);
-    frozen.put("messages", messages);
-    frozen.put("targetMessageIds", List.of(message));
-    frozen.put("targetVersions", Map.of(message.toString(), 1));
-    frozen.put(
-        "targets",
-        messages.stream()
-            .filter(m -> m.get("messageId").equals(message))
-            .map(
-                m ->
-                    Map.of(
-                        "messageId",
-                        message,
-                        "visibility",
-                        m.get("visibility"),
-                        "version",
-                        m.get("version")))
-            .toList());
-    db.sql(
-            "INSERT INTO guard.live_case_state(case_id,task_id,thread_id,snapshot)"
-                + " VALUES(?,?,?,?::jsonb)")
-        .params(c, task, thread, encode(frozen))
-        .update();
+    persistCandidate(c,snapshot,1,request);
+    linkEvidence(c,request);
+    db.sql("INSERT INTO guard.live_case_state(case_id,task_id,thread_id,snapshot) VALUES(?,?,?,'{}'::jsonb)")
+      .params(c,task,thread).update();
+    freeze(c,request,snapshot,1);
     if(route.equals("FLOOD_REVIEW")) {
       confirm(row(c,true),List.of("FLOOD"),"rule:flood:"+message);
       db.sql("INSERT INTO guard.flood_marks(live_id,user_id,text_hash,case_id,confirmed_at,last_sent_at) VALUES(?,?,?,?,?,?)")
@@ -219,15 +216,62 @@ public class LiveModerationService implements LiveGuardPort {
       List<String> ruleCategories=new ArrayList<>();
       if(tags.contains("CERTAIN_PROFANITY"))ruleCategories.add("PROFANITY");
       if(tags.contains("LINK"))ruleCategories.add("PHISHING");
-      if(ruleCategories.isEmpty())throw error(ErrorCode.VALIDATION_FAILED,"Rule evidence required");
-      confirm(row(c,true),ruleCategories,"rule:"+message);
+      confirm(row(c,true),ruleCategories,"rule:"+request.ruleId()+":"+message);
       var kick = ensureKick(c);
       if (Boolean.TRUE.equals(kick.get("required"))) enqueue(row(c, false), null, null, null);
-    } else if (route.equals("CONTEXT_REVIEW") || route.equals("PII_INVESTIGATION")) {
+    } else {
       enqueue(row(c, false), null, null, null);
     }
     platform.emit(live,"CASE_CREATED",caseEvent(c),null,true);
     return c;
+  }
+
+  private void persistCandidate(UUID c,UUID snapshot,int evidence,CandidateRequest r) {
+    db.sql("INSERT INTO guard.candidates(message_id,case_id,filter_result,matching_tags,filter_version,related_message_ids,sent_at,snapshot_id,evidence_version,live_id,handling_route,rule_id,policy_version,request) VALUES(?,?,?,string_to_array(?,','),?,string_to_array(?,',')::uuid[],?,?,?,?,?,?,?,?::jsonb)")
+      .params(r.messageId(),c,r.filterResult().name(),String.join(",",r.matchingTags()),r.filterVersion(),
+        String.join(",",r.relatedMessageIds().stream().map(UUID::toString).toList()),Timestamp.from(r.sentAt()),snapshot,evidence,
+        r.liveId(),r.handlingRoute().name(),r.ruleId(),r.policyVersion(),encode(r)).update();
+  }
+
+  private void linkEvidence(UUID c,CandidateRequest r) {
+    for(UUID message:r.relatedMessageIds())
+      db.sql("INSERT INTO guard.case_messages(case_id,message_id,owned,is_target) VALUES(?,?,false,false) ON CONFLICT DO NOTHING")
+        .params(c,message).update();
+    db.sql("INSERT INTO guard.case_messages(case_id,message_id,owned,is_target) VALUES(?,?,true,true) ON CONFLICT(case_id,message_id) DO UPDATE SET owned=true,is_target=true")
+      .params(c,r.messageId()).update();
+    platform.bindCase(r.messageId(),c,r.handlingRoute().name());
+  }
+
+  private void freeze(UUID c,CandidateRequest r,UUID snapshot,int evidence) {
+    var evidenceIds = db.sql("SELECT message_id FROM guard.case_messages WHERE case_id=? ORDER BY message_id")
+        .param(c).query(UUID.class).list();
+    var messages = platform.snapshot(r.liveId(), r.messageId(), r.userId(), evidenceIds);
+    Map<String, Object> frozen = new LinkedHashMap<>();
+    frozen.put("caseId", c);
+    frozen.put("channelId", r.channelId());
+    frozen.put("liveId", r.liveId());
+    frozen.put("userId", r.userId());
+    frozen.put("snapshotId", snapshot);
+    frozen.put("evidenceVersion", evidence);
+    frozen.put("policyVersion", r.policyVersion());
+    frozen.put("handlingRoute", r.handlingRoute().name());
+    frozen.put("filterResult", r.filterResult().name());
+    frozen.put("matchingTags", r.matchingTags());
+    frozen.put("version", row(c,false).get("version"));
+    frozen.put("messages", messages);
+    frozen.put("evidenceMessageIds", evidenceIds);
+    var targets=currentTargets(c);
+    frozen.put("targets",targets);
+    frozen.put("targetMessageIds",targets.stream().map(t->t.get("messageId")).toList());
+    frozen.put("targetVersions",targets.stream().collect(java.util.stream.Collectors.toMap(t->t.get("messageId").toString(),t->t.get("version"))));
+    db.sql("UPDATE guard.live_case_state SET snapshot=?::jsonb WHERE case_id=?").params(encode(frozen),c).update();
+    db.sql("INSERT INTO guard.case_snapshots(snapshot_id,case_id,evidence_version,snapshot) VALUES(?,?,?,?::jsonb)")
+      .params(snapshot,c,evidence,encode(frozen)).update();
+  }
+
+  private List<Map<String,Object>> currentTargets(UUID c) {
+    return db.sql("SELECT m.id,m.visibility,m.version FROM guard.case_messages cm JOIN platform.messages m ON m.id=cm.message_id WHERE cm.case_id=? AND cm.owned AND cm.is_target ORDER BY m.sent_at,m.id")
+      .param(c).query((rs,n)->Map.<String,Object>of("messageId",rs.getObject(1,UUID.class),"visibility",rs.getString(2),"version",rs.getInt(3))).list();
   }
 
   private String textHash(String text) {
@@ -255,29 +299,49 @@ public class LiveModerationService implements LiveGuardPort {
             UUID.randomUUID()));
   }
 
+  @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ)
   public Map<String, Object> snapshot(UUID c) {
+    if(!owns(c)) {
+      boolean exists=db.sql("SELECT EXISTS(SELECT 1 FROM guard.cases WHERE id=?)").param(c).query(Boolean.class).single();
+      throw error(exists?ErrorCode.CASE_NOT_READY:ErrorCode.NOT_FOUND,"Case immutable evidence is unavailable");
+    }
     var current = row(c, false);
+    if(current.get("live_id")==null||current.get("policy_version")==null||current.get("handling_route")==null)
+      throw error(ErrorCode.CASE_NOT_READY,"Case provenance is unavailable");
     Map<String, Object> result = new LinkedHashMap<>(parse(current.get("snapshot").toString()));
+    if(!Objects.toString(current.get("snapshot_id")).equals(Objects.toString(result.get("snapshotId")))
+        || !Objects.toString(current.get("evidence_version")).equals(Objects.toString(result.get("evidenceVersion")))
+        || !db.sql("SELECT EXISTS(SELECT 1 FROM guard.case_snapshots WHERE snapshot_id=? AND case_id=? AND evidence_version=? AND snapshot=?::jsonb)")
+          .params(current.get("snapshot_id"),c,current.get("evidence_version"),encode(result)).query(Boolean.class).single()
+        || !db.sql("SELECT EXISTS(SELECT 1 FROM guard.candidates WHERE case_id=? AND snapshot_id=? AND evidence_version=? AND request IS NOT NULL)")
+          .params(c,current.get("snapshot_id"),current.get("evidence_version")).query(Boolean.class).single()
+        || !Objects.toString(current.get("live_id")).equals(Objects.toString(result.get("liveId")))
+        || !Objects.toString(current.get("policy_version")).equals(Objects.toString(result.get("policyVersion")))
+        || !Objects.toString(current.get("handling_route")).equals(Objects.toString(result.get("handlingRoute")))
+        || currentTargets(c).isEmpty())
+      throw error(ErrorCode.CASE_NOT_READY,"Immutable current evidence or targets are unavailable");
     result.put("confirmationStatus", current.get("confirmation_status"));
     result.put("kickReview", kickFor(c));
     return parse(encode(result));
   }
 
+  @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ)
   public Map<String, Object> context(UUID c) {
-    var snapshot = snapshot(c);
+    var snapshot = internalContext(c);
     return Map.of(
         "caseId",
         c,
         "snapshotId",
-        snapshot.get("snapshotId"),
+        snapshot.snapshotId(),
         "evidenceVersion",
-        snapshot.get("evidenceVersion"),
+        snapshot.evidenceVersion(),
         "messages",
-        snapshot.get("messages"),
+        snapshot.messages(),
         "truncated",
-        false);
+        snapshot.truncated());
   }
 
+  @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ)
   public com.lifeguards.liveguard.contracts.dto.response.InternalCase internalCase(UUID c) {
     var s = snapshot(c);
     var messages =
@@ -293,7 +357,7 @@ public class LiveModerationService implements LiveGuardPort {
                             m.get("visibility").toString()))
                 .toList();
     var targets =
-        ((List<Map<String, Object>>) s.get("targets"))
+        currentTargets(c)
             .stream()
                 .map(
                     m ->
@@ -312,7 +376,7 @@ public class LiveModerationService implements LiveGuardPort {
         HandlingRoute.valueOf(s.get("handlingRoute").toString()),
         FilterResult.valueOf(s.get("filterResult").toString()),
         (List<String>) s.get("matchingTags"),
-        ((Number) s.get("version")).intValue(),
+        ((Number) row(c,false).get("version")).intValue(),
         messages,
         targets,
         id(s.get("userId")),
@@ -320,16 +384,44 @@ public class LiveModerationService implements LiveGuardPort {
         (Map<String, Object>) s.get("kickReview"));
   }
 
+  @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ)
   public com.lifeguards.liveguard.contracts.dto.response.ContextData internalContext(UUID c) {
-    var s = internalCase(c);
-    return new com.lifeguards.liveguard.contracts.dto.response.ContextData(
-        s.messages(), false, c, s.snapshotId(), s.evidenceVersion());
+    return internalContext(c,10,10);
   }
 
+  @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ)
+  public com.lifeguards.liveguard.contracts.dto.response.ContextData internalContext(UUID c,int before,int after) {
+    if(before<0||before>10||after<0||after>10)
+      throw new com.lifeguards.liveguard.contracts.exception.InvalidContractException("Invalid context range");
+    var s = internalCase(c);
+    List<com.lifeguards.liveguard.contracts.dto.response.MaskedMessage> messages=s.messages();
+    Set<UUID> targets=new HashSet<>(s.targetMessageIds());
+    var frozen = snapshot(c);
+    if (frozen.get("evidenceMessageIds") instanceof List<?> evidenceIds) {
+      evidenceIds.forEach(value -> targets.add(id(value)));
+    }
+    int first=0,last=messages.size()-1;
+    while(first<messages.size()&&!targets.contains(messages.get(first).messageId()))first++;
+    while(last>=0&&!targets.contains(messages.get(last).messageId()))last--;
+    int from=Math.max(0,first-before),to=Math.min(messages.size(),last+after+1);
+    var window=messages.subList(Math.min(from,to),to);
+    List<Integer> anchors=new ArrayList<>(),keep=new ArrayList<>();
+    for(int i=0;i<window.size();i++)if(targets.contains(window.get(i).messageId()))anchors.add(i);
+    keep.addAll(anchors.subList(Math.max(0,anchors.size()-20),anchors.size()));
+    List<Integer> surrounding=new ArrayList<>();
+    for(int i=0;i<window.size();i++)if(!targets.contains(window.get(i).messageId()))surrounding.add(i);
+    surrounding.sort(Comparator.comparingInt((Integer i)->anchors.stream().mapToInt(a->Math.abs(a-i)).min().orElse(Integer.MAX_VALUE)).thenComparingInt(i->i));
+    for(int index:surrounding){if(keep.size()==20)break;keep.add(index);}
+    var selected=keep.stream().sorted().map(window::get).toList();
+    return new com.lifeguards.liveguard.contracts.dto.response.ContextData(
+        selected, selected.size()<window.size(), c, s.snapshotId(), s.evidenceVersion());
+  }
+
+  @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ)
   public com.lifeguards.liveguard.contracts.dto.response.UserHistory userHistory(UUID id) {
     var c=row(id,false);
-    var items=db.sql("SELECT c.id,f.category,f.confirmed_at FROM guard.cases c JOIN guard.findings f ON f.case_id=c.id WHERE c.live_id=? AND c.user_id=? AND c.id<>? AND f.source='BACKEND' AND f.status='CONFIRMED' AND f.verdict='VIOLATION' ORDER BY f.confirmed_at,c.id,f.category")
-      .params(c.get("live_id"),c.get("user_id"),id).query((r,n)->new com.lifeguards.liveguard.contracts.dto.response.UserHistory.RecentCase(r.getObject(1,UUID.class),Category.valueOf(r.getString(2)),r.getTimestamp(3).toInstant())).list();
+    var items=db.sql("SELECT c.id,f.category,f.confirmed_at FROM guard.cases c JOIN guard.findings f ON f.case_id=c.id WHERE c.live_id=? AND c.user_id=? AND c.id<>? AND f.source='BACKEND' AND f.status='CONFIRMED' AND f.verdict='VIOLATION' AND f.revoked_at IS NULL AND f.confirmed_at<=? ORDER BY f.confirmed_at,c.id,f.category")
+      .params(c.get("live_id"),c.get("user_id"),id,now()).query((r,n)->new com.lifeguards.liveguard.contracts.dto.response.UserHistory.RecentCase(r.getObject(1,UUID.class),Category.valueOf(r.getString(2)),r.getTimestamp(3).toInstant())).list();
     return new com.lifeguards.liveguard.contracts.dto.response.UserHistory((int)items.stream().map(x->x.caseId()).distinct().count(),items);
   }
 
@@ -352,6 +444,7 @@ public class LiveModerationService implements LiveGuardPort {
         > 0;
   }
 
+  @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ)
   public List<Map<String, Object>> cases(UUID live, AuthenticatedUser user) {
     platform.authorize(live, user.userId(), true);
     return db
@@ -366,10 +459,15 @@ public class LiveModerationService implements LiveGuardPort {
         .toList();
   }
 
+  @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ)
   public Map<String, Object> detail(UUID c, AuthenticatedUser user) {
     var current = row(c, false);
     platform.authorize(id(current.get("live_id")), user.userId(), true);
     var data = new LinkedHashMap<>(snapshot(c));
+    var targets=currentTargets(c);
+    data.put("targets",targets);
+    data.put("targetMessageIds",targets.stream().map(t->t.get("messageId")).toList());
+    data.put("targetVersions",targets.stream().collect(java.util.stream.Collectors.toMap(t->t.get("messageId").toString(),t->t.get("version"))));
     data.put("status", current.get("status"));
     data.put("version",current.get("version"));
     data.put("confirmedFindings",db.sql("SELECT id,category,status,confirmed_at,revoked_at FROM guard.findings WHERE case_id=? AND source='BACKEND' ORDER BY created_at,id")
@@ -563,6 +661,7 @@ public class LiveModerationService implements LiveGuardPort {
         .orElseThrow(() -> error(ErrorCode.NOT_FOUND, "Review not found"));
   }
 
+  @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ)
   public List<Map<String, Object>> reviews(UUID live, AuthenticatedUser user) {
     platform.authorize(live, user.userId(), true);
     return db
@@ -577,6 +676,7 @@ public class LiveModerationService implements LiveGuardPort {
         .toList();
   }
 
+  @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ)
   public Map<String, Object> reviewCard(UUID r) {
     var rev = review(r, false);
     var c = row(id(rev.get("case_id")), false);
@@ -716,6 +816,7 @@ public class LiveModerationService implements LiveGuardPort {
     return decision(r, d, false);
   }
 
+  @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ)
   public Map<String, Object> decision(UUID r, UUID d, boolean internal) {
     var rev = review(r, false);
     var c = row(id(rev.get("case_id")), false);
@@ -818,30 +919,11 @@ public class LiveModerationService implements LiveGuardPort {
       String source,
       String status,
       String reference) {
-    UUID f = UUID.randomUUID();
-    db.sql(
-            "INSERT INTO"
-                + " guard.findings(id,case_id,category,source,verdict,status,policy_version,evidence_reference,evidence_version,created_at,confirmed_at)"
-                + " VALUES(?,?,?,?,?,?,?,?,?,?,?)")
-        .params(
-            f,
-            c.get("id"),
-            cat,
-            source,
-            verdict,
-            status,
-            c.get("policy_version"),
-            reference,
-            c.get("evidence_version"),
-            now(),
-            status.equals("CONFIRMED") ? now() : null)
-        .update();
-    db.sql(
-            "INSERT INTO"
-                + " guard.finding_events(id,finding_id,event_type,decision_reference,reason,created_at)"
-                + " VALUES(?,?,?,?,?,?)")
-        .params(UUID.randomUUID(), f, status, reference, "Validated " + source + " finding", now())
-        .update();
+    var input=new FindingService.FindingInput(id(c.get("id")),List.of(Category.valueOf(cat)),Verdict.valueOf(verdict),
+      c.get("policy_version").toString(),reference,((Number)c.get("evidence_version")).intValue(),reference,
+      "Validated "+source+" finding");
+    if(status.equals("CONFIRMED"))findings.confirm(input);
+    else findings.propose(input);
   }
 
   private void confirm(Map<String, Object> c, List<String> cats, String reference) {
@@ -854,8 +936,8 @@ public class LiveModerationService implements LiveGuardPort {
                   "SELECT count(DISTINCT c.id) FROM guard.cases c JOIN guard.findings f ON"
                       + " f.case_id=c.id WHERE c.live_id=? AND c.user_id=? AND c.id<>? AND"
                       + " f.category=? AND f.source='BACKEND' AND f.status='CONFIRMED' AND"
-                      + " f.verdict='VIOLATION'")
-              .params(live, user, caseId, cat)
+                      + " f.verdict='VIOLATION' AND f.revoked_at IS NULL AND f.confirmed_at<=?")
+              .params(live, user, caseId, cat,now())
               .query(Integer.class)
               .single();
       seconds=Math.max(seconds,TimeoutPolicy.seconds(cat,previous));
@@ -910,13 +992,14 @@ public class LiveModerationService implements LiveGuardPort {
         db.sql(
                 "SELECT c.id FROM guard.cases c WHERE c.live_id=? AND c.user_id=? AND EXISTS(SELECT"
                     + " 1 FROM guard.findings f WHERE f.case_id=c.id AND f.source='BACKEND' AND"
-                    + " f.status='CONFIRMED' AND f.verdict='VIOLATION' AND f.confirmed_at>?) AND"
+                    + " f.status='CONFIRMED' AND f.verdict='VIOLATION' AND f.revoked_at IS NULL AND f.confirmed_at>? AND f.confirmed_at<=?) AND"
                     + " NOT EXISTS(SELECT 1 FROM guard.live_reservations r WHERE r.case_id=c.id AND r.state IN ('RESERVED','CONSUMED'))"
-                    + " ORDER BY c.judged_at,c.id LIMIT 3")
+                    + " ORDER BY (SELECT min(f.confirmed_at) FROM guard.findings f WHERE f.case_id=c.id AND f.source='BACKEND' AND f.status='CONFIRMED' AND f.verdict='VIOLATION' AND f.revoked_at IS NULL AND f.confirmed_at>? AND f.confirmed_at<=?),c.id LIMIT 3")
             .params(
                 c.get("live_id"),
                 c.get("user_id"),
-                Timestamp.from(clock.instant().minusSeconds(86400)))
+                Timestamp.from(clock.instant().minusSeconds(86400)),now(),
+                Timestamp.from(clock.instant().minusSeconds(86400)),now())
             .query(UUID.class)
             .list();
     if (candidates.size() < 3) return Map.of("required", false);
@@ -1006,6 +1089,8 @@ public class LiveModerationService implements LiveGuardPort {
   }
 
   private boolean validBasis(UUID r, Map<String, Object> c) {
+    var original=basis(review(r,false));
+    if(original.size()!=3||original.stream().distinct().count()!=3)return false;
     for (UUID b : basis(review(r, false))) {
       int valid =
           db.sql(
@@ -1013,18 +1098,61 @@ public class LiveModerationService implements LiveGuardPort {
                       + " c.id=res.case_id WHERE res.state='CONSUMED' AND res.review_id=? AND res.case_id=? AND c.live_id=?"
                       + " AND c.user_id=? AND EXISTS(SELECT 1 FROM guard.findings f WHERE"
                       + " f.case_id=c.id AND f.status='CONFIRMED' AND f.source='BACKEND' AND"
-                      + " f.verdict='VIOLATION' AND f.confirmed_at>?)")
+                      + " f.verdict='VIOLATION' AND f.revoked_at IS NULL AND f.confirmed_at>? AND f.confirmed_at<=?)")
               .params(
                   r,
                   b,
                   c.get("live_id"),
                   c.get("user_id"),
-                  Timestamp.from(clock.instant().minusSeconds(86400)))
+                  Timestamp.from(clock.instant().minusSeconds(86400)),now())
               .query(Integer.class)
               .single();
       if (valid != 1) return false;
     }
     return basis(review(r, false)).size() == 3;
+  }
+
+  @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ)
+  public com.lifeguards.liveguard.contracts.dto.response.KickReviewBasis kickReviewBasis(UUID reviewId) {
+    var r=review(reviewId,false);
+    if(!r.get("kind").equals("KICK"))throw error(ErrorCode.VALIDATION_FAILED,"Kick review required");
+    var c=row(id(r.get("case_id")),false);
+    if(basis(r).size()!=3||basis(r).stream().distinct().count()!=3)
+      throw error(ErrorCode.CASE_NOT_READY,"Fixed kick basis is incomplete");
+    var decision=db.sql("SELECT id FROM guard.decisions WHERE review_id=? AND value IN ('APPROVE','REJECT')")
+      .param(reviewId).query(UUID.class).optional()
+      .orElseThrow(()->error(ErrorCode.CASE_NOT_READY,"Kick review has no final decision"));
+    List<com.lifeguards.liveguard.contracts.dto.response.KickReviewBasis.Consumption> consumed=new ArrayList<>();
+    for(UUID caseId:basis(r)) {
+      consumed.addAll(db.sql("SELECT res.case_id,res.review_id,d.id FROM guard.live_reservations res JOIN guard.decisions d ON d.review_id=res.review_id AND d.value IN ('APPROVE','REJECT') WHERE res.case_id=? AND res.state='CONSUMED'")
+        .param(caseId).query((rs,n)->new com.lifeguards.liveguard.contracts.dto.response.KickReviewBasis.Consumption(
+          rs.getObject(1,UUID.class),rs.getObject(2,UUID.class),rs.getObject(3,UUID.class))).list());
+    }
+    return new com.lifeguards.liveguard.contracts.dto.response.KickReviewBasis(reviewId,decision,
+      id(c.get("live_id")),id(c.get("user_id")),id(r.get("basis_snapshot_id")),basis(r),consumed);
+  }
+
+  @org.springframework.transaction.event.TransactionalEventListener
+  @Transactional(propagation=org.springframework.transaction.annotation.Propagation.REQUIRES_NEW)
+  public void liveEnded(LiveEndedEvent event) {
+    platform.lockScope(event.liveId());
+    db.sql("UPDATE guard.reviews r SET status='INVALIDATED',version=r.version+1 FROM guard.cases c WHERE r.case_id=c.id AND c.live_id=? AND r.kind='KICK' AND r.status<>'INVALIDATED'")
+      .param(event.liveId()).update();
+    db.sql("UPDATE guard.live_reservations res SET state='RELEASED' FROM guard.reviews r JOIN guard.cases c ON c.id=r.case_id WHERE res.review_id=r.id AND c.live_id=? AND r.kind='KICK' AND res.state='RESERVED'")
+      .param(event.liveId()).update();
+    var pending=db.sql("SELECT a.id,a.case_id FROM guard.live_actions a JOIN guard.cases c ON c.id=a.case_id WHERE c.live_id=? AND a.kind='KICK' AND a.status='PENDING' AND a.result IS NULL FOR UPDATE OF a")
+      .param(event.liveId()).query(new org.springframework.jdbc.core.ColumnMapRowMapper()).list();
+    for(var action:pending) {
+      var result=new LinkedHashMap<String,Object>();
+      result.put("actionId",action.get("id"));result.put("caseId",action.get("case_id"));result.put("liveId",event.liveId());
+      result.put("type","KICK");result.put("status","FAILED");result.put("observation","CONFIRMED");result.put("applied",false);
+      result.put("attemptCount",0);result.put("retryCount",0);result.put("startedAt",null);result.put("errorCode","LIVE_ENDED");
+      db.sql("UPDATE guard.live_actions SET status='FAILED',result=?::jsonb WHERE id=?")
+        .params(encode(result),action.get("id")).update();
+    }
+    // Accepted/uncertain/in-flight delivery is not retroactively declared failed. Execution rechecks live state.
+    db.sql("UPDATE guard.agent_task_outbox o SET status=CASE WHEN o.delivery_uncertain THEN 'UNKNOWN' ELSE 'FAILED' END,last_error_code='LIVE_ENDED',updated_at=?,publish_token=NULL,publish_lease_until=NULL FROM guard.reviews r JOIN guard.cases c ON c.id=r.case_id WHERE c.live_id=? AND r.kind='KICK' AND o.payload->>'reviewId'=r.id::text AND o.status IN ('PENDING','RETRY')")
+      .params(Timestamp.from(event.endedAt()),event.liveId()).update();
   }
 
   public Map<String, Object> execute(UUID a, Map<String, Object> command) {

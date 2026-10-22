@@ -64,6 +64,12 @@ class InternalApiTest {
 	private MockMvc mockMvc;
 	@Autowired
 	private JdbcTemplate jdbc;
+	@Autowired
+	private com.lifeguards.liveguard.platform.port.CandidateSink candidates;
+	@Autowired
+	private com.lifeguards.liveguard.guard.LiveModerationService moderation;
+	@Autowired
+	private com.lifeguards.liveguard.platform.CaseContextQuery contexts;
 	@MockitoSpyBean
 	private GuardEventPublisher guardEvents;
 
@@ -76,13 +82,12 @@ class InternalApiTest {
 		caseId = UUID.randomUUID();
 		lives.clear();
 		users.clear();
-		CaseFixtures.insertCase(jdbc, caseId, CHANNEL_A, VIEWER);
 	}
 
 	@AfterEach
 	void cleanUp() {
-		jdbc.update("DELETE FROM platform.messages");
 		CaseFixtures.deleteCases(jdbc);
+		jdbc.update("DELETE FROM platform.messages");
 		lives.forEach(id -> jdbc.update("DELETE FROM platform.lives WHERE id = ?", id));
 		users.forEach(id -> jdbc.update("DELETE FROM platform.users WHERE id = ?", id));
 	}
@@ -172,9 +177,9 @@ class InternalApiTest {
 				.andReturn().getResponse().getContentAsString();
 
 		List<String> texts = JsonPath.read(body, "$.data.messages[*].text");
-		assertEquals(List.of("앞 10", "앞 11", "증거 1", "사이", "증거 2", "뒤 0", "뒤 1", "뒤 2"), texts);
+		assertEquals(List.of("앞 10", "앞 11", "증거 1", "사이", "증거 2", "뒤 0"), texts);
 		List<String> aliases = JsonPath.read(body, "$.data.messages[*].authorAlias");
-		assertEquals(List.of("U2", "U2", "U1", "U2", "U1", "U2", "U2", "U2"), aliases);
+		assertEquals(List.of("U2", "U2", "U1", "U2", "U1", "U2"), aliases);
 	}
 
 	@Test
@@ -196,9 +201,9 @@ class InternalApiTest {
 
 		List<String> texts = JsonPath.read(body, "$.data.messages[*].text");
 		assertTrue(texts.containsAll(List.of("증거 1", "증거 2")), "사건 메시지는 항상 남는다");
-		// 기본 10건씩 22건 중 사건에서 먼 양 끝(앞 2, 뒤 9)이 빠진다
-		assertEquals("앞 3", texts.getFirst());
-		assertEquals("뒤 8", texts.getLast());
+		// 일반 사건은 첫 메시지 하나만 대상이다. 두 번째 메시지는 고정 문맥의 증거다.
+		assertEquals("앞 2", texts.getFirst());
+		assertEquals("뒤 7", texts.getLast());
 	}
 
 	@Test
@@ -220,9 +225,8 @@ class InternalApiTest {
 
 	@Test
 	void contextIncludesHeldMessagesForTheAgent() throws Exception {
-		jdbc.update("INSERT INTO platform.messages (channel_id, author_id, client_message_id, text, normalized_text, "
-				+ "filter_result, visibility, case_id, sent_at) VALUES (?, ?, ?, '가려진 메시지', '가려진 메시지', "
-				+ "'HOLD', 'HELD', ?, ?)", CHANNEL_A, VIEWER, UUID.randomUUID(), caseId, Timestamp.from(T0));
+		UUID message=insert(VIEWER,"가려진 메시지",0,caseId);
+		jdbc.update("UPDATE platform.messages SET visibility='HELD' WHERE id=?",message);
 
 		mockMvc.perform(internal(get(context(caseId))))
 				.andExpect(jsonPath("$.data.messages[0].text").value("가려진 메시지"));
@@ -239,11 +243,10 @@ class InternalApiTest {
 		insertIn(newLive, VIEWER, "증거", 20, caseId, "HELD");
 		insertIn(newLive, MODERATOR, "새 방송 뒤", 22, null, "PUBLIC");
 
-		String body = mockMvc.perform(internal(get(context(caseId) + "?before=5&after=5")))
-				.andExpect(status().isOk())
-				.andReturn().getResponse().getContentAsString();
+		var context = contexts.context(caseId, 5, 5);
 
-		assertEquals(List.of("새 방송 앞", "증거", "새 방송 뒤"), JsonPath.read(body, "$.data.messages[*].text"));
+		assertEquals(List.of("새 방송 앞", "증거", "새 방송 뒤"),
+				context.messages().stream().map(message -> message.text()).toList());
 	}
 
 	@Test
@@ -254,12 +257,10 @@ class InternalApiTest {
 		insertIn(null, VIEWER, "도입 전 증거", 20, caseId, "PUBLIC");
 		insertIn(null, MODERATOR, "도입 전 뒤", 25, null, "PUBLIC");
 
-		String body = mockMvc.perform(internal(get(context(caseId) + "?before=5&after=5")))
-				.andExpect(status().isOk())
-				.andReturn().getResponse().getContentAsString();
+		var context = contexts.context(caseId, 5, 5);
 
 		assertEquals(List.of("도입 전 앞", "도입 전 증거", "도입 전 뒤"),
-				JsonPath.read(body, "$.data.messages[*].text"));
+				context.messages().stream().map(message -> message.text()).toList());
 	}
 
 	@Test
@@ -269,12 +270,12 @@ class InternalApiTest {
 		insertIn(live, VIEWER, "가려진 증거", 20, caseId, "HELD");
 		insertIn(live, MODERATOR, "숨김 뒤", 30, null, "HIDDEN");
 
-		String body = mockMvc.perform(internal(get(context(caseId) + "?before=5&after=5")))
-				.andExpect(status().isOk())
-				.andReturn().getResponse().getContentAsString();
+		var context = contexts.context(caseId, 5, 5);
 
-		assertEquals(List.of("공개 앞", "가려진 증거", "숨김 뒤"), JsonPath.read(body, "$.data.messages[*].text"));
-		assertEquals(List.of("PUBLIC", "HELD", "HIDDEN"), JsonPath.read(body, "$.data.messages[*].visibility"));
+		assertEquals(List.of("공개 앞", "가려진 증거", "숨김 뒤"),
+				context.messages().stream().map(message -> message.text()).toList());
+		assertEquals(List.of("PUBLIC", "HELD", "HIDDEN"),
+				context.messages().stream().map(message -> message.visibility()).toList());
 	}
 
 	@Test
@@ -401,8 +402,22 @@ class InternalApiTest {
 		return request.header(ServiceTokenFilter.HEADER, TOKEN);
 	}
 
-	private static String context(UUID caseId) {
-		return "/internal/cases/" + caseId + "/context";
+	private String context(UUID requested) {
+		if(requested.equals(caseId)&&!moderation.owns(caseId)){
+			var rows=jdbc.queryForList("SELECT id,live_id,author_id,sent_at FROM platform.messages WHERE case_id=? ORDER BY sent_at,id LIMIT 1",caseId);
+			if(!rows.isEmpty()){
+				var row=rows.getFirst();
+				UUID target=(UUID)row.get("id");
+				caseId=candidates.open(new com.lifeguards.liveguard.platform.port.CandidateRequest(
+					CHANNEL_A,(UUID)row.get("live_id"),(UUID)row.get("author_id"),target,
+					com.lifeguards.liveguard.contracts.enums.FilterResult.HOLD,
+					com.lifeguards.liveguard.contracts.enums.HandlingRoute.CONTEXT_REVIEW,null,
+					List.of("ATTACK_TERM"),"norm-test+dict-test","v3.1",
+					jdbc.queryForObject("SELECT sent_at FROM platform.messages WHERE id=?",Timestamp.class,target).toInstant(),List.of()));
+				return "/internal/cases/"+caseId+"/context";
+			}
+		}
+		return "/internal/cases/" + requested + "/context";
 	}
 
 	/** 어느 채널에도 속하지 않은 사용자. */
@@ -436,10 +451,10 @@ class InternalApiTest {
 	private UUID insert(UUID author, String text, int secondsAfterT0, UUID caseId) {
 		UUID id = UUID.randomUUID();
 		CaseFixtures.insertCase(jdbc, caseId, CHANNEL_A, author);
-		jdbc.update("INSERT INTO platform.messages (id, channel_id, author_id, client_message_id, text, "
+		jdbc.update("INSERT INTO platform.messages (id, channel_id, live_id, author_id, client_message_id, text, "
 				+ "normalized_text, filter_result, visibility, case_id, sent_at) "
-				+ "VALUES (?, ?, ?, ?, ?, ?, 'PASS', 'PUBLIC', ?, ?)",
-				id, CHANNEL_A, author, UUID.randomUUID(), text, text, caseId,
+				+ "VALUES (?, ?, (SELECT id FROM platform.lives WHERE channel_id=? AND ended_at IS NULL), ?, ?, ?, ?, ?, 'PUBLIC', ?, ?)",
+				id, CHANNEL_A, CHANNEL_A, author, UUID.randomUUID(), text, text, caseId==null?"PASS":"HOLD",caseId,
 				Timestamp.from(T0.plusSeconds(secondsAfterT0)));
 		return id;
 	}

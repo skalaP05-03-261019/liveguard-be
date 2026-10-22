@@ -4,7 +4,6 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.EnumMap;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -16,12 +15,10 @@ import org.springframework.transaction.annotation.Transactional;
 import com.lifeguards.liveguard.common.ApiException;
 import com.lifeguards.liveguard.contracts.dto.DtoValidation;
 import com.lifeguards.liveguard.contracts.dto.response.InternalCase;
-import com.lifeguards.liveguard.contracts.dto.response.MaskedMessage;
 import com.lifeguards.liveguard.contracts.dto.response.UserHistory;
 import com.lifeguards.liveguard.contracts.enums.Category;
 import com.lifeguards.liveguard.contracts.enums.ErrorCode;
 import com.lifeguards.liveguard.contracts.exception.InvalidContractException;
-import com.lifeguards.liveguard.filter.PiiMasker;
 import com.lifeguards.liveguard.guard.CaseQueryRepository.CaseRow;
 
 @Service
@@ -42,7 +39,7 @@ public class CaseQueryService {
 		}
 	}
 
-	/** Deliberately has no eligible flag: reservations and consumption have not been applied. */
+	/** Read-only new-review candidates after reservation and consumption exclusion, not execution authority. */
 	public record KickBasis(UUID channelId, UUID userId, UUID liveId, Instant since, Instant asOf,
 			List<UUID> confirmedCaseIds) {
 		public KickBasis {
@@ -52,10 +49,12 @@ public class CaseQueryService {
 
 	private final CaseQueryRepository repository;
 	private final Clock clock;
+	private final LiveModerationService moderation;
 
-	public CaseQueryService(CaseQueryRepository repository, Clock clock) {
+	public CaseQueryService(CaseQueryRepository repository, Clock clock, LiveModerationService moderation) {
 		this.repository = repository;
 		this.clock = clock;
+		this.moderation = moderation;
 	}
 
 	CaseDetails details(UUID caseId) {
@@ -70,42 +69,35 @@ public class CaseQueryService {
 				|| current.handlingRoute() == null) {
 			throw notReady("Case broadcast, policy version or handling route is not available");
 		}
-		var candidate = repository.candidates(caseId).stream()
+		repository.candidates(caseId).stream()
 				.filter(row -> row.snapshotId().equals(current.snapshotId())
 						&& row.evidenceVersion() == current.evidenceVersion())
 				.findFirst().orElseThrow(() -> notReady("Current case evidence is not available"));
-		List<CaseQueryRepository.MessageRow> rows = repository.messages(caseId);
-		if (rows.stream().noneMatch(CaseQueryRepository.MessageRow::target)) {
+		if (repository.messages(caseId).stream().noneMatch(CaseQueryRepository.MessageRow::target)) {
 			throw notReady("Case targets are not available");
 		}
-		Map<UUID, String> aliases = new LinkedHashMap<>();
-		aliases.put(current.userId(), "U1");
-		List<MaskedMessage> messages = rows.stream().map(row -> new MaskedMessage(row.id(),
-				aliases.computeIfAbsent(row.authorId(), id -> "U" + (aliases.size() + 1)),
-				PiiMasker.mask(row.text()), row.sentAt())).toList();
-		List<InternalCase.Target> targets = rows.stream().filter(CaseQueryRepository.MessageRow::target)
-				.map(row -> new InternalCase.Target(row.id(), row.visibility(), row.version())).toList();
-		return new InternalCase(current.id(), current.channelId(), current.liveId(), current.snapshotId(),
-				current.evidenceVersion(), current.policyVersion(), current.handlingRoute(), candidate.filterResult(),
-				candidate.matchingTags(), current.version(), messages, targets);
+		if(!moderation.owns(caseId))throw notReady("Immutable evidence snapshot is not available");
+		return moderation.internalCase(caseId);
 	}
 
 	public TimeoutHistory timeoutHistory(UUID caseId, Instant since, Instant asOf) {
 		validateRange(since, asOf);
-		return history(requireCase(caseId), since, asOf);
+		return history(requireScopedCase(caseId), since, asOf);
 	}
 
 	public UserHistory userHistory(UUID caseId, Integer days) {
-		if (days != null && (days < 1 || days > Integer.MAX_VALUE / 24)) {
-			throw new InvalidContractException("days must be positive and representable in hours");
-		}
-		CaseRow current = requireCase(caseId);
-		if (days == null) {
-			throw new ApiException(ErrorCode.NOT_IMPLEMENTED, "Default TIMEOUT history period is not configured");
-		}
+		if (days != null) throw new InvalidContractException("TIMEOUT history covers the whole live; days is unsupported");
+		CaseRow current = requireScopedCase(caseId);
 		Instant asOf = clock.instant();
-		TimeoutHistory history = history(current, asOf.minus(days, ChronoUnit.DAYS), asOf);
+		TimeoutHistory history = history(current, Instant.parse("0001-01-01T00:00:00Z"), asOf);
 		return new UserHistory(history.violationCount(), history.recentCases());
+	}
+
+	public com.lifeguards.liveguard.contracts.dto.response.KickEligibility kickEligibility(UUID caseId) {
+		CaseRow current=requireScopedCase(caseId);
+		var basis=kickBasis(current.channelId(),current.userId(),current.liveId(),clock.instant());
+		return new com.lifeguards.liveguard.contracts.dto.response.KickEligibility(current.userId(),current.channelId(),
+			current.liveId(),basis.asOf(),24,basis.confirmedCaseIds().size(),basis.confirmedCaseIds());
 	}
 
 	public KickBasis kickBasis(UUID channelId, UUID userId, UUID liveId, Instant asOf) {
@@ -132,6 +124,13 @@ public class CaseQueryService {
 	private CaseRow requireCase(UUID caseId) {
 		DtoValidation.requireNonNull(caseId, "caseId");
 		return repository.find(caseId).orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND, "Case not found"));
+	}
+
+	private CaseRow requireScopedCase(UUID caseId) {
+		CaseRow current=requireCase(caseId);
+		if(current.liveId()==null||!repository.hasLiveScope(current))
+			throw notReady("Case broadcast scope is unavailable or inconsistent");
+		return current;
 	}
 
 	private void validateRange(Instant since, Instant asOf) {

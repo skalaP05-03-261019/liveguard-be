@@ -57,7 +57,7 @@ public class MessageFilter {
 		boolean officialClaim = containsAny(normalized, dictionary.officialClaimTerms());
 		boolean credential = containsAny(normalized, dictionary.credentialTerms());
 		boolean link = !UrlHosts.extract(input.text()).isEmpty();
-		boolean repeated = input.sameTextCountInWindow() >= FLOOD_THRESHOLD;
+		boolean repeated = input.sameTextCountInWindow() >= FLOOD_THRESHOLD || input.floodRecurrence();
 		List<MatchingTag> pii = PiiMasker.candidates(input.text());
 
 		List<String> tags = new ArrayList<>();

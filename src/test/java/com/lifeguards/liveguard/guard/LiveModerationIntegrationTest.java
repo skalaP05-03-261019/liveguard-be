@@ -27,6 +27,8 @@ class LiveModerationIntegrationTest {
   @Autowired LiveService lives;
   @Autowired LiveModerationService guard;
   @Autowired LiveFindingRecovery recovery;
+  @Autowired CaseQueryService queries;
+  @Autowired com.lifeguards.liveguard.platform.port.MessageVisibilityPort visibility;
   @Autowired JdbcTemplate db;
   UUID channel, user, operator, other;
   AuthenticatedUser viewer, moderator, second;
@@ -130,6 +132,95 @@ class LiveModerationIntegrationTest {
     var result = guard.apply(r, request);
     assertEquals(result, guard.apply(r, request));
     return result;
+  }
+
+  @Test
+  void genericRestoreCannotReleaseRuleButRevocationReleasesOnlyItsOwnReason() {
+    UUID live=lives.start(channel,moderator).liveId();
+    UUID context=candidate(live,"너 꺼져 별도 문맥");
+    UUID rule=candidate(live,"씨발");
+    UUID message=db.queryForObject("SELECT id FROM platform.messages WHERE case_id=?",UUID.class,rule);
+    int version=db.queryForObject("SELECT version FROM platform.messages WHERE id=?",Integer.class,message);
+    assertEquals(0,visibility.restoreCaseMessages(rule));
+    lives.visibility(rule,"PUBLIC");
+    assertEquals("HIDDEN",db.queryForObject("SELECT visibility FROM platform.messages WHERE id=?",String.class,message));
+    assertEquals(version,db.queryForObject("SELECT version FROM platform.messages WHERE id=?",Integer.class,message));
+    assertNull(db.queryForObject("SELECT released_at FROM platform.message_hold_reasons WHERE message_id=? AND case_id=?",java.sql.Timestamp.class,message,rule));
+    db.update("INSERT INTO platform.message_hold_reasons(message_id,case_id,reason,created_at) VALUES(?,?,'CONTEXT_REVIEW',current_timestamp)",message,context);
+    recovery.revoke(confirmedFinding(rule),revokeRequest(rule),moderator);
+    assertEquals("HIDDEN",db.queryForObject("SELECT visibility FROM platform.messages WHERE id=?",String.class,message));
+    assertNull(db.queryForObject("SELECT released_at FROM platform.message_hold_reasons WHERE message_id=? AND case_id=?",java.sql.Timestamp.class,message,context));
+    lives.visibility(context,"PUBLIC");
+    assertEquals("PUBLIC",db.queryForObject("SELECT visibility FROM platform.messages WHERE id=?",String.class,message));
+    assertEquals(version+1,db.queryForObject("SELECT version FROM platform.messages WHERE id=?",Integer.class,message));
+    assertEquals(0,visibility.restoreCaseMessages(rule));
+  }
+
+  @Test
+  void eligibilityReadsActualReservationsAndOriginalConsumptionWithoutReplacingBasis() {
+    UUID live=lives.start(channel,moderator).liveId();
+    List<UUID> cs=new ArrayList<>(),rs=new ArrayList<>();
+    for(int i=0;i<4;i++){UUID c=candidate(live,"너 꺼져 읽기 전용 "+i);cs.add(c);rs.add(proposal(c,"VIOLATION"));}
+    apply(cs.get(0),rs.get(0),decide(rs.get(0),"CONFIRM_VIOLATION",1));
+    apply(cs.get(1),rs.get(1),decide(rs.get(1),"CONFIRM_VIOLATION",1));
+    assertEquals(2,queries.kickEligibility(cs.get(2)).count());
+    apply(cs.get(2),rs.get(2),decide(rs.get(2),"CONFIRM_VIOLATION",1));
+    UUID kick=db.queryForObject("SELECT id FROM guard.reviews WHERE case_id=? AND kind='KICK'",UUID.class,cs.get(2));
+    var fixed=(List<?>)guard.reviewCard(kick).get("basisCaseIds");
+    assertEquals(0,queries.kickEligibility(cs.get(2)).count());
+    assertEquals(ErrorCode.CASE_NOT_READY,assertThrows(ApiException.class,()->guard.kickReviewBasis(kick)).code());
+    var decision=decide(kick,"APPROVE",1);
+    apply(cs.get(3),rs.get(3),decide(rs.get(3),"CONFIRM_VIOLATION",1));
+    assertEquals(List.of(cs.get(3)),queries.kickEligibility(cs.get(3)).eligibleCaseIds());
+    var basis=guard.kickReviewBasis(kick);
+    assertEquals(fixed,basis.basisCaseIds());
+    assertEquals(3,basis.consumptions().size());
+    assertTrue(basis.consumptions().stream().allMatch(c->c.reviewId().equals(kick)&&c.decisionId().toString().equals(decision.get("decisionId").toString())));
+    assertEquals(3,queries.userHistory(cs.get(3),null).violationCount());
+    assertEquals(3,db.queryForObject("SELECT count(*) FROM guard.live_reservations WHERE state='CONSUMED'",Integer.class));
+  }
+
+  @Test
+  @Transactional(propagation=org.springframework.transaction.annotation.Propagation.NOT_SUPPORTED)
+  void committedLiveEndInvalidatesOnlyKickWorkAndPreservesHistoryAndDeliveryOutcomes() {
+    try {
+      UUID live=lives.start(channel,moderator).liveId();
+      List<UUID> cs=new ArrayList<>(),rs=new ArrayList<>();
+      for(int i=0;i<7;i++){UUID c=candidate(live,"너 꺼져 방송 종료 "+i);cs.add(c);rs.add(proposal(c,"VIOLATION"));}
+      for(int i=0;i<6;i++)apply(cs.get(i),rs.get(i),decide(rs.get(i),"CONFIRM_VIOLATION",1));
+      var kicks=db.queryForList("SELECT id FROM guard.reviews WHERE kind='KICK' ORDER BY created_at,id",UUID.class);
+      UUID approved=kicks.getFirst();
+      var decision=decide(approved,"APPROVE",1);
+      var validated=guard.revalidate(approved,UUID.fromString(decision.get("decisionId").toString()));
+      var command=(Map<String,Object>)validated.get("actionCommand");
+      UUID action=UUID.fromString(command.get("actionId").toString());
+      db.update("UPDATE guard.agent_task_outbox SET status='ACCEPTED' WHERE case_id=? AND payload->>'kind'='ANALYZE'",cs.getFirst());
+      db.update("UPDATE guard.agent_task_outbox SET status='RETRY',delivery_uncertain=true WHERE payload->>'reviewId'=?",approved.toString());
+      long findings=db.queryForObject("SELECT count(*) FROM guard.findings",Long.class);
+      var ended=lives.end(live,moderator);
+      assertEquals(2,db.queryForObject("SELECT count(*) FROM guard.reviews WHERE kind='KICK' AND status='INVALIDATED'",Integer.class));
+      assertEquals(3,db.queryForObject("SELECT count(*) FROM guard.live_reservations WHERE state='CONSUMED'",Integer.class));
+      assertEquals(3,db.queryForObject("SELECT count(*) FROM guard.live_reservations WHERE state='RELEASED'",Integer.class));
+      assertEquals("PENDING",guard.reviewCard(rs.get(6)).get("status"));
+      assertEquals("ACCEPTED",db.queryForObject("SELECT status FROM guard.agent_task_outbox WHERE case_id=? AND payload->>'kind'='ANALYZE'",String.class,cs.getFirst()));
+      assertEquals("UNKNOWN",db.queryForObject("SELECT status FROM guard.agent_task_outbox WHERE payload->>'reviewId'=?",String.class,approved.toString()));
+      assertEquals(findings,db.queryForObject("SELECT count(*) FROM guard.findings",Long.class));
+      assertEquals(0,queries.kickEligibility(cs.getFirst()).count());
+      assertEquals("LIVE_ENDED",guard.actionStatus(action).get("errorCode"));
+      assertEquals(false,guard.execute(action,command).get("applied"));
+      assertEquals(ErrorCode.LIVE_ENDED,assertThrows(ApiException.class,()->guard.revalidate(approved,UUID.fromString(decision.get("decisionId").toString()))).code());
+      int version=db.queryForObject("SELECT version FROM guard.reviews WHERE id=?",Integer.class,approved);
+      guard.liveEnded(new com.lifeguards.liveguard.platform.port.LiveEndedEvent(live,channel,ended.endedAt()));
+      assertEquals(version,db.queryForObject("SELECT version FROM guard.reviews WHERE id=?",Integer.class,approved));
+      assertEquals(6,queries.userHistory(cs.get(6),null).violationCount());
+    } finally {
+      com.lifeguards.liveguard.support.CaseFixtures.deleteCases(db);
+      db.update("DELETE FROM platform.messages WHERE channel_id=?",channel);
+      db.update("DELETE FROM platform.lives WHERE channel_id=?",channel);
+      db.update("DELETE FROM platform.channel_members WHERE channel_id=?",channel);
+      db.update("DELETE FROM platform.channels WHERE id=?",channel);
+      for(UUID id:List.of(user,operator,other))db.update("DELETE FROM platform.users WHERE id=?",id);
+    }
   }
 
   @Test
@@ -283,9 +374,9 @@ class LiveModerationIntegrationTest {
   }
 
   @Test
-  void piiUncertaintyUsesContextAndOtherHoldReasonPreventsRelease() {
+  void maskedContextUncertaintyAndOtherHoldReasonPreventsRelease() {
     UUID live = lives.start(channel, moderator).liveId();
-    UUID c = candidate(live, "연락 010-1234-5678");
+    UUID c = candidate(live, "꺼져 연락 010-1234-5678");
     assertEquals("PII_INVESTIGATION", guard.snapshot(c).get("handlingRoute"));
     UUID r = proposal(c, "NEEDS_REVIEW");
     assertNotNull(r);
@@ -371,6 +462,17 @@ class LiveModerationIntegrationTest {
     lives.end(live,moderator);
     assertEquals(first,lives.sendToChannel(channel,viewer,new SendMessageRequest(request,"legacy replay")));
     assertEquals(ErrorCode.LIVE_ENDED,assertThrows(ApiException.class,()->lives.sendToChannel(channel,viewer,new SendMessageRequest(UUID.randomUUID(),"fresh"))).code());
+  }
+
+  @Test
+  void replayIsNotBlockedByTheTimeoutItsOwnMessageStarted() {
+    UUID live=lives.start(channel,moderator).liveId();UUID request=UUID.randomUUID();
+    var first=lives.send(live,viewer,new SendMessageRequest(request,"여기 https://evil.test 접속"));
+    // 첫 링크 위반에 PHISHING 타임아웃이 걸린다. 응답을 잃고 같은 요청을 다시 보내면 저장된 메시지를 돌려준다(A-18)
+    assertEquals("HIDDEN",first.get("visibility"));
+    assertEquals(first.get("messageId"),lives.send(live,viewer,new SendMessageRequest(request,"여기 https://evil.test 접속")).get("messageId"));
+    assertEquals(first.get("messageId"),lives.sendToChannel(channel,viewer,new SendMessageRequest(request,"여기 https://evil.test 접속")).get("messageId"));
+    assertEquals(ErrorCode.TIMED_OUT,assertThrows(ApiException.class,()->lives.send(live,viewer,new SendMessageRequest(UUID.randomUUID(),"new"))).code());
   }
 
   @Test

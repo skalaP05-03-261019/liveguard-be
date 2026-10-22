@@ -78,8 +78,8 @@ class ChannelPublisherStreamTest {
 	void cleanUp() {
 		openStreams.forEach(Stream::close);
 		((InMemoryKickStatus) kickStatus).clear();
-		jdbc.update("DELETE FROM platform.messages");
 		CaseFixtures.deleteCases(jdbc);
+		jdbc.update("DELETE FROM platform.messages");
 		jdbc.update("DELETE FROM platform.channel_members WHERE user_id = ?", VIEWER2);
 		jdbc.update("DELETE FROM platform.users WHERE id = ?", VIEWER2);
 	}

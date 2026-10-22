@@ -51,7 +51,7 @@ public class LiveFindingRecovery {
   if(cancelled){
    db.sql("UPDATE guard.live_case_state SET confirmation_status='CANCELLED' WHERE case_id=?").param(owner).update();
    db.sql("UPDATE guard.cases SET status='NO_ACTION' WHERE id=?").param(owner).update();
-   platform.visibility(owner,"PUBLIC");
+   platform.releaseRevokedCase(owner);
    var reviews=db.sql("SELECT id FROM guard.reviews WHERE kind='KICK' AND ?=ANY(basis_case_ids) AND status<>'INVALIDATED'")
     .param(owner).query(UUID.class).list();
    for(UUID review:reviews){
@@ -71,17 +71,22 @@ public class LiveFindingRecovery {
   return json.readValue(json.writeValueAsString(result),Map.class);
  }
  private void recomputeTimeouts(UUID live,UUID user){
-  Map<String,Integer> previous=new HashMap<>();
-  var order=db.sql("SELECT id FROM guard.cases WHERE live_id=? AND user_id=? AND judged_at IS NOT NULL ORDER BY judged_at,id")
-   .params(live,user).query(UUID.class).list();
-  for(UUID c:order){
-   var categories=db.sql("SELECT DISTINCT category FROM guard.findings WHERE case_id=? AND source='BACKEND' AND status='CONFIRMED' AND verdict='VIOLATION'")
-    .param(c).query(String.class).list();
+  var timeouts=db.sql("SELECT t.id,t.case_id,a.created_at FROM guard.live_timeouts t JOIN guard.live_actions a ON a.id=t.action_id WHERE t.live_id=? AND t.user_id=? AND t.revoked_at IS NULL")
+   .params(live,user).query(new org.springframework.jdbc.core.ColumnMapRowMapper()).list();
+  for(var timeout:timeouts){
+   UUID c=uuid(timeout.get("case_id"));
+   var asOf=timeout.get("created_at");
+   var categories=db.sql("SELECT DISTINCT category FROM guard.findings WHERE case_id=? AND source='BACKEND' AND status='CONFIRMED' AND verdict='VIOLATION' AND revoked_at IS NULL AND confirmed_at<=?")
+    .params(c,asOf).query(String.class).list();
    int duration=0;
-   for(String category:categories){duration=Math.max(duration,TimeoutPolicy.seconds(category,previous.getOrDefault(category,0)));previous.merge(category,1,Integer::sum);}
-   if(duration==0)db.sql("UPDATE guard.live_timeouts SET revoked_at=COALESCE(revoked_at,?) WHERE case_id=?").params(now(),c).update();
-   else db.sql("UPDATE guard.live_timeouts t SET expires_at=LEAST(t.expires_at,a.created_at+make_interval(secs=>?)) FROM guard.live_actions a WHERE t.action_id=a.id AND t.case_id=? AND t.revoked_at IS NULL")
-    .params(duration,c).update();
+   for(String category:categories){
+    int previous=db.sql("SELECT count(DISTINCT c.id) FROM guard.cases c JOIN guard.findings f ON f.case_id=c.id WHERE c.live_id=? AND c.user_id=? AND c.id<>? AND f.category=? AND f.source='BACKEND' AND f.status='CONFIRMED' AND f.verdict='VIOLATION' AND f.revoked_at IS NULL AND f.confirmed_at<=?")
+     .params(live,user,c,category,asOf).query(Integer.class).single();
+    duration=Math.max(duration,TimeoutPolicy.seconds(category,previous));
+   }
+   if(duration==0)db.sql("UPDATE guard.live_timeouts SET revoked_at=? WHERE id=?").params(now(),timeout.get("id")).update();
+   else db.sql("UPDATE guard.live_timeouts SET expires_at=LEAST(expires_at,?::timestamptz+make_interval(secs=>?)) WHERE id=?")
+    .params(asOf,duration,timeout.get("id")).update();
   }
  }
 }

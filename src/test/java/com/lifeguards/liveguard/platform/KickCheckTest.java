@@ -88,8 +88,8 @@ class KickCheckTest {
 	@AfterEach
 	void cleanUp() {
 		kicks.clear();
-		jdbc.update("DELETE FROM platform.messages");
 		CaseFixtures.deleteCases(jdbc);
+		jdbc.update("DELETE FROM platform.messages");
 	}
 
 	@Test

@@ -70,13 +70,13 @@ public class FindingService {
 			UUID id = UUID.randomUUID();
 			jdbc.sql("""
 					INSERT INTO guard.findings(id, case_id, category, source, verdict, status,
-						policy_version, evidence_reference, evidence_version, created_at)
-					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+						policy_version, evidence_reference, evidence_version, created_at, confirmed_at)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 					""")
 					.params(id, input.caseId(), category.name(), confirmed ? "BACKEND" : "AI_PROPOSAL",
 							input.verdict().name(), state, input.policyVersion(), input.evidenceReference(),
 							input.evidenceVersion(),
-							Timestamp.from(clock.instant())).update();
+							Timestamp.from(clock.instant()), confirmed ? Timestamp.from(clock.instant()) : null).update();
 			event(id, state, input.decisionReference(), input.reason());
 			return id;
 		}).toList();
@@ -98,9 +98,9 @@ public class FindingService {
 				.orElseThrow(() -> new InvalidContractException("Finding does not exist"));
 		jdbc.sql("SELECT id FROM guard.cases WHERE id = ? FOR UPDATE")
 				.param(caseId).query(UUID.class).single();
-		int updated = jdbc.sql("UPDATE guard.findings SET status = 'REVOKED' "
+		int updated = jdbc.sql("UPDATE guard.findings SET status = 'REVOKED', revoked_at = ? "
 				+ "WHERE id = ? AND source = 'BACKEND' AND status = 'CONFIRMED'")
-				.param(findingId).update();
+				.params(Timestamp.from(clock.instant()),findingId).update();
 		if (updated != 1) {
 			throw new InvalidContractException("Only a confirmed backend finding can be revoked");
 		}
@@ -120,9 +120,10 @@ public class FindingService {
 		}
 		return jdbc.sql("""
 				SELECT c.id FROM guard.cases c
-				WHERE c.channel_id = ? AND c.user_id = ? AND c.occurred_at >= ? AND c.occurred_at <= ?
+				WHERE c.channel_id = ? AND c.user_id = ?
 					AND EXISTS (SELECT 1 FROM guard.findings f WHERE f.case_id = c.id
-						AND f.source = 'BACKEND' AND f.status = 'CONFIRMED' AND f.verdict = 'VIOLATION')
+						AND f.source = 'BACKEND' AND f.status = 'CONFIRMED' AND f.verdict = 'VIOLATION'
+						AND f.revoked_at IS NULL AND f.confirmed_at > ? AND f.confirmed_at <= ?)
 				ORDER BY c.occurred_at, c.id
 				""").params(channelId, userId, Timestamp.from(since), Timestamp.from(asOf))
 				.query(UUID.class).list();

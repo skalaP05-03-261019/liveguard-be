@@ -7,6 +7,16 @@
 - **모든 정책 범위(집계, 도배, 재적발, TIMEOUT, 강퇴)는 `live_id`다.** `channel_id`는 고정 채널 식별자로만 쓰고 정책 범위를 대체하지 않는다(PROJECT §2).
 - 담당: **B1** = `platform` 스키마(Flyway `V1xx`), **B2** = `guard` 스키마(`V2xx`). 이미 머지된 마이그레이션은 고치지 않고 새 버전으로 추가한다.
 
+### 현재 구현 매핑 (03-2)
+
+아래 논리 ERD 전체가 별도 테이블로 구현됐다는 의미는 아니다. 실제 병합 DDL은 V100~V205다.
+검토·결정은 `guard.reviews/decisions`, 예약·소진은 `guard.live_reservations.state`,
+조치·제한은 `guard.live_actions/live_timeouts/live_kicks`, task/thread와 최신 snapshot 포인터는
+`guard.live_case_state`에 연결된다. V205의 `guard.case_snapshots`는 버전별 불변 마스킹 증거를 보존한다.
+`guard.candidates`는 live_id·handling_route·rule_id·policy_version·filter_version·matching_tags와
+전체 멱등 요청을 저장한다. 기존 미준비 provenance는 추정하지 않는다.
+현재 1차 필터가 미제공하는 PII 패턴 탐지는 이 구현에 새로 추가하지 않았다.
+
 ## 1. 처리 흐름
 
 ```

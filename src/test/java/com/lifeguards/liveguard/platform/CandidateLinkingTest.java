@@ -61,6 +61,8 @@ class CandidateLinkingTest {
 	@Autowired
 	private CandidateSink sink;
 	@Autowired
+	private com.lifeguards.liveguard.guard.LiveModerationService moderation;
+	@Autowired
 	private MessageControllerTest.EventRecorder events;
 
 	private RecordingCandidateSink recording;
@@ -74,8 +76,10 @@ class CandidateLinkingTest {
 
 	@AfterEach
 	void cleanUp() {
-		jdbc.update("DELETE FROM platform.messages");
+		// sink는 같은 컨텍스트를 쓰는 다른 테스트 클래스와 공유한다. 실제 guard 동작을 남기면 그 클래스들이 판정·타임아웃을 받는다
+		recording.reset();
 		CaseFixtures.deleteCases(jdbc);
+		jdbc.update("DELETE FROM platform.messages");
 	}
 
 	@Test
@@ -140,6 +144,7 @@ class CandidateLinkingTest {
 	void replayDoesNotOpenAnotherCase() throws Exception {
 		MockHttpSession viewer = login(mockMvc, "viewer");
 		UUID clientMessageId = UUID.randomUUID();
+		recording.behavior = moderation::candidate;
 		send(clientMessageId, "무대 미쳤다ㅋㅋ", viewer).andExpect(status().isCreated());
 		send(clientMessageId, "무대 미쳤다ㅋㅋ", viewer).andExpect(status().isCreated());
 
@@ -150,8 +155,7 @@ class CandidateLinkingTest {
 	@Test
 	void holdCandidateRecordsItsHoldReasonAndPassMessageDoesNot() throws Exception {
 		MockHttpSession viewer = login(mockMvc, "viewer");
-		UUID holdCase = UUID.randomUUID();
-		recording.behavior = request -> holdCase;
+		recording.behavior = moderation::candidate;
 
 		send("평범한 채팅", viewer).andExpect(status().isCreated());
 		send(HOLD_TEXT, viewer).andExpect(status().isCreated());
@@ -160,7 +164,7 @@ class CandidateLinkingTest {
 		var row = jdbc.queryForMap("SELECT message_id, case_id, reason, released_at "
 				+ "FROM platform.message_hold_reasons");
 		assertEquals(idOf(HOLD_TEXT), row.get("message_id"));
-		assertEquals(holdCase, row.get("case_id"));
+		assertEquals(caseIdOf(HOLD_TEXT), row.get("case_id"));
 		assertEquals("RULE_CONFIRMED", row.get("reason"));
 		assertNull(row.get("released_at"));
 	}
@@ -168,8 +172,7 @@ class CandidateLinkingTest {
 	@Test
 	void floodRecordsTheHoldReasonOnlyForTheHeldMessage() throws Exception {
 		MockHttpSession viewer = login(mockMvc, "viewer");
-		UUID floodCase = UUID.randomUUID();
-		recording.behavior = request -> floodCase;
+		recording.behavior = moderation::candidate;
 
 		List<UUID> ids = new ArrayList<>();
 		for (int i = 0; i < 3; i++) {
@@ -181,7 +184,8 @@ class CandidateLinkingTest {
 		var row = jdbc.queryForMap("SELECT message_id, case_id, reason FROM platform.message_hold_reasons");
 		assertEquals(1, holdReasonCount());
 		assertEquals(ids.get(2), row.get("message_id"));
-		assertEquals(floodCase, row.get("case_id"));
+		assertEquals(jdbc.queryForObject("SELECT case_id FROM platform.messages WHERE id = ?", UUID.class, ids.get(2)),
+				row.get("case_id"));
 		assertEquals("FLOOD_REVIEW", row.get("reason"));
 	}
 
@@ -210,6 +214,7 @@ class CandidateLinkingTest {
 
 		// 같은 clientMessageId로 재시도하면 정상 처리된다
 		recording.reset();
+		recording.behavior = moderation::candidate;
 		send(clientMessageId, "무대 미쳤다ㅋㅋ", viewer).andExpect(status().isCreated());
 		assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM platform.messages", Integer.class));
 		assertEquals(1, holdReasonCount());
@@ -233,10 +238,9 @@ class CandidateLinkingTest {
 		assertEquals(List.of(MessageFilter.REPEATED_TEXT), request.matchingTags());
 		assertEquals(ids.get(2), request.messageId());
 		assertEquals(ids.subList(0, 2), request.relatedMessageIds());
-		for (UUID id : ids) {
-			assertEquals(floodCase, jdbc.queryForObject("SELECT case_id FROM platform.messages WHERE id = ?",
-					UUID.class, id));
-		}
+		assertNull(jdbc.queryForObject("SELECT case_id FROM platform.messages WHERE id=?",UUID.class,ids.get(0)));
+		assertNull(jdbc.queryForObject("SELECT case_id FROM platform.messages WHERE id=?",UUID.class,ids.get(1)));
+		assertEquals(floodCase,jdbc.queryForObject("SELECT case_id FROM platform.messages WHERE id=?",UUID.class,ids.get(2)));
 		assertEquals(List.of("PUBLIC", "PUBLIC", "HELD"), jdbc.queryForList(
 				"SELECT visibility FROM platform.messages ORDER BY sent_at, id", String.class));
 	}
@@ -254,7 +258,7 @@ class CandidateLinkingTest {
 		assertEquals(List.of(linked, unlinked), recording.requests.get(0).relatedMessageIds());
 		assertEquals(otherCase, jdbc.queryForObject("SELECT case_id FROM platform.messages WHERE id = ?",
 				UUID.class, linked), "이미 다른 사건에 연결된 메시지는 바뀌지 않는다");
-		assertEquals(newCase, jdbc.queryForObject("SELECT case_id FROM platform.messages WHERE id = ?",
+		assertNull(jdbc.queryForObject("SELECT case_id FROM platform.messages WHERE id = ?",
 				UUID.class, unlinked));
 	}
 
@@ -274,7 +278,7 @@ class CandidateLinkingTest {
 		assertEquals(3, recording.requests.get(1).relatedMessageIds().size(), "창 안의 이전 메시지 전부");
 		List<UUID> cases = jdbc.queryForList("SELECT case_id FROM platform.messages ORDER BY sent_at, id",
 				UUID.class);
-		assertEquals(List.of(firstCase, firstCase, firstCase, secondCase), cases);
+		assertEquals(java.util.Arrays.asList(null,null,firstCase,secondCase), cases);
 	}
 
 	@Test

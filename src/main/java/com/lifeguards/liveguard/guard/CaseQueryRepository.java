@@ -59,6 +59,11 @@ class CaseQueryRepository {
 				.optional();
 	}
 
+	boolean hasLiveScope(CaseRow current) {
+		return jdbc.sql("SELECT EXISTS(SELECT 1 FROM platform.lives WHERE id=? AND channel_id=?)")
+			.params(current.liveId(),current.channelId()).query(Boolean.class).single();
+	}
+
 	List<CandidateRow> candidates(UUID caseId) {
 		return jdbc.sql("SELECT * FROM guard.candidates WHERE case_id = ? ORDER BY evidence_version, message_id")
 				.param(caseId)
@@ -109,15 +114,15 @@ class CaseQueryRepository {
 
 	List<RecentCase> timeoutHistory(CaseRow current, Instant since, Instant asOf) {
 		return jdbc.sql("""
-				SELECT c.id, f.category, max(f.created_at) AS judged_at
+				SELECT c.id, f.category, max(f.confirmed_at) AS judged_at
 				FROM guard.cases c JOIN guard.findings f ON f.case_id = c.id
-				WHERE c.channel_id = ? AND c.user_id = ? AND c.id <> ?
-					AND c.occurred_at >= ? AND c.occurred_at <= ?
+				WHERE c.live_id = ? AND c.user_id = ? AND c.id <> ?
+					AND f.confirmed_at > ? AND f.confirmed_at <= ?
 					AND f.source = 'BACKEND' AND f.status = 'CONFIRMED' AND f.verdict = 'VIOLATION'
-					AND f.created_at <= ?
+					AND f.revoked_at IS NULL
 				GROUP BY c.id, f.category ORDER BY judged_at, c.id, f.category
-				""").params(current.channelId(), current.userId(), current.id(),
-						Timestamp.from(since), Timestamp.from(asOf), Timestamp.from(asOf))
+				""").params(current.liveId(), current.userId(), current.id(),
+						Timestamp.from(since), Timestamp.from(asOf))
 				.query((rs, n) -> new RecentCase(rs.getObject("id", UUID.class),
 						Category.valueOf(rs.getString("category")),
 						rs.getObject("judged_at", OffsetDateTime.class).toInstant())).list();
@@ -127,12 +132,16 @@ class CaseQueryRepository {
 		return jdbc.sql("""
 				SELECT c.id FROM guard.cases c
 				WHERE c.channel_id = ? AND c.user_id = ? AND c.live_id = ?
-					AND c.occurred_at >= ? AND c.occurred_at <= ?
+					AND EXISTS (SELECT 1 FROM platform.lives l WHERE l.id=c.live_id AND l.ended_at IS NULL)
 					AND EXISTS (SELECT 1 FROM guard.findings f WHERE f.case_id = c.id
 						AND f.source = 'BACKEND' AND f.status = 'CONFIRMED' AND f.verdict = 'VIOLATION'
-						AND f.created_at <= ?)
-				ORDER BY c.occurred_at, c.id
+						AND f.revoked_at IS NULL AND f.confirmed_at > ? AND f.confirmed_at <= ?)
+					AND NOT EXISTS (SELECT 1 FROM guard.live_reservations r WHERE r.case_id=c.id
+						AND r.state IN ('RESERVED','CONSUMED'))
+				ORDER BY (SELECT min(f.confirmed_at) FROM guard.findings f WHERE f.case_id=c.id
+					AND f.source='BACKEND' AND f.status='CONFIRMED' AND f.verdict='VIOLATION'
+					AND f.revoked_at IS NULL AND f.confirmed_at > ? AND f.confirmed_at <= ?), c.id
 				""").params(channelId, userId, liveId, Timestamp.from(since), Timestamp.from(asOf),
-						Timestamp.from(asOf)).query(UUID.class).list();
+						Timestamp.from(since), Timestamp.from(asOf)).query(UUID.class).list();
 	}
 }

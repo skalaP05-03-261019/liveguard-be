@@ -73,8 +73,8 @@ class GuardEventStreamTest {
 	@AfterEach
 	void cleanUp() {
 		openStreams.forEach(Stream::close);
-		jdbc.update("DELETE FROM platform.messages");
 		CaseFixtures.deleteCases(jdbc);
+		jdbc.update("DELETE FROM platform.messages");
 	}
 
 	@Test
