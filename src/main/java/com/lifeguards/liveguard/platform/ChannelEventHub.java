@@ -74,14 +74,17 @@ class ChannelEventHub {
       registry.broadcast(channelId,s->s.userId().equals(author),"USER_KICKED",new UserKickedEvent(null),true);
     } else if(event.equals("MESSAGE_VISIBILITY_CHANGED")||event.equals("MESSAGE_RESTORED")) {
       // 0.6 형태는 둘 다 MESSAGE_VISIBILITY_CHANGED다. 복원이면 원문·작성자·보낸 시각을 함께 싣는다
-      boolean restored=event.equals("MESSAGE_RESTORED");
-      VisibilityChangedEvent payload=new VisibilityChangedEvent((UUID)data.get("messageId"),
-          Visibility.valueOf(data.get("visibility").toString()),((Number)data.get("version")).intValue(),
-          restored?(String)data.get("text"):null,restored?(String)data.get("authorAlias"):null,
-          restored?(Instant)data.get("sentAt"):null);
+      UUID messageId=(UUID)data.get("messageId");
+      Visibility visibility=Visibility.valueOf(data.get("visibility").toString());
+      int version=((Number)data.get("version")).intValue();
+      VisibilityChangedEvent payload=event.equals("MESSAGE_RESTORED")
+          ? new VisibilityChangedEvent(messageId,visibility,version,(String)data.get("text"),
+              (String)data.get("authorAlias"),(Instant)data.get("sentAt"))
+          : new VisibilityChangedEvent(messageId,visibility,version,null,null,null);
       registry.broadcast(channelId,s->!restricted||s.operator()||s.userId().equals(author),"MESSAGE_VISIBILITY_CHANGED",payload);
-    } else if(event.equals("CHAT")||event.equals("LIVE_ENDED")) {
-      registry.broadcast(channelId,s->!restricted||s.operator()||s.userId().equals(author),event,data,event.equals("LIVE_ENDED"));
+    } else if(event.equals("LIVE_ENDED")) {
+      // CHAT은 메시지 커밋 이벤트(onMessageCreated)로 따로 보낸다
+      registry.broadcast(channelId,s->true,event,data,true);
     }
   }
 
