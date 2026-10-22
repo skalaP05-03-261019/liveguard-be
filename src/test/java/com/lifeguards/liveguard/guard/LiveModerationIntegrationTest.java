@@ -224,13 +224,18 @@ class LiveModerationIntegrationTest {
       assertEquals(version,db.queryForObject("SELECT version FROM guard.reviews WHERE id=?",Integer.class,approved));
       assertEquals(6,queries.userHistory(cs.get(6),null).violationCount());
     } finally {
-      com.lifeguards.liveguard.support.CaseFixtures.deleteCases(db);
-      db.update("DELETE FROM platform.messages WHERE channel_id=?",channel);
-      db.update("DELETE FROM platform.lives WHERE channel_id=?",channel);
-      db.update("DELETE FROM platform.channel_members WHERE channel_id=?",channel);
-      db.update("DELETE FROM platform.channels WHERE id=?",channel);
-      for(UUID id:List.of(user,operator,other))db.update("DELETE FROM platform.users WHERE id=?",id);
+      deleteCommitted();
     }
+  }
+
+  /** 트랜잭션 없이 돌린 시험이 커밋한 행을 지운다. */
+  void deleteCommitted() {
+    com.lifeguards.liveguard.support.CaseFixtures.deleteCases(db);
+    db.update("DELETE FROM platform.messages WHERE channel_id=?",channel);
+    db.update("DELETE FROM platform.lives WHERE channel_id=?",channel);
+    db.update("DELETE FROM platform.channel_members WHERE channel_id=?",channel);
+    db.update("DELETE FROM platform.channels WHERE id=?",channel);
+    for(UUID id:List.of(user,operator,other))db.update("DELETE FROM platform.users WHERE id=?",id);
   }
 
   @Test
@@ -268,7 +273,7 @@ class LiveModerationIntegrationTest {
     var result=recovery.revoke(f1,request,moderator);assertEquals(result,recovery.revoke(f1,request,moderator));
     assertEquals("CANCELLED",result.get("confirmationStatus"));
     assertEquals("PUBLIC",db.queryForObject("SELECT visibility FROM platform.messages WHERE case_id=?",String.class,first));
-    assertEquals(600,db.queryForObject("SELECT EXTRACT(EPOCH FROM (t.expires_at-a.created_at))::integer FROM guard.live_timeouts t JOIN guard.live_actions a ON a.id=t.action_id WHERE t.case_id=?",Integer.class,secondCase));
+    assertEquals(List.of(600L),timeoutSeconds(secondCase));
     UUID message=db.queryForObject("SELECT id FROM platform.messages WHERE case_id=?",UUID.class,secondCase);
     db.update("INSERT INTO platform.message_hold_reasons(message_id,case_id,reason,created_at) VALUES(?,?,'OTHER',current_timestamp)",message,UUID.randomUUID());
     recovery.revoke(confirmedFinding(secondCase),revokeRequest(secondCase),moderator);
@@ -1017,72 +1022,94 @@ class LiveModerationIntegrationTest {
         + " JOIN guard.live_actions a ON a.id=t.action_id WHERE t.case_id=?",Long.class,c);
   }
 
-  UUID confirmViolation(UUID live, String text, List<String> categories) {
-    UUID c=candidate(live,text);UUID r=proposal(c,"VIOLATION");
-    apply(c,r,decide(r,"CONFIRM_VIOLATION",1,categories));
-    return c;
+  /** 이미 만든 후보 사건을 주어진 유형으로 위반 확정한다. 제한에 막히지 않도록 후보를 먼저 모두 만든 뒤 부른다. */
+  Map<String,Object> confirmViolation(UUID c, List<String> categories) {
+    UUID r=proposal(c,"VIOLATION");
+    return apply(c,r,decide(r,"CONFIRM_VIOLATION",1,categories));
   }
 
   @Test void ac11MultipleCategoriesInOneCaseCountOnceAndApplyOnlyTheLongestTimeout() {
     UUID live=lives.start(channel,moderator).liveId();
-    // 첫 위반 기준: PROFANITY는 HIDE만, HARASSMENT·PHISHING은 600초. 합산(1200초)이 아니라 가장 긴 하나만 적용한다
-    UUID multi=confirmViolation(live,"너 꺼져 여러 유형",List.of("PROFANITY","HARASSMENT","PHISHING"));
+    UUID prior=candidate(live,"너 꺼져 이전 괴롭힘"),multi=candidate(live,"너 꺼져 여러 유형");
+    confirmViolation(prior,List.of("HARASSMENT"));
+    // 유형별 후보: PHISHING 첫 위반 600초, HARASSMENT 두 번째 86400초, PROFANITY 첫 위반 HIDE만(0초).
+    // 합산(87000)·첫 값(600)·마지막 값(0)·0 아닌 최솟값(600)이 아니라 가장 긴 하나(86400)만 적용한다
+    confirmViolation(multi,List.of("PHISHING","HARASSMENT","PROFANITY"));
     assertEquals(3,db.queryForObject("SELECT count(DISTINCT category) FROM guard.findings WHERE case_id=? AND source='BACKEND'"
         + " AND status='CONFIRMED'",Integer.class,multi));
-    assertEquals(List.of(600L),timeoutSeconds(multi));
+    assertEquals(List.of(86400L),timeoutSeconds(multi));
     assertEquals(1,db.queryForObject("SELECT count(*) FROM guard.live_actions WHERE case_id=? AND kind='TIMEOUT'",Integer.class,multi));
     assertEquals("HIDDEN",visibilityOf(multi));
-    // 강퇴 집계에는 사건 하나로 들어간다
-    assertEquals(1,queries.kickEligibility(multi).count());
+    // 강퇴 집계에는 유형 수가 아니라 사건 하나로 들어간다(이전 사건과 합쳐 2건)
+    assertEquals(2,queries.kickEligibility(multi).count());
   }
 
   @Test void ac12TwoConfirmedCasesDoNotRequestKickReviewButTheThirdDoes() {
     UUID live=lives.start(channel,moderator).liveId();
-    UUID first=confirmViolation(live,"너 꺼져 강퇴 집계 하나",List.of("PROFANITY","HARASSMENT"));
-    db.update("UPDATE guard.live_timeouts SET revoked_at=current_timestamp WHERE live_id=?",live);
-    UUID c=candidate(live,"너 꺼져 강퇴 집계 둘");UUID r=proposal(c,"VIOLATION");
-    var applied=apply(c,r,decide(r,"CONFIRM_VIOLATION",1));
+    UUID first=candidate(live,"너 꺼져 강퇴 집계 하나"),c=candidate(live,"너 꺼져 강퇴 집계 둘"),
+        third=candidate(live,"너 꺼져 강퇴 집계 셋");
+    confirmViolation(first,List.of("PROFANITY","HARASSMENT"));
+    var applied=confirmViolation(c,List.of("HARASSMENT"));
     // 유형이 여럿인 첫 사건을 포함해도 확정 사건은 2건이다
     assertEquals(false,((Map<?,?>)applied.get("kickReview")).get("required"));
-    assertEquals(2,queries.kickEligibility(c).count());
+    assertEquals(2,queries.kickEligibility(third).count());
     assertEquals(0,db.queryForObject("SELECT count(*) FROM guard.reviews r JOIN guard.cases c ON c.id=r.case_id"
         + " WHERE c.live_id=? AND r.kind='KICK'",Integer.class,live));
-    db.update("UPDATE guard.live_timeouts SET revoked_at=current_timestamp WHERE live_id=?",live);
-    UUID third=confirmViolation(live,"너 꺼져 강퇴 집계 셋",List.of("HARASSMENT"));
+    confirmViolation(third,List.of("HARASSMENT"));
     UUID kick=db.queryForObject("SELECT id FROM guard.reviews WHERE case_id=? AND kind='KICK'",UUID.class,third);
     assertEquals(List.of(first,c,third).stream().map(UUID::toString).toList(),
         ((List<?>)guard.reviewCard(kick).get("basisCaseIds")).stream().map(Object::toString).toList());
   }
 
-  @Test void ac20NewLiveIsNotBlockedByThePreviousLivesKickOrTimeout() {
-    UUID live=lives.start(channel,moderator).liveId();
-    kick(live);
-    assertTrue(db.queryForObject("SELECT count(*) FROM guard.live_timeouts WHERE live_id=? AND user_id=? AND revoked_at IS NULL"
-        + " AND expires_at>current_timestamp",Integer.class,live,user)>0);
-    assertEquals(ErrorCode.KICKED,assertThrows(ApiException.class,
-        ()->lives.send(live,viewer,new SendMessageRequest(UUID.randomUUID(),"강퇴 중"))).code());
-    lives.end(live,moderator);
-    UUID next=lives.start(channel,moderator).liveId();
-    assertDoesNotThrow(()->lives.history(next,viewer));
-    assertDoesNotThrow(()->lives.send(next,viewer,new SendMessageRequest(UUID.randomUUID(),"새 방송 인사")));
-    // 이전 방송의 위반은 새 방송의 집계에 들어가지 않는다
-    UUID c=candidate(next,"너 꺼져 새 방송");
-    assertEquals(0,queries.userHistory(c,null).violationCount());
+  @Test
+  @Transactional(propagation=org.springframework.transaction.annotation.Propagation.NOT_SUPPORTED)
+  void ac20NewLiveIsNotBlockedByThePreviousLivesKickOrTimeout() {
+    try {
+      UUID live=lives.start(channel,moderator).liveId();
+      kick(live);
+      assertTrue(db.queryForObject("SELECT count(*) FROM guard.live_timeouts WHERE live_id=? AND user_id=? AND revoked_at IS NULL"
+          + " AND expires_at>current_timestamp",Integer.class,live,user)>0);
+      assertEquals(ErrorCode.KICKED,assertThrows(ApiException.class,
+          ()->lives.send(live,viewer,new SendMessageRequest(UUID.randomUUID(),"강퇴 중"))).code());
+      // 커밋되므로 방송 종료 뒤 guard 종료 처리(liveEnded)도 운영과 같이 실행된다
+      lives.end(live,moderator);
+      assertEquals("INVALIDATED",db.queryForObject("SELECT r.status FROM guard.reviews r JOIN guard.cases c ON c.id=r.case_id"
+          + " WHERE c.live_id=? AND r.kind='KICK'",String.class,live));
+      UUID next=lives.start(channel,moderator).liveId();
+      assertDoesNotThrow(()->lives.history(next,viewer));
+      assertDoesNotThrow(()->lives.send(next,viewer,new SendMessageRequest(UUID.randomUUID(),"새 방송 인사")));
+      // 이전 방송의 위반은 새 방송의 단계·집계에 들어가지 않는다: 첫 HARASSMENT는 600초, 강퇴 집계 1건
+      UUID c=candidate(next,"너 꺼져 새 방송");
+      confirmViolation(c,List.of("HARASSMENT"));
+      assertEquals(0,queries.userHistory(c,null).violationCount());
+      assertEquals(List.of(600L),timeoutSeconds(c));
+      assertEquals(1,queries.kickEligibility(c).count());
+    } finally {
+      deleteCommitted();
+    }
   }
 
   @Test void ac21TimeoutExpiryDoesNotCancelTheViolationOrItsHistory() {
     UUID live=lives.start(channel,moderator).liveId();
-    UUID first=confirmViolation(live,"너 꺼져 만료 전",List.of("HARASSMENT"));
+    UUID first=candidate(live,"너 꺼져 만료 전");
+    confirmViolation(first,List.of("HARASSMENT"));
     assertEquals(ErrorCode.TIMED_OUT,assertThrows(ApiException.class,
         ()->lives.send(live,viewer,new SendMessageRequest(UUID.randomUUID(),"제한 중"))).code());
-    // 취소가 아니라 시간만 지난 것: 만료 시각을 과거로 둔다
-    db.update("UPDATE guard.live_timeouts SET expires_at=current_timestamp-interval '1 second' WHERE case_id=?",first);
+    // 취소가 아니라 시간만 지난 것: 이 사건의 확정·조치·만료 시각을 601초 앞당겨 600초 제한이 1초 전에 끝난 것과 같게 한다
+    db.update("UPDATE guard.findings SET created_at=created_at-interval '601 seconds',confirmed_at=confirmed_at-interval '601 seconds'"
+        + " WHERE case_id=?",first);
+    db.update("UPDATE guard.live_actions SET created_at=created_at-interval '601 seconds' WHERE case_id=? AND kind='TIMEOUT'",first);
+    db.update("UPDATE guard.live_timeouts SET expires_at=expires_at-interval '601 seconds' WHERE case_id=?",first);
     assertDoesNotThrow(()->lives.send(live,viewer,new SendMessageRequest(UUID.randomUUID(),"만료 뒤 인사")));
+    // 만료된 TIMEOUT 기록도 취소되지 않고 남는다
+    assertEquals(List.of(600L),timeoutSeconds(first));
+    assertEquals(0,db.queryForObject("SELECT count(*) FROM guard.live_timeouts WHERE case_id=? AND revoked_at IS NOT NULL",Integer.class,first));
     assertEquals("CONFIRMED_VIOLATION",db.queryForObject("SELECT confirmation_status FROM guard.live_case_state WHERE case_id=?",String.class,first));
     assertEquals(1,db.queryForObject("SELECT count(*) FROM guard.findings WHERE case_id=? AND status='CONFIRMED' AND revoked_at IS NULL",Integer.class,first));
     assertEquals("HIDDEN",visibilityOf(first));
     // 다음 위반은 만료된 이력을 이전 확정으로 센다: 두 번째 HARASSMENT는 86400초
-    UUID secondCase=confirmViolation(live,"너 꺼져 만료 후",List.of("HARASSMENT"));
+    UUID secondCase=candidate(live,"너 꺼져 만료 후");
+    confirmViolation(secondCase,List.of("HARASSMENT"));
     assertEquals(1,queries.userHistory(secondCase,null).violationCount());
     assertEquals(List.of(86400L),timeoutSeconds(secondCase));
     assertEquals(2,queries.kickEligibility(secondCase).count());
