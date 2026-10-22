@@ -851,6 +851,8 @@ class LiveModerationIntegrationTest {
     assertEquals(0,db.queryForObject("SELECT count(*) FROM guard.live_kicks WHERE live_id=?",Integer.class,live));
     runPendingKicks();
     assertEquals("SUCCEEDED:-:1",kickAction(kick));
+    // ActionExecutionResult 필수 필드(강퇴는 expiresAt·errorCode가 null)
+    assertEquals(true,db.queryForObject("SELECT result ?& array['expiresAt','errorCode'] FROM guard.live_actions WHERE kind='KICK'",Boolean.class));
     assertEquals(1,db.queryForObject("SELECT count(*) FROM guard.live_kicks WHERE live_id=? AND user_id=? AND review_id=?",Integer.class,live,user,kick));
     assertEquals(ErrorCode.KICKED,assertThrows(ApiException.class,()->guard.checkEntry(live,user)).code());
     // 실행한 명령은 다시 고르지 않는다
@@ -867,6 +869,7 @@ class LiveModerationIntegrationTest {
     assertEquals("APPROVE",db.queryForObject("SELECT value FROM guard.decisions WHERE review_id=?",String.class,kick));
     assertEquals("INVALIDATED",db.queryForObject("SELECT status FROM guard.reviews WHERE id=?",String.class,kick));
     assertEquals("FAILED:REVIEW_NOT_APPROVED:0",kickAction(kick));
+    assertEquals(true,db.queryForObject("SELECT result ?& array['expiresAt','errorCode','startedAt'] FROM guard.live_actions WHERE kind='KICK'",Boolean.class));
     runPendingKicks();
     assertEquals(0,db.queryForObject("SELECT count(*) FROM guard.live_kicks WHERE live_id=?",Integer.class,live));
     assertDoesNotThrow(()->guard.checkEntry(live,user));

@@ -29,7 +29,8 @@ public class LiveModerationService implements LiveGuardPort {
 
   /** Agent가 판정을 제출하고 결정을 기다리는(조사) 처리 경로. */
   private static final Set<String> INVESTIGATION_ROUTES = Set.of("CONTEXT_REVIEW", "PII_INVESTIGATION");
-  private static final String INVESTIGATION_SQL = "'CONTEXT_REVIEW','PII_INVESTIGATION'";
+  private static final String INVESTIGATION_SQL =
+      String.join(",", INVESTIGATION_ROUTES.stream().sorted().map(r -> "'" + r + "'").toList());
 
   public LiveModerationService(
       JdbcClient db,
@@ -1032,7 +1033,8 @@ public class LiveModerationService implements LiveGuardPort {
     var result=new LinkedHashMap<String,Object>();
     result.put("actionId",a);result.put("caseId",caseId);result.put("liveId",liveId);
     result.put("type","KICK");result.put("status","FAILED");result.put("observation","CONFIRMED");result.put("applied",false);
-    result.put("attemptCount",attempts);result.put("retryCount",Math.max(0,attempts-1));result.put("startedAt",startedAt);result.put("errorCode",code);
+    result.put("attemptCount",attempts);result.put("retryCount",Math.max(0,attempts-1));result.put("startedAt",startedAt);
+    result.put("expiresAt",null);result.put("errorCode",code);
     return result;
   }
 
@@ -1364,12 +1366,14 @@ public class LiveModerationService implements LiveGuardPort {
       .param(event.liveId()).update();
     db.sql("UPDATE guard.live_reservations res SET state='RELEASED' FROM guard.reviews r JOIN guard.cases c ON c.id=r.case_id WHERE res.review_id=r.id AND c.live_id=? AND r.kind='KICK' AND res.state='RESERVED'")
       .param(event.liveId()).update();
-    var pending=db.sql("SELECT a.id,a.case_id FROM guard.live_actions a JOIN guard.cases c ON c.id=a.case_id WHERE c.live_id=? AND a.kind='KICK' AND a.status='PENDING' AND a.result IS NULL FOR UPDATE OF a")
+    var pending=db.sql("SELECT a.id,a.case_id,c.user_id FROM guard.live_actions a JOIN guard.cases c ON c.id=a.case_id WHERE c.live_id=? AND a.kind='KICK' AND a.status='PENDING' AND a.result IS NULL FOR UPDATE OF a")
       .param(event.liveId()).query(new org.springframework.jdbc.core.ColumnMapRowMapper()).list();
     for(var action:pending) {
       var result=failedKickResult(action.get("id"),action.get("case_id"),event.liveId(),0,null,"LIVE_ENDED");
       db.sql("UPDATE guard.live_actions SET status='FAILED',result=?::jsonb WHERE id=?")
         .params(encode(result),action.get("id")).update();
+      // 실행하지 못한 강퇴도 결과를 알린다(결정 저장과 강퇴 결과는 따로 본다)
+      platform.emit(event.liveId(),"ACTION_FAILED",parse(encode(result)),id(action.get("user_id")),true);
     }
     // Accepted/uncertain/in-flight delivery is not retroactively declared failed. Execution rechecks live state.
     db.sql("UPDATE guard.agent_task_outbox o SET status=CASE WHEN o.delivery_uncertain THEN 'UNKNOWN' ELSE 'FAILED' END,last_error_code='LIVE_ENDED',updated_at=?,publish_token=NULL,publish_lease_until=NULL FROM guard.reviews r JOIN guard.cases c ON c.id=r.case_id WHERE c.live_id=? AND r.kind='KICK' AND o.payload->>'reviewId'=r.id::text AND o.status IN ('PENDING','RETRY')")
@@ -1426,6 +1430,9 @@ public class LiveModerationService implements LiveGuardPort {
     result.put("attemptCount", 1);
     result.put("retryCount", 0);
     result.put("startedAt", clock.instant());
+    // ActionExecutionResult 필수 필드. 강퇴는 방송 종료까지라 만료 시각이 없다
+    result.put("expiresAt", null);
+    result.put("errorCode", null);
     db.sql("UPDATE guard.live_actions SET result=?::jsonb,status='SUCCEEDED' WHERE id=?")
         .params(encode(result), a)
         .update();

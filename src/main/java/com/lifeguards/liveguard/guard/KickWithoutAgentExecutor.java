@@ -47,6 +47,8 @@ class KickWithoutAgentExecutor {
 			return;
 		}
 		pending.forEach(this::executeOne);
+		// 다른 곳(방송 종료 등)에서 끝난 명령의 시도 횟수는 버린다
+		transientFailures.keySet().retainAll(pending);
 	}
 
 	void executeOne(UUID action) {
@@ -55,7 +57,7 @@ class KickWithoutAgentExecutor {
 			transientFailures.remove(action);
 		} catch (ApiException ex) {
 			// 기준·권한·대상 상태·방송 종료처럼 다시 해도 같은 결과인 실패다
-			fail(action, ex.code(), transientFailures.getOrDefault(action, 0) + 1);
+			fail(action, ex.code(), transientFailures.merge(action, 1, Integer::sum));
 		} catch (RuntimeException ex) {
 			int attempts = transientFailures.merge(action, 1, Integer::sum);
 			log.warn("Kick without Agent not executed: actionId={} attempt={} error={}", action, attempts,
@@ -67,9 +69,10 @@ class KickWithoutAgentExecutor {
 	}
 
 	private void fail(UUID action, ErrorCode code, int attempts) {
-		transientFailures.remove(action);
 		try {
 			moderation.failPendingKick(action, code, attempts);
+			// 기록한 뒤에만 지운다. 기록이 실패하면 다음 주기에 시도 횟수가 그대로라 다시 FAILED 기록을 시도한다
+			transientFailures.remove(action);
 		} catch (RuntimeException ex) {
 			log.warn("Kick failure not recorded: actionId={} code={} error={}", action, code,
 					ex.getClass().getSimpleName());
