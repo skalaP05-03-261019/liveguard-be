@@ -52,8 +52,8 @@ class KickCheckTest {
 	/** 같은 컨텍스트의 다른 테스트가 시드 방송을 지울 수 있으므로, 진행 중 방송이 없으면 만든다. */
 	@BeforeEach
 	void ensureLives() {
-		liveA = ensureLive(CHANNEL_A);
-		ensureLive(CHANNEL_B);
+		liveA = CaseFixtures.ensureLive(jdbc, CHANNEL_A);
+		CaseFixtures.ensureLive(jdbc, CHANNEL_B);
 	}
 
 	@AfterEach
@@ -90,6 +90,21 @@ class KickCheckTest {
 	}
 
 	@Test
+	void kickEndsWithTheLiveAndDoesNotCarryOverToTheNextLiveOfTheChannel() throws Exception {
+		CaseFixtures.insertLiveBan(jdbc, liveA, CHANNEL_A, VIEWER);
+		MockHttpSession viewer = login(mockMvc, "viewer");
+		String path = "/api/channels/" + CHANNEL_A + "/messages";
+		send(path, UUID.randomUUID(), viewer).andExpect(status().isForbidden());
+
+		// 같은 채널이라도 새 방송에는 강퇴가 이어지지 않는다(POLICY §10)
+		jdbc.update("UPDATE platform.lives SET ended_at = now() WHERE id = ?", liveA);
+		UUID next = CaseFixtures.ensureLive(jdbc, CHANNEL_A);
+
+		send("/api/lives/" + next + "/messages", UUID.randomUUID(), viewer).andExpect(status().isCreated());
+		send(path, UUID.randomUUID(), viewer).andExpect(status().isCreated());
+	}
+
+	@Test
 	void replayOfAnAlreadyStoredMessageIsAlsoBlockedWhileKicked() throws Exception {
 		MockHttpSession viewer = login(mockMvc, "viewer");
 		UUID clientMessageId = UUID.randomUUID();
@@ -110,17 +125,6 @@ class KickCheckTest {
 		send("/api/channels/" + CHANNEL_A + "/messages", UUID.randomUUID(), login(mockMvc, "admin"))
 				.andExpect(status().isForbidden())
 				.andExpect(jsonPath("$.error.code").value("FORBIDDEN"));
-	}
-
-	private UUID ensureLive(UUID channelId) {
-		List<UUID> current = jdbc.queryForList(
-				"SELECT id FROM platform.lives WHERE channel_id = ? AND ended_at IS NULL", UUID.class, channelId);
-		if (!current.isEmpty()) {
-			return current.getFirst();
-		}
-		UUID id = UUID.randomUUID();
-		jdbc.update("INSERT INTO platform.lives (id, channel_id, started_at) VALUES (?, ?, now())", id, channelId);
-		return id;
 	}
 
 	private ResultActions send(String path, UUID clientMessageId, MockHttpSession session) throws Exception {

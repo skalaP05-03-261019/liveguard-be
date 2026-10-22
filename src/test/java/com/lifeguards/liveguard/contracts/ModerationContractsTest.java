@@ -194,7 +194,8 @@ class ModerationContractsTest {
 				() -> new ChatEvent(id, id, "U1", "본문", Visibility.PUBLIC, 1, null));
 		assertThrows(InvalidContractException.class,
 				() -> new ChatEvent(id, null, "U1", "본문", Visibility.PUBLIC, 1, now));
-		assertThrows(InvalidContractException.class, () -> new UserKickedEvent(null));
+		// 방송 강퇴는 방송 종료까지라 until이 없다
+		assertNull(new UserKickedEvent(null).until());
 		assertThrows(InvalidContractException.class,
 				() -> new KickResult(id, KickReviewStatus.EXECUTED, now, null, false));
 		assertThrows(InvalidContractException.class, () -> new MessagePage(null, null));

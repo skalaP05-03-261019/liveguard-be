@@ -11,6 +11,7 @@ import org.springframework.transaction.event.TransactionalEventListener;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import com.lifeguards.liveguard.contracts.dto.event.ChatEvent;
+import com.lifeguards.liveguard.contracts.dto.event.UserKickedEvent;
 import com.lifeguards.liveguard.contracts.enums.Visibility;
 
 import jakarta.annotation.PreDestroy;
@@ -18,7 +19,7 @@ import jakarta.annotation.PreDestroy;
 /**
  * 채팅 SSE (/api/channels/{id}/events). 메시지 커밋 후 CHAT을 공개 범위에 맞춰 보내고, 방송 경로의 공개 범위 변경·복원
  * ({@link #integrated})과 강퇴(LIVE_ACCESS_BLOCKED → USER_KICKED, 대상 본인)를 0.6 형태로 전달한다.
- * 트랜잭션 안에서 부르면 커밋 후에 보내고 롤백되면 보내지 않는다.
+ * CHAT은 커밋 후에 보낸다. {@link #integrated}는 받은 즉시 보내므로, 커밋 후 전송은 호출자({@code LiveService.emit})가 맡는다.
  */
 @Component
 class ChannelEventHub {
@@ -68,7 +69,7 @@ class ChannelEventHub {
 
   void integrated(UUID channelId,UUID author,boolean restricted,String event,java.util.Map<String,Object> data) {
     if(event.equals("LIVE_ACCESS_BLOCKED")) {
-      registry.broadcast(channelId,s->s.userId().equals(author),"USER_KICKED",java.util.Collections.singletonMap("until",null),true);
+      registry.broadcast(channelId,s->s.userId().equals(author),"USER_KICKED",new UserKickedEvent(null),true);
     } else if(java.util.Set.of("CHAT","MESSAGE_VISIBILITY_CHANGED","MESSAGE_RESTORED","LIVE_ENDED").contains(event)) {
       String name=event.equals("MESSAGE_RESTORED")?"MESSAGE_VISIBILITY_CHANGED":event;
       registry.broadcast(channelId,s->!restricted||s.operator()||s.userId().equals(author),name,data,event.equals("LIVE_ENDED"));

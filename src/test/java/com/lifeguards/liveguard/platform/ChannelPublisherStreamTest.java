@@ -27,6 +27,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import com.jayway.jsonpath.JsonPath;
 import com.lifeguards.liveguard.TestcontainersConfiguration;
 import com.lifeguards.liveguard.support.CaseFixtures;
 import com.lifeguards.liveguard.platform.ChannelEventStreamTest.Client;
@@ -248,20 +249,25 @@ class ChannelPublisherStreamTest {
 		stream.awaitEnd();
 		HttpResponse<String> again = viewer.get("/api/channels/" + CHANNEL_A + "/events");
 		assertEquals(403, again.statusCode());
-		assertTrue(again.body().contains("\"code\":\"KICKED\""));
+		assertEquals("KICKED", JsonPath.read(again.body(), "$.error.code"));
+		assertEquals(false, JsonPath.read(again.body(), "$.error.retryable"));
+		// 방송 종료까지라 until이 없다
+		assertFalse(again.body().contains("\"until\":\""), again.body());
 	}
 
 	// ----- helpers -----
 
-	/** 강퇴 실행이 보내는 것과 같은 방송 이벤트. 기존 채널 SSE에는 대상 본인에게 USER_KICKED로 간다. */
+	/**
+	 * 강퇴 실행(LiveModerationService.execute)이 보내는 것과 같은 이벤트·payload. 기존 채널 SSE에는 대상 본인에게
+	 * USER_KICKED로 간다. 실행 경로 자체는 LiveModerationIntegrationTest가 맡는다.
+	 */
 	private void accessBlocked(UUID userId) {
 		UUID liveId = liveOf(CHANNEL_A);
-		platform.emit(liveId, "LIVE_ACCESS_BLOCKED", Map.of("liveId", liveId, "userId", userId), userId, true);
+		platform.emit(liveId, "LIVE_ACCESS_BLOCKED", Map.of("liveId", liveId, "activeUntilLiveEnd", true), userId, true);
 	}
 
 	private UUID liveOf(UUID channelId) {
-		return jdbc.queryForObject("SELECT id FROM platform.lives WHERE channel_id = ? AND ended_at IS NULL", UUID.class,
-				channelId);
+		return CaseFixtures.ensureLive(jdbc, channelId);
 	}
 
 	private void change(UUID caseId, String visibility) {
