@@ -84,7 +84,8 @@ class ChannelPublisherStreamTest {
 		jdbc.update("DELETE FROM platform.users WHERE id = ?", VIEWER2);
 	}
 
-	// ----- LivePlatformPort.visibility(원인별 가림·복구) → 기존 채널 SSE(0.6 형태) -----
+	// ----- LivePlatformPort.visibility → 기존 채널 SSE(0.6 형태) -----
+	// 사건이 소유한 메시지만 다룬다. 다른 원인이 남아 있으면 공개하지 않는 원인별 해제는 HoldReasonReleaseTest가 맡는다.
 
 	@Test
 	void hidingTellsTheChannelOnlyTheIdAndNeverTheText() throws Exception {
@@ -115,7 +116,7 @@ class ChannelPublisherStreamTest {
 
 		change(caseId, "PUBLIC");
 
-		// ID만 담은 변경 알림 뒤에, 원문·작성자·보낸 시각을 담은 복원 알림이 온다
+		// 지금은 ID만 담은 변경 알림이 먼저 오고, 원문·작성자·보낸 시각을 담은 복원 알림이 뒤따른다(#50 후속에서 하나로 정리)
 		for (Lines lines : streams.all()) {
 			String data = lines.await(line -> line.startsWith("data:") && line.contains("\"text\""));
 			assertTrue(data.contains("\"messageId\":\"" + message + "\""));
@@ -304,15 +305,18 @@ class ChannelPublisherStreamTest {
 		}
 	}
 
-	/** 그 채널의 진행 중 방송에 속하고 사건이 소유한 메시지. 가시성 변경 알림은 방송 경로를 거쳐 채널 SSE로 간다. */
+	/**
+	 * 그 채널의 진행 중 방송(시드)에 속하고 사건이 소유한 메시지. 가시성 변경 알림은 방송 경로를 거쳐 채널 SSE로 간다.
+	 * 사건을 연 메시지라 1차 필터는 HOLD다(PASS 메시지는 사건을 소유하지 않는다). 진행 중 방송이 없으면 바로 실패한다.
+	 */
 	private UUID insert(UUID channelId, UUID author, String text, String visibility, UUID caseId, int secondsAfterT0) {
+		UUID liveId = jdbc.queryForObject("SELECT id FROM platform.lives WHERE channel_id = ? AND ended_at IS NULL",
+				UUID.class, channelId);
 		UUID id = UUID.randomUUID();
 		CaseFixtures.insertCase(jdbc, caseId, channelId, author);
 		jdbc.update("INSERT INTO platform.messages (id, channel_id, live_id, author_id, client_message_id, text, "
-				+ "normalized_text, filter_result, visibility, case_id, sent_at) VALUES (?, ?, (SELECT id FROM platform.lives "
-				+ "WHERE channel_id = ? AND ended_at IS NULL), ?, ?, ?, ?, ?, ?, ?, ?)",
-				id, channelId, channelId, author, UUID.randomUUID(), text, text,
-				visibility.equals("PUBLIC") ? "PASS" : "HOLD", visibility, caseId,
+				+ "normalized_text, filter_result, visibility, case_id, sent_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'HOLD', ?, ?, ?)",
+				id, channelId, liveId, author, UUID.randomUUID(), text, text, visibility, caseId,
 				Timestamp.from(T0.plusSeconds(secondsAfterT0)));
 		return id;
 	}
