@@ -44,17 +44,26 @@ public class AgentDeliveryWorker {
 		var result = gateway.deliver(delivery.envelope(), delivery.uncertain(),
 				delivery.attemptCount() <= properties.maxAttempts());
 		var now = clock.instant();
-		boolean retry = result.retryable() && delivery.attemptCount() < properties.maxAttempts();
+		// Agent에 확실히 닿지 않은 시도는 전달 예산을 쓰지 않는다. Agent 재시작·배포가 예산보다 길어도 끝나지 않고,
+		// 돌아온 뒤에도 예산이 그대로 남는다. 간격은 연결 차단기 간격을 따른다(최대 maxBackoff).
+		// 이미 전달이 불확실한 작업은 예외 없이 예산을 쓴다. 예산이 끝나면 기존대로 UNKNOWN으로 멈춘다
+		boolean refund = result.notSent() && !delivery.uncertain();
+		int spent = delivery.attemptCount() - (refund ? 1 : 0);
+		boolean retry = result.retryable() && spent < properties.maxAttempts();
 		boolean uncertain = result.uncertain() || delivery.uncertain();
 		String status = result.accepted() ? "ACCEPTED" : retry ? "RETRY"
 				: uncertain ? "UNKNOWN" : "FAILED";
-		var next = retry ? now.plus(properties.backoff(delivery.attemptCount())) : now;
-		boolean saved = repository.finish(delivery, status, result.code(), next, now, uncertain);
+		var next = !retry ? now
+				: now.plus(result.notSent() ? gateway.unreachableBackoff() : properties.backoff(delivery.attemptCount()));
+		boolean saved = repository.finish(delivery, status, result.code(), next, now, uncertain, refund);
 		if (!saved) {
 			log.warn("Agent delivery lease lost: outboxId={}", delivery.id());
+		} else if (result.notSent() && retry) {
+			// 연결 차단기가 시작·복구 때 한 번씩 남기므로 작업마다 경고하지 않는다
+			log.debug("Agent delivery deferred: outboxId={} attempt={}", delivery.id(), spent);
 		} else if (!result.accepted()) {
 			log.warn("Agent delivery not accepted: outboxId={} status={} code={} attempt={}",
-					delivery.id(), status, result.code(), delivery.attemptCount());
+					delivery.id(), status, result.code(), spent);
 		}
 		if (!saved) {
 			throw new IllegalStateException("Agent delivery outcome was not persisted");

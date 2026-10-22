@@ -92,17 +92,19 @@ public class AgentOutboxRepository {
 						rs.getBoolean("delivery_uncertain"))).optional();
 	}
 
+	/** refundAttempt이면 이번 시도는 Agent에 닿지 않았으므로 claim에서 올린 시도 수를 되돌린다(전달 예산을 쓰지 않음). */
 	@Transactional
 	public boolean finish(Delivery delivery, String status, String errorCode, Instant nextAttempt, Instant now,
-			boolean uncertain) {
+			boolean uncertain, boolean refundAttempt) {
 		return jdbc.sql("""
 				UPDATE guard.agent_task_outbox
 				SET status = ?, last_error_code = ?, next_attempt_at = ?, updated_at = ?,
+					attempt_count = attempt_count - CASE WHEN ? THEN 1 ELSE 0 END,
 					notification_after = ?,
 					delivery_uncertain = delivery_uncertain OR ?,
 					lease_token = NULL, lease_until = NULL
 				WHERE id = ? AND status = 'IN_FLIGHT' AND lease_token = ? AND lease_until > ?
-				""").params(status, errorCode, Timestamp.from(nextAttempt), Timestamp.from(now),
+				""").params(status, errorCode, Timestamp.from(nextAttempt), Timestamp.from(now), refundAttempt,
 						Timestamp.from(nextAttempt), uncertain, delivery.id(), delivery.leaseToken(), Timestamp.from(now)).update() == 1;
 	}
 

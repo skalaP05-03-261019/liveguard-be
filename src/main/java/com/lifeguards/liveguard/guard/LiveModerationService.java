@@ -1218,6 +1218,12 @@ public class LiveModerationService implements LiveGuardPort {
     // Accepted/uncertain/in-flight delivery is not retroactively declared failed. Execution rechecks live state.
     db.sql("UPDATE guard.agent_task_outbox o SET status=CASE WHEN o.delivery_uncertain THEN 'UNKNOWN' ELSE 'FAILED' END,last_error_code='LIVE_ENDED',updated_at=?,publish_token=NULL,publish_lease_until=NULL FROM guard.reviews r JOIN guard.cases c ON c.id=r.case_id WHERE c.live_id=? AND r.kind='KICK' AND o.payload->>'reviewId'=r.id::text AND o.status IN ('PENDING','RETRY')")
       .params(Timestamp.from(event.endedAt()),event.liveId()).update();
+    // 아직 Agent에 닿지 않은 분석 작업은 멈춘다. 끝난 방송에는 판정을 제출할 수 없다(judgment가 LIVE_ENDED).
+    // 전달이 불확실한 작업은 Agent가 받았을 수 있으므로 건드리지 않는다
+    db.sql("UPDATE guard.agent_task_outbox o SET status='FAILED',last_error_code='LIVE_ENDED',updated_at=?,publish_token=NULL,publish_lease_until=NULL"
+        + " FROM guard.cases c WHERE c.id=o.case_id AND c.live_id=? AND o.payload->>'kind' IN ('ANALYZE','REANALYZE')"
+        + " AND o.status IN ('PENDING','RETRY') AND NOT o.delivery_uncertain")
+      .params(Timestamp.from(event.endedAt()),event.liveId()).update();
   }
 
   public Map<String, Object> execute(UUID a, Map<String, Object> command) {

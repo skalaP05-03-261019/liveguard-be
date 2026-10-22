@@ -115,7 +115,7 @@ class AgentOutboxTest {
 		});
 		server.start();
 		properties = properties(3, Duration.ofSeconds(1));
-		gateway = new AgentHttpGateway(properties, mapper);
+		gateway = new AgentHttpGateway(properties, mapper, clock);
 		worker = new AgentDeliveryWorker(repository, gateway, properties, clock);
 		behavior = exchange -> respond(exchange, 202, receipt(task, "QUEUED", false));
 	}
@@ -236,12 +236,12 @@ class AgentOutboxTest {
 		enqueue(task);
 		var first = repository.claim(NOW, NOW.plusSeconds(60)).orElseThrow();
 		assertTrue(repository.claim(NOW.plusSeconds(59), NOW.plusSeconds(120)).isEmpty());
-		assertFalse(repository.finish(first, "ACCEPTED", null, NOW, NOW.plusSeconds(60), false));
+		assertFalse(repository.finish(first, "ACCEPTED", null, NOW, NOW.plusSeconds(60), false, false));
 		var replacement = repository.claim(NOW.plusSeconds(60), NOW.plusSeconds(120)).orElseThrow();
 		assertEquals(2, replacement.attemptCount());
 		assertNotEquals(first.leaseToken(), replacement.leaseToken());
-		assertFalse(repository.finish(first, "FAILED", "OLD_OWNER", NOW, NOW.plusSeconds(61), false));
-		assertTrue(repository.finish(replacement, "ACCEPTED", null, NOW, NOW.plusSeconds(61), false));
+		assertFalse(repository.finish(first, "FAILED", "OLD_OWNER", NOW, NOW.plusSeconds(61), false, false));
+		assertTrue(repository.finish(replacement, "ACCEPTED", null, NOW, NOW.plusSeconds(61), false, false));
 		assertEquals("ACCEPTED", status(task));
 	}
 
@@ -282,6 +282,82 @@ class AgentOutboxTest {
 	}
 
 	@Test
+	void unreachableAttemptsDoNotSpendTheBudgetAndRecoveryKeepsTheFullBudget() throws Exception {
+		enqueue(task);
+		var unreachable = unreachableProperties(closedPort());
+		try (var down = new AgentHttpGateway(unreachable, mapper, clock)) {
+			var downWorker = new AgentDeliveryWorker(repository, down, unreachable, clock);
+			for (int i = 0; i < 6; i++) {
+				downWorker.deliverOne();
+				time.advance(Duration.ofMinutes(1));
+			}
+		}
+		// 연결 거부는 요청이 닿지 않은 것이므로 예산(3)을 넘겨 시도해도 시도 수가 늘지 않고, 불확실 표시도 없다
+		assertEquals("RETRY", status(task));
+		assertEquals("AGENT_UNREACHABLE", errorCode(task));
+		assertFalse(uncertain(task));
+		assertEquals(0, attempts(task));
+		// 다음 시도는 최대 간격(10초) 안이다
+		assertTrue(jdbc.queryForObject("SELECT next_attempt_at - updated_at <= interval '10 seconds' "
+				+ "FROM guard.agent_task_outbox WHERE operation_id = ?", Boolean.class, task.operationId()));
+
+		// Agent가 돌아온 직후 일시 오류(429)가 나도 예산이 그대로라 끝나지 않는다
+		behavior = exchange -> respond(exchange, 429, "{}");
+		worker.deliverOne();
+		assertEquals("RETRY", status(task));
+		assertEquals(1, attempts(task));
+		time.advance(Duration.ofMinutes(1));
+		behavior = exchange -> respond(exchange, 202, receipt(task, "QUEUED", false));
+		worker.deliverOne();
+		assertEquals("ACCEPTED", status(task));
+	}
+
+	@Test
+	void uncertainDeliveryStillSpendsItsBudgetWhileTheAgentIsUnreachable() throws Exception {
+		enqueue(task);
+		jdbc.update("UPDATE guard.agent_task_outbox SET delivery_uncertain = true WHERE operation_id = ?",
+				task.operationId());
+		var unreachable = unreachableProperties(closedPort());
+		try (var down = new AgentHttpGateway(unreachable, mapper, clock)) {
+			var downWorker = new AgentDeliveryWorker(repository, down, unreachable, clock);
+			for (int i = 0; i < 3; i++) {
+				downWorker.deliverOne();
+				time.advance(Duration.ofMinutes(1));
+			}
+		}
+		// Agent가 이전 요청을 받았을 수 있으므로 닿지 않은 시도도 예산(3)에 들어가고, 다 쓰면 기존대로 멈춘다
+		assertEquals("UNKNOWN", status(task));
+		assertEquals(3, attempts(task));
+	}
+
+	@Test
+	void breakerSkipsTheNetworkAfterAConnectionFailureUntilTheBackoffPasses() throws Exception {
+		int port = closedPort();
+		try (var down = new AgentHttpGateway(unreachableProperties(port), mapper, clock)) {
+			assertTrue(down.deliver(task, false, true).notSent());
+			AtomicInteger hits = new AtomicInteger();
+			HttpServer revived = HttpServer.create(new InetSocketAddress("127.0.0.1", port), 0);
+			revived.createContext("/", exchange -> {
+				hits.incrementAndGet();
+				respond(exchange, 202, receipt(task, "QUEUED", false));
+			});
+			revived.start();
+			try {
+				// 차단 중에는 Agent가 이미 떠 있어도 네트워크를 쓰지 않고 "닿지 않음"으로 답한다
+				var skipped = down.deliver(task, false, true);
+				assertTrue(skipped.notSent());
+				assertEquals(0, hits.get());
+				// 첫 차단 간격(initialBackoff 2초)이 지나면 다시 연결한다
+				time.advance(Duration.ofSeconds(2));
+				assertTrue(down.deliver(task, false, true).accepted());
+				assertEquals(1, hits.get());
+			} finally {
+				revived.stop(0);
+			}
+		}
+	}
+
+	@Test
 	void exhaustedKnownRejectionsFailWithoutChangingKickExecutionBudget() {
 		enqueue(task);
 		behavior = exchange -> respond(exchange, exchange.getRequestMethod().equals("GET") ? 404 : 429, "{}");
@@ -303,7 +379,7 @@ class AgentOutboxTest {
 		var claimed = repository.claim(id, NOW, NOW.plusSeconds(60)).orElseThrow();
 		assertTrue(worker.deliver(id));
 		assertEquals(1, attempts(task));
-		assertTrue(repository.finish(claimed, "RETRY", "HTTP_429", NOW.plusSeconds(10), NOW, false));
+		assertTrue(repository.finish(claimed, "RETRY", "HTTP_429", NOW.plusSeconds(10), NOW, false, false));
 		assertTrue(worker.deliver(id));
 		assertEquals(1, attempts(task));
 		time.advance(Duration.ofSeconds(10));
@@ -390,7 +466,7 @@ class AgentOutboxTest {
 				exchange.close();
 			}
 		};
-		try (var timedGateway = new AgentHttpGateway(properties(1, Duration.ofMillis(100)), mapper)) {
+		try (var timedGateway = new AgentHttpGateway(properties(1, Duration.ofMillis(100)), mapper, clock)) {
 			var timedWorker = new AgentDeliveryWorker(repository, timedGateway,
 					properties(1, Duration.ofMillis(100)), clock);
 			timedWorker.deliverOne();
@@ -493,6 +569,29 @@ class AgentOutboxTest {
 	private String status(AgentTaskEnvelope envelope) {
 		return jdbc.queryForObject("SELECT status FROM guard.agent_task_outbox WHERE operation_id = ?",
 				String.class, envelope.operationId());
+	}
+
+	/** 지금 아무도 쓰지 않는 로컬 포트(연결 거부). */
+	private static int closedPort() throws IOException {
+		try (var socket = new java.net.ServerSocket(0)) {
+			return socket.getLocalPort();
+		}
+	}
+
+	private static AgentDeliveryProperties unreachableProperties(int port) {
+		return new AgentDeliveryProperties(true, URI.create("http://127.0.0.1:" + port), "test-agent-secret",
+				Duration.ofMillis(100), Duration.ofSeconds(1), Duration.ofSeconds(60), Duration.ofSeconds(1),
+				Duration.ofSeconds(2), Duration.ofSeconds(10), 3, 5, 2);
+	}
+
+	private String errorCode(AgentTaskEnvelope envelope) {
+		return jdbc.queryForObject("SELECT last_error_code FROM guard.agent_task_outbox WHERE operation_id = ?",
+				String.class, envelope.operationId());
+	}
+
+	private boolean uncertain(AgentTaskEnvelope envelope) {
+		return jdbc.queryForObject("SELECT delivery_uncertain FROM guard.agent_task_outbox WHERE operation_id = ?",
+				Boolean.class, envelope.operationId());
 	}
 
 	private int attempts(AgentTaskEnvelope envelope) {
