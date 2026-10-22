@@ -604,6 +604,14 @@ public class LiveModerationService implements LiveGuardPort {
         throw error(ErrorCode.IDEMPOTENCY_CONFLICT, "Judgment conflict");
       return parse(current.get("judgment_receipt").toString());
     }
+    // AI 판정 없이 문맥 검토가 이미 열렸으면(A-25) 결정 전에는 판정을 그 검토에 붙이고, 결정 뒤에는 받지 않는다
+    var openReview =
+        db.sql("SELECT status FROM guard.reviews WHERE case_id=? AND kind='CONTEXT'")
+            .param(c)
+            .query(String.class)
+            .optional();
+    if (openReview.isPresent() && !openReview.get().equals("PENDING"))
+      throw error(ErrorCode.STALE_VERSION, "Context review was decided without AI judgment");
     List<Map<String, Object>> findings = (List<Map<String, Object>>) input.get("messageFindings");
     if (findings == null || findings.isEmpty())
       throw error(ErrorCode.VALIDATION_FAILED, "Findings required");
@@ -655,9 +663,15 @@ public class LiveModerationService implements LiveGuardPort {
     if (input.get("handlingRoute").equals("PII_INVESTIGATION") && violation && !uncertain)
       throw error(
           ErrorCode.REVIEW_NOT_APPROVED, "Verified PII facts unavailable; NEEDS_REVIEW required");
+    // 열린 검토에는 Agent가 결정을 기다리게 되는 판정(문맥 경로, NEEDS_REVIEW)만 붙인다. 개인정보 경로의 확정 판정은
+    // Agent가 문맥 검토 응답을 받지 않으므로(재개할 대기 지점이 생기지 않음) 받지 않고 운영자 결정에 맡긴다
+    boolean waitsForDecision = input.get("handlingRoute").equals("CONTEXT_REVIEW") || uncertain;
+    if (openReview.isPresent() && !waitsForDecision)
+      throw error(ErrorCode.STALE_VERSION, "Context review is already open without AI judgment");
     db.sql("UPDATE guard.live_case_state SET judgment=?::jsonb WHERE case_id=?").params(encode(input),c).update();
     Map<String, Object> receipt = new LinkedHashMap<>();
-    if (input.get("handlingRoute").equals("CONTEXT_REVIEW") || uncertain) {
+    // 이미 사람 검토가 열려 있으면 개인정보 자동 확정·자동 공개를 하지 않고 그 검토에 맡긴다
+    if (waitsForDecision) {
       UUID review = createReview(c, "CONTEXT", List.of());
       receipt.put("confirmationStatus", "PENDING");
       receipt.put("reviewId", review.toString());
@@ -683,6 +697,13 @@ public class LiveModerationService implements LiveGuardPort {
                 + " case_id=?")
         .params(encode(input), encode(receipt), c)
         .update();
+    if (openReview.isPresent()) {
+      // AI 제안이 생겼으므로 검토 버전을 올린다. 제안을 보지 않고 낸 결정은 STALE_VERSION으로 다시 확인하게 한다
+      db.sql("UPDATE guard.reviews SET version=version+1 WHERE case_id=? AND kind='CONTEXT'").param(c).update();
+      platform.emit(id(current.get("live_id")), "CASE_UPDATED", caseEvent(c), null, true);
+      // 검토 카드가 바뀌었음을 검토 단위 이벤트로도 알린다(사건 version은 그대로라 CASE_UPDATED만으로는 걸러질 수 있다)
+      emitContextReviewRequired(id(receipt.get("reviewId")), row(c, false));
+    }
     return parse(encode(receipt));
   }
 
@@ -706,11 +727,20 @@ public class LiveModerationService implements LiveGuardPort {
             now())
         .update();
     var current = row(c, false);
+    if(kind.equals("CONTEXT")) {
+      emitContextReviewRequired(r,current);
+      return r;
+    }
     Map<String,Object> event=new LinkedHashMap<>();event.put("reviewId",r);event.put("caseId",c);event.put("liveId",current.get("live_id"));
-    if(kind.equals("CONTEXT"))event.put("aiVerdict",((List<Map<String,Object>>)parse(current.get("judgment").toString()).get("messageFindings")).getFirst().get("verdict"));
-    else {event.put("summary","서로 다른 확정 사건 3건에 대한 별도 강퇴 승인 요청");event.put("basisCaseIds",basis);}
+    event.put("summary","서로 다른 확정 사건 3건에 대한 별도 강퇴 승인 요청");event.put("basisCaseIds",basis);
     platform.emit(id(current.get("live_id")),kind+"_REVIEW_REQUIRED",event,null,true);
     return r;
+  }
+
+  private void emitContextReviewRequired(UUID r, Map<String,Object> current) {
+    Map<String,Object> event=new LinkedHashMap<>();event.put("reviewId",r);event.put("caseId",current.get("id"));event.put("liveId",current.get("live_id"));
+    event.put("aiVerdict",aiVerdict(current,"CONTEXT"));
+    platform.emit(id(current.get("live_id")),"CONTEXT_REVIEW_REQUIRED",event,null,true);
   }
 
   private Map<String, Object> review(UUID id, boolean lock) {
@@ -761,14 +791,7 @@ public class LiveModerationService implements LiveGuardPort {
         c.get("judgment") == null
             ? List.of()
             : parse(c.get("judgment").toString()).get("messageFindings"));
-    data.put(
-        "aiVerdict",
-        c.get("judgment") == null
-            ? "VIOLATION"
-            : ((List<Map<String, Object>>)
-                    parse(c.get("judgment").toString()).get("messageFindings"))
-                .getFirst()
-                .get("verdict"));
+    data.put("aiVerdict", aiVerdict(c, rev.get("kind").toString()));
     data.put("basisCaseIds", basis(rev));
     data.put("basisSnapshotId", rev.get("basis_snapshot_id"));
     data.put("userAlias", "U1");
@@ -776,8 +799,67 @@ public class LiveModerationService implements LiveGuardPort {
         "summary",
         rev.get("kind").equals("KICK")
             ? "서로 다른 확정 사건 3건 — 방송 종료까지 차단 승인 요청"
-            : "AI 제안을 확인하고 최종 결정해 주세요");
+            : c.get("judgment") == null
+                ? "AI 분석 결과를 받지 못했습니다. 주변 문맥을 확인하고 직접 결정해 주세요"
+                : "AI 제안을 확인하고 최종 결정해 주세요");
     return data;
+  }
+
+  /**
+   * 검토 카드의 AI 판정. AI 판정을 받지 못한 문맥 검토는 NEEDS_REVIEW(운영자 판단 필요)다(A-25). 규칙·도배 확정 사건은 판정이
+   * 없고 강퇴 카드는 확정 위반을 근거로 하므로 VIOLATION이다.
+   */
+  private Object aiVerdict(Map<String, Object> c, String kind) {
+    if (c.get("judgment") == null) return kind.equals("CONTEXT") ? "NEEDS_REVIEW" : "VIOLATION";
+    return ((List<Map<String, Object>>) parse(c.get("judgment").toString()).get("messageFindings"))
+        .getFirst()
+        .get("verdict");
+  }
+
+  /**
+   * AI 판정 없이 문맥 검토를 열 사건(A-25). 문맥·개인정보 경로이고 판정·문맥 검토가 없으며, 사건이 생긴 지 {@code after}가
+   * 지났거나 현재 분석 작업이 Agent 거절로 끝난 경우다. 진행 중인 방송의 사건만 고른다: 방송을 먼저 골라 끝난 방송에 남은
+   * 사건이 진행 중인 방송의 사건을 밀어내지 않게 한다. 끝난 방송을 매번 다시 확인하지 않도록 마감보다 하루 더 이전까지만 본다.
+   */
+  @Transactional(readOnly=true)
+  public List<UUID> casesAwaitingJudgment(Duration after, int limit) {
+    Timestamp due=Timestamp.from(clock.instant().minus(after));
+    Timestamp since=Timestamp.from(clock.instant().minus(after).minus(Duration.ofDays(1)));
+    var activeLives=db.sql("SELECT DISTINCT w.live_id FROM ("+WITHOUT_JUDGMENT+" AND c.created_at>?) w")
+      .params(due,since).query(UUID.class).list().stream().filter(this::liveInProgress).map(UUID::toString).toList();
+    if(activeLives.isEmpty())return List.of();
+    return db.sql(WITHOUT_JUDGMENT+" AND c.created_at>? AND c.live_id=ANY(string_to_array(?,',')::uuid[]) ORDER BY c.created_at LIMIT ?")
+      .params(due,since,String.join(",",activeLives),limit).query((rs,n)->rs.getObject("id",UUID.class)).list();
+  }
+
+  private boolean liveInProgress(UUID live) {
+    try {
+      return platform.live(live).endedAt()==null;
+    } catch(RuntimeException ex) {
+      // 한 방송을 확인하지 못해도 다른 방송의 검토는 연다. 다음 주기에 다시 확인한다
+      return false;
+    }
+  }
+
+  private static final String WITHOUT_JUDGMENT="SELECT c.id,c.live_id FROM guard.cases c JOIN guard.live_case_state s ON s.case_id=c.id"
+      + " WHERE c.handling_route IN ('CONTEXT_REVIEW','PII_INVESTIGATION') AND s.judgment IS NULL"
+      + " AND NOT EXISTS(SELECT 1 FROM guard.reviews r WHERE r.case_id=c.id AND r.kind='CONTEXT')"
+      + " AND (c.created_at<=? OR EXISTS(SELECT 1 FROM guard.agent_task_outbox o WHERE o.task_id=s.task_id"
+      + " AND o.status='FAILED' AND coalesce(o.last_error_code,'') NOT IN ('LIVE_ENDED','SUPERSEDED')))";
+
+  /**
+   * AI 판정을 기다리다 마감이 지났거나 분석이 거절된 사건에 판정 없는 문맥 검토를 연다(A-25). 메시지는 HELD 그대로이며,
+   * 운영자 결정은 BE가 바로 적용한다. 늦게 온 판정은 결정 전이면 이 검토에 붙는다. 열었으면 true다.
+   */
+  public boolean openReviewWithoutJudgment(UUID c, Duration after) {
+    var current=row(c,true);
+    boolean due=db.sql(WITHOUT_JUDGMENT+" AND c.id=?").params(Timestamp.from(clock.instant().minus(after)),c)
+      .query((rs,n)->true).optional().isPresent();
+    // 잠금을 잡은 뒤 다시 확인한다. 그사이 판정이 왔거나 방송이 끝났으면 열지 않는다
+    if(!due||platform.live(id(current.get("live_id"))).endedAt()!=null)return false;
+    active(current);
+    createReview(c,"CONTEXT",List.of());
+    return true;
   }
 
   private List<UUID> basis(Map<String, Object> r) {
@@ -871,13 +953,21 @@ public class LiveModerationService implements LiveGuardPort {
       db.sql("UPDATE guard.live_reservations SET state='CONSUMED' WHERE review_id=?")
           .param(r)
           .update();
-    enqueue(c, r, d, kind);
+    // AI 판정 없이 연 문맥 검토(A-25)는 재개할 Agent 대기 지점이 없으므로 BE가 결정을 바로 적용한다
+    boolean withoutJudgment = kind.equals("CONTEXT") && c.get("judgment") == null;
+    if (!withoutJudgment) enqueue(c, r, d, kind);
     platform.emit(
         id(c.get("live_id")),
         "REVIEW_DECIDED",
         Map.of("reviewId", r, "decisionId", d, "kind", kind, "value", value),
         null,
         true);
+    if (withoutJudgment && !value.equals("DEFER")) {
+      UUID cId = id(c.get("id"));
+      // 아직 Agent에 닿지 않은 분석은 멈춘다. 전달이 불확실한 작업은 Agent가 받았을 수 있으므로 두고, 늦은 판정은 거절된다
+      stopUndeliveredAnalysis("o.case_id=?", cId, "DECIDED_WITHOUT_JUDGMENT", now());
+      applyContext(review(r, false), row(cId, false), decision(r, d, true));
+    }
     return decision(r, d, false);
   }
 
@@ -940,7 +1030,11 @@ public class LiveModerationService implements LiveGuardPort {
     if (!Objects.toString(input.get("threadId")).equals(c.get("thread_id"))
         || !Objects.toString(input.get("taskId")).equals(c.get("task_id").toString()))
       throw error(ErrorCode.STALE_VERSION, "Apply task mismatch");
-    var d = decision(r, id(input.get("decisionId")), true);
+    return applyContext(rev, c, decision(r, id(input.get("decisionId")), true));
+  }
+
+  private Map<String, Object> applyContext(Map<String, Object> rev, Map<String, Object> c, Map<String, Object> d) {
+    UUID cId = id(c.get("id"));
     if (!rev.get("kind").equals("CONTEXT")
         || !rev.get("status").equals("DECIDED")
         || !Set.of("CONFIRM_NORMAL", "CONFIRM_VIOLATION").contains(d.get("decision")))
@@ -1220,10 +1314,15 @@ public class LiveModerationService implements LiveGuardPort {
       .params(Timestamp.from(event.endedAt()),event.liveId()).update();
     // 아직 Agent에 닿지 않은 분석 작업은 멈춘다. 끝난 방송에는 판정을 제출할 수 없다(judgment가 LIVE_ENDED).
     // 전달이 불확실한 작업은 Agent가 받았을 수 있으므로 건드리지 않는다
-    db.sql("UPDATE guard.agent_task_outbox o SET status='FAILED',last_error_code='LIVE_ENDED',updated_at=?,publish_token=NULL,publish_lease_until=NULL"
-        + " FROM guard.cases c WHERE c.id=o.case_id AND c.live_id=? AND o.payload->>'kind' IN ('ANALYZE','REANALYZE')"
-        + " AND o.status IN ('PENDING','RETRY') AND NOT o.delivery_uncertain")
-      .params(Timestamp.from(event.endedAt()),event.liveId()).update();
+    stopUndeliveredAnalysis("o.case_id IN (SELECT id FROM guard.cases WHERE live_id=?)",event.liveId(),"LIVE_ENDED",
+        Timestamp.from(event.endedAt()));
+  }
+
+  /** 아직 Agent에 닿지 않은 분석 작업(ANALYZE·REANALYZE)을 멈춘다. 전달이 불확실한 작업은 Agent가 받았을 수 있어 두고 본다. */
+  private void stopUndeliveredAnalysis(String scope, UUID scopeId, String code, Timestamp at) {
+    db.sql("UPDATE guard.agent_task_outbox o SET status='FAILED',last_error_code=?,updated_at=?,publish_token=NULL,publish_lease_until=NULL"
+        + " WHERE "+scope+" AND o.payload->>'kind' IN ('ANALYZE','REANALYZE') AND o.status IN ('PENDING','RETRY') AND NOT o.delivery_uncertain")
+      .params(code,at,scopeId).update();
   }
 
   public Map<String, Object> execute(UUID a, Map<String, Object> command) {
