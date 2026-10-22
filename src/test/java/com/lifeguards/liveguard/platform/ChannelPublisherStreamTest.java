@@ -34,9 +34,9 @@ import com.lifeguards.liveguard.platform.ChannelEventStreamTest.Lines;
 import com.lifeguards.liveguard.platform.port.ChannelEventPublisher;
 import com.lifeguards.liveguard.platform.port.InMemoryKickStatus;
 import com.lifeguards.liveguard.platform.port.KickStatusQuery;
-import com.lifeguards.liveguard.platform.port.MessageVisibilityPort;
+import com.lifeguards.liveguard.platform.port.LivePlatformPort;
 
-/** B2가 쓰는 포트(MessageVisibilityPort, ChannelEventPublisher)가 채팅 SSE와 DB에 미치는 영향을 실제 서버로 확인한다. */
+/** B2가 쓰는 포트(LivePlatformPort.visibility, ChannelEventPublisher)가 기존 채널 SSE와 DB에 미치는 영향을 실제 서버로 확인한다. */
 @SpringBootTest(webEnvironment = WebEnvironment.RANDOM_PORT, properties = "liveguard.sse.heartbeat-interval=200ms")
 @ActiveProfiles("test")
 @Import(TestcontainersConfiguration.class)
@@ -54,7 +54,7 @@ class ChannelPublisherStreamTest {
 	@Autowired
 	private JdbcTemplate jdbc;
 	@Autowired
-	private MessageVisibilityPort visibility;
+	private LivePlatformPort platform;
 	@Autowired
 	private ChannelEventPublisher publisher;
 	@Autowired
@@ -84,15 +84,16 @@ class ChannelPublisherStreamTest {
 		jdbc.update("DELETE FROM platform.users WHERE id = ?", VIEWER2);
 	}
 
-	// ----- MessageVisibilityPort -----
+	// ----- LivePlatformPort.visibility → 기존 채널 SSE(0.6 형태) -----
+	// 사건이 소유한 메시지만 다룬다. 다른 원인이 남아 있으면 공개하지 않는 원인별 해제는 HoldReasonReleaseTest가 맡는다.
 
 	@Test
-	void hidingAPublicMessageTellsEveryoneOnlyTheIdAndNeverTheText() throws Exception {
+	void hidingTellsTheChannelOnlyTheIdAndNeverTheText() throws Exception {
 		UUID caseId = UUID.randomUUID();
 		UUID message = insert(CHANNEL_A, VIEWER, "SECRET-ORIGINAL", "PUBLIC", caseId, 0);
 		Streams streams = subscribeAll();
 
-		assertEquals(1, hide(caseId));
+		change(caseId, "HIDDEN");
 
 		for (Lines lines : streams.all()) {
 			assertEquals(MESSAGE_EVENT, lines.await(line -> line.startsWith("event:")));
@@ -102,27 +103,7 @@ class ChannelPublisherStreamTest {
 			assertFalse(data.contains("SECRET-ORIGINAL") || data.contains("text") || data.contains("authorAlias")
 					|| data.contains("sentAt"), data);
 		}
-		assertEquals("HIDDEN", jdbc.queryForObject("SELECT visibility FROM platform.messages WHERE id = ?",
-				String.class, message));
-	}
-
-	@Test
-	void hidingAHeldMessageOnlyReachesTheAuthorAndModerator() throws Exception {
-		UUID heldCase = UUID.randomUUID();
-		UUID sentinelCase = UUID.randomUUID();
-		insert(CHANNEL_A, VIEWER, "held text", "HELD", heldCase, 0);
-		UUID sentinel = insert(CHANNEL_A, VIEWER, "sentinel", "PUBLIC", sentinelCase, 1);
-		Streams streams = subscribeAll();
-
-		tx.executeWithoutResult(status -> visibility.hideCaseMessages(heldCase));
-		tx.executeWithoutResult(status -> visibility.hideCaseMessages(sentinelCase));
-
-		// 작성자·운영자는 두 이벤트를 모두 받는다
-		for (Lines lines : List.of(streams.author, streams.moderator)) {
-			assertEquals(2, countEvents(lines, 2));
-		}
-		// 다른 시청자는 HELD였던 메시지를 받은 적이 없으므로 첫 이벤트가 곧 sentinel이다
-		assertTrue(streams.otherViewer.await(line -> line.startsWith("data:")).contains(sentinel.toString()));
+		assertEquals(List.of("HIDDEN"), visibilitiesOf(message));
 	}
 
 	@Test
@@ -133,11 +114,11 @@ class ChannelPublisherStreamTest {
 		Client otherViewer = Client.login(port, "viewer3");
 		assertFalse(otherViewer.get("/api/channels/" + CHANNEL_A + "/messages").body().contains("복원될 메시지"));
 
-		assertEquals(1, restore(caseId));
+		change(caseId, "PUBLIC");
 
+		// 지금은 ID만 담은 변경 알림이 먼저 오고, 원문·작성자·보낸 시각을 담은 복원 알림이 뒤따른다(#50 후속에서 하나로 정리)
 		for (Lines lines : streams.all()) {
-			assertEquals(MESSAGE_EVENT, lines.await(line -> line.startsWith("event:")));
-			String data = lines.await(line -> line.startsWith("data:"));
+			String data = lines.await(line -> line.startsWith("data:") && line.contains("\"text\""));
 			assertTrue(data.contains("\"messageId\":\"" + message + "\""));
 			assertTrue(data.contains("\"visibility\":\"PUBLIC\"") && data.contains("\"version\":2"));
 			assertTrue(data.contains("\"text\":\"복원될 메시지\"") && data.contains("\"authorAlias\":\"시청자\""));
@@ -147,69 +128,28 @@ class ChannelPublisherStreamTest {
 	}
 
 	@Test
-	void hideAndRestoreSkipMessagesAlreadyInTheTargetStateAndCountOnlyChanges() {
+	void changingToTheSameVisibilityAgainSendsNothingAndKeepsTheVersion() throws Exception {
 		UUID caseId = UUID.randomUUID();
-		UUID publicMessage = insert(CHANNEL_A, VIEWER, "p", "PUBLIC", caseId, 0);
-		UUID heldMessage = insert(CHANNEL_A, VIEWER, "h", "HELD", caseId, 1);
-		UUID hiddenMessage = insert(CHANNEL_A, VIEWER, "x", "HIDDEN", caseId, 2);
+		UUID message = insert(CHANNEL_A, VIEWER, "h", "HELD", caseId, 0);
+		Lines moderator = subscribe(Client.login(port, "moderator"), CHANNEL_A);
+		moderator.await(":connected"::equals);
 
-		assertEquals(2, restore(caseId), "PUBLIC은 건너뛴다");
-		assertEquals(1, versionOf(publicMessage));
-		assertEquals(2, versionOf(heldMessage));
-		assertEquals(2, versionOf(hiddenMessage));
-		assertEquals(0, restore(caseId), "이미 그 상태면 0");
+		change(caseId, "HIDDEN");
+		change(caseId, "HIDDEN");
 
-		assertEquals(3, hide(caseId));
-		assertEquals(0, hide(caseId));
-		assertEquals(2, versionOf(publicMessage));
-		assertEquals(3, versionOf(heldMessage));
-		assertEquals(3, versionOf(hiddenMessage));
-	}
-
-	@Test
-	void floodCaseHidesOnlyTheThirdMessageAndKeepsEarlierEvidencePublicAndLinked() throws Exception {
-		UUID caseId = UUID.randomUUID();
-		UUID evidence1 = insert(CHANNEL_A, VIEWER, "도배", "PUBLIC", "PASS", caseId, 0);
-		UUID evidence2 = insert(CHANNEL_A, VIEWER, "도배", "PUBLIC", "PASS", caseId, 1);
-		UUID third = insert(CHANNEL_A, VIEWER, "도배", "HELD", "FLOOD", caseId, 2);
-		Streams streams = subscribeAll();
-
-		assertEquals(1, hide(caseId), "세 번째 이후(FLOOD)만 바뀐다");
-
-		assertEquals(List.of("PUBLIC", "PUBLIC", "HIDDEN"), visibilitiesOf(evidence1, evidence2, third));
-		assertEquals(List.of(1, 1, 2), List.of(versionOf(evidence1), versionOf(evidence2), versionOf(third)));
-		assertEquals(List.of(caseId, caseId, caseId), jdbc.queryForList(
-				"SELECT case_id FROM platform.messages ORDER BY sent_at, id", UUID.class), "증거 연결은 유지된다");
-		// 세 번째는 HELD였으므로 작성자·운영자만 이벤트를 받고, 증거 메시지에 대한 이벤트는 없다
-		for (Lines lines : List.of(streams.author, streams.moderator)) {
-			assertTrue(lines.await(line -> line.startsWith("data:")).contains(third.toString()));
-			List<String> more = lines.drainFor(Duration.ofMillis(500));
-			assertFalse(more.stream().anyMatch(line -> line.startsWith("event:MESSAGE")), more.toString());
-		}
-		assertFalse(streams.otherViewer.drainFor(Duration.ofMillis(500)).stream()
-				.anyMatch(line -> line.startsWith("event:MESSAGE")));
-
-		assertEquals(1, restore(caseId), "복원은 HELD·HIDDEN만 되돌린다");
-		assertEquals(List.of("PUBLIC", "PUBLIC", "PUBLIC"), visibilitiesOf(evidence1, evidence2, third));
-	}
-
-	@Test
-	void messagesThatPassedTheFilterAreNeverHiddenButReviewMessagesAre() {
-		UUID caseId = UUID.randomUUID();
-		UUID passed = insert(CHANNEL_A, VIEWER, "통과", "PUBLIC", "PASS", caseId, 0);
-		UUID review = insert(CHANNEL_A, VIEWER, "미쳤다", "PUBLIC", "REVIEW", caseId, 1);
-		UUID hold = insert(CHANNEL_A, VIEWER, "씨발", "HELD", "HOLD", caseId, 2);
-
-		assertEquals(2, hide(caseId));
-
-		assertEquals(List.of("PUBLIC", "HIDDEN", "HIDDEN"), visibilitiesOf(passed, review, hold));
-		assertEquals(0, hide(caseId));
+		assertEquals(2, versionOf(message));
+		assertEquals(MESSAGE_EVENT, moderator.await(line -> line.startsWith("event:")));
+		assertFalse(moderator.drainFor(Duration.ofMillis(500)).stream().anyMatch(line -> line.startsWith("event:MESSAGE")));
 	}
 
 	@Test
 	void unknownCaseChangesNothing() {
-		assertEquals(0, hide(UUID.randomUUID()));
-		assertEquals(0, restore(UUID.randomUUID()));
+		UUID other = insert(CHANNEL_A, VIEWER, "다른 사건", "HELD", UUID.randomUUID(), 0);
+
+		change(UUID.randomUUID(), "HIDDEN");
+		change(UUID.randomUUID(), "PUBLIC");
+
+		assertEquals(List.of("HELD"), visibilitiesOf(other));
 	}
 
 	@Test
@@ -221,14 +161,14 @@ class ChannelPublisherStreamTest {
 		Streams streams = subscribeAll();
 
 		tx.executeWithoutResult(status -> {
-			visibility.hideCaseMessages(rolledBackCase);
+			platform.visibility(rolledBackCase, "HIDDEN");
 			status.setRollbackOnly();
 		});
 		assertEquals("PUBLIC", visibilitiesOf(rolledBack).getFirst(), "호출자 트랜잭션에 참여하므로 롤백되면 되돌아간다");
 		assertEquals(1, versionOf(rolledBack));
 
 		tx.executeWithoutResult(status -> {
-			visibility.hideCaseMessages(committedCase);
+			platform.visibility(committedCase, "HIDDEN");
 			List<String> early = drain(streams.moderator, Duration.ofMillis(700));
 			assertFalse(early.contains(MESSAGE_EVENT), "커밋 전에는 보내지 않는다");
 		});
@@ -248,8 +188,8 @@ class ChannelPublisherStreamTest {
 		UUID inA = insert(CHANNEL_A, VIEWER, "채널 A", "PUBLIC", caseInA, 1);
 		Streams streams = subscribeAll();
 
-		tx.executeWithoutResult(status -> visibility.hideCaseMessages(caseInB));
-		tx.executeWithoutResult(status -> visibility.hideCaseMessages(caseInA));
+		change(caseInB, "HIDDEN");
+		change(caseInA, "HIDDEN");
 
 		assertTrue(streams.moderator.await(line -> line.startsWith("data:")).contains(inA.toString()));
 	}
@@ -323,12 +263,8 @@ class ChannelPublisherStreamTest {
 
 	// ----- helpers -----
 
-	private int hide(UUID caseId) {
-		return tx.execute(status -> visibility.hideCaseMessages(caseId));
-	}
-
-	private int restore(UUID caseId) {
-		return tx.execute(status -> visibility.restoreCaseMessages(caseId));
+	private void change(UUID caseId, String visibility) {
+		tx.executeWithoutResult(status -> platform.visibility(caseId, visibility));
 	}
 
 	private record Streams(Lines author, Lines otherViewer, Lines moderator) {
@@ -359,15 +295,6 @@ class ChannelPublisherStreamTest {
 		return new Lines(response.body());
 	}
 
-	private int countEvents(Lines lines, int expected) throws Exception {
-		int count = 0;
-		for (int i = 0; i < expected; i++) {
-			lines.await(line -> line.startsWith("data:"));
-			count++;
-		}
-		return count;
-	}
-
 	/** 같은 스레드(트랜잭션 안)에서 기다린 뒤 그동안 도착한 줄을 돌려준다. */
 	private static List<String> drain(Lines lines, Duration duration) {
 		try {
@@ -378,20 +305,18 @@ class ChannelPublisherStreamTest {
 		}
 	}
 
-	/** 가림 대상이 되는 사건 메시지: HELD는 HOLD, 그 외는 REVIEW로 저장한다 (PASS는 가림 대상이 아니다). */
+	/**
+	 * 그 채널의 진행 중 방송(시드)에 속하고 사건이 소유한 메시지. 가시성 변경 알림은 방송 경로를 거쳐 채널 SSE로 간다.
+	 * 사건을 연 메시지라 1차 필터는 HOLD다(PASS 메시지는 사건을 소유하지 않는다). 진행 중 방송이 없으면 바로 실패한다.
+	 */
 	private UUID insert(UUID channelId, UUID author, String text, String visibility, UUID caseId, int secondsAfterT0) {
-		String filterResult = visibility.equals("HELD") ? "HOLD" : "REVIEW";
-		return insert(channelId, author, text, visibility, filterResult, caseId, secondsAfterT0);
-	}
-
-	private UUID insert(UUID channelId, UUID author, String text, String visibility, String filterResult,
-			UUID caseId, int secondsAfterT0) {
+		UUID liveId = jdbc.queryForObject("SELECT id FROM platform.lives WHERE channel_id = ? AND ended_at IS NULL",
+				UUID.class, channelId);
 		UUID id = UUID.randomUUID();
 		CaseFixtures.insertCase(jdbc, caseId, channelId, author);
-		jdbc.update("INSERT INTO platform.messages (id, channel_id, author_id, client_message_id, text, "
-				+ "normalized_text, filter_result, visibility, case_id, sent_at) "
-				+ "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				id, channelId, author, UUID.randomUUID(), text, text, filterResult, visibility, caseId,
+		jdbc.update("INSERT INTO platform.messages (id, channel_id, live_id, author_id, client_message_id, text, "
+				+ "normalized_text, filter_result, visibility, case_id, sent_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'HOLD', ?, ?, ?)",
+				id, channelId, liveId, author, UUID.randomUUID(), text, text, visibility, caseId,
 				Timestamp.from(T0.plusSeconds(secondsAfterT0)));
 		return id;
 	}
