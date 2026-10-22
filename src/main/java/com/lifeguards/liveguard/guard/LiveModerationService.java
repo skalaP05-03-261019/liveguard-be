@@ -847,7 +847,7 @@ public class LiveModerationService implements LiveGuardPort {
 
   private void emitContextReviewRequired(UUID r, Map<String,Object> current) {
     Map<String,Object> event=new LinkedHashMap<>();event.put("reviewId",r);event.put("caseId",current.get("id"));event.put("liveId",current.get("live_id"));
-    event.put("aiVerdict",aiVerdict(current,"CONTEXT"));
+    event.put("aiVerdict",aiVerdict(current));
     platform.emit(id(current.get("live_id")),"CONTEXT_REVIEW_REQUIRED",event,null,true);
   }
 
@@ -899,7 +899,9 @@ public class LiveModerationService implements LiveGuardPort {
         c.get("judgment") == null
             ? List.of()
             : parse(c.get("judgment").toString()).get("messageFindings"));
-    data.put("aiVerdict", aiVerdict(c, rev.get("kind").toString()));
+    // 강퇴 카드는 확정 위반을 근거로 하므로 카드가 붙은 사건의 AI 판정과 관계없이 VIOLATION이다(운영자가 AI 정상 제안을
+    // 뒤집어 확정한 사건도 같다). findings는 그 사건의 AI 제안 그대로다
+    data.put("aiVerdict", rev.get("kind").equals("KICK") ? "VIOLATION" : aiVerdict(c));
     data.put("basisCaseIds", basis(rev));
     data.put("basisSnapshotId", rev.get("basis_snapshot_id"));
     data.put("userAlias", "U1");
@@ -914,15 +916,15 @@ public class LiveModerationService implements LiveGuardPort {
   }
 
   /**
-   * 검토 카드의 AI 판정. 강퇴 카드는 확정 위반을 근거로 하므로 사건의 AI 판정과 관계없이 VIOLATION이다(운영자가 AI 정상 제안을
-   * 뒤집어 확정한 사건도 같다). AI 판정을 받지 못한 문맥 검토는 NEEDS_REVIEW(운영자 판단 필요)다(A-25).
+   * 문맥 검토의 AI 판정. 대상 메시지 판정을 모아 하나라도 NEEDS_REVIEW면 NEEDS_REVIEW, 아니면 하나라도 VIOLATION이면
+   * VIOLATION이다. AI 판정을 받지 못한 문맥 검토는 NEEDS_REVIEW(운영자 판단 필요)다(A-25).
    */
-  private Object aiVerdict(Map<String, Object> c, String kind) {
-    if (kind.equals("KICK")) return "VIOLATION";
+  private String aiVerdict(Map<String, Object> c) {
     if (c.get("judgment") == null) return "NEEDS_REVIEW";
-    return ((List<Map<String, Object>>) parse(c.get("judgment").toString()).get("messageFindings"))
-        .getFirst()
-        .get("verdict");
+    var verdicts=((List<Map<String, Object>>) parse(c.get("judgment").toString()).get("messageFindings"))
+        .stream().map(f->f.get("verdict").toString()).toList();
+    if (verdicts.contains("NEEDS_REVIEW")) return "NEEDS_REVIEW";
+    return verdicts.contains("VIOLATION") ? "VIOLATION" : "NO_VIOLATION";
   }
 
   /**

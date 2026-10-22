@@ -882,10 +882,27 @@ class LiveModerationIntegrationTest {
     UUID c=candidate(live,"너 꺼져 뒤집은 세 번째");UUID r=proposal(c,"NO_VIOLATION");
     var applied=apply(c,r,decide(r,"CONFIRM_VIOLATION",1));
     UUID kick=UUID.fromString(((Map<?,?>)applied.get("kickReview")).get("reviewId").toString());
-    assertEquals(c,db.queryForObject("SELECT case_id FROM guard.reviews WHERE id=?",UUID.class,kick));
-    assertEquals("VIOLATION",guard.reviewCard(kick).get("aiVerdict"));
+    var card=guard.reviewCard(kick);
+    assertEquals(c,card.get("caseId"));
+    assertTrue(((List<?>)card.get("basisCaseIds")).stream().map(Object::toString).toList().contains(c.toString()));
+    assertEquals("VIOLATION",card.get("aiVerdict"));
+    // findings는 그 사건의 AI 제안 그대로다(계약 KickReviewCard.findings)
+    assertEquals(List.of("NO_VIOLATION"),((List<Map<String,Object>>)card.get("findings")).stream().map(f->f.get("verdict")).toList());
     // 문맥 검토 카드는 그대로 AI 제안을 보여 준다
     assertEquals("NO_VIOLATION",guard.reviewCard(r).get("aiVerdict"));
+  }
+
+  @Test void contextReviewVerdictAggregatesAllTargetFindings() {
+    UUID live=lives.start(channel,moderator).liveId();
+    UUID c=candidate(live,"너 꺼져 여러 대상");
+    UUID r=proposal(c,"NO_VIOLATION");
+    // 대상이 여럿인 판정: 첫 판정만 보지 않고 모은다(NEEDS_REVIEW > VIOLATION > NO_VIOLATION)
+    for(var verdicts:List.of(List.of("NO_VIOLATION","VIOLATION"),List.of("NO_VIOLATION","NEEDS_REVIEW"),List.of("VIOLATION","NEEDS_REVIEW"))) {
+      String findings=verdicts.stream().map(v->"{\"messageId\":\""+UUID.randomUUID()+"\",\"verdict\":\""+v+"\"}")
+          .collect(java.util.stream.Collectors.joining(",","[","]"));
+      db.update("UPDATE guard.live_case_state SET judgment=jsonb_build_object('messageFindings',?::jsonb) WHERE case_id=?",findings,c);
+      assertEquals(verdicts.contains("NEEDS_REVIEW")?"NEEDS_REVIEW":"VIOLATION",guard.reviewCard(r).get("aiVerdict"));
+    }
   }
 
   @Test void rejectedAnalysisOpensReviewBeforeTheDeadlineButLiveEndAndSupersedeDoNot() {
