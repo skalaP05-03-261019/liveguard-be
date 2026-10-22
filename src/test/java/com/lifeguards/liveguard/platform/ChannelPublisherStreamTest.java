@@ -2,7 +2,6 @@ package com.lifeguards.liveguard.platform;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.net.http.HttpResponse;
@@ -12,6 +11,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.stream.Stream;
 
@@ -31,12 +31,9 @@ import com.lifeguards.liveguard.TestcontainersConfiguration;
 import com.lifeguards.liveguard.support.CaseFixtures;
 import com.lifeguards.liveguard.platform.ChannelEventStreamTest.Client;
 import com.lifeguards.liveguard.platform.ChannelEventStreamTest.Lines;
-import com.lifeguards.liveguard.platform.port.ChannelEventPublisher;
-import com.lifeguards.liveguard.platform.port.InMemoryKickStatus;
-import com.lifeguards.liveguard.platform.port.KickStatusQuery;
 import com.lifeguards.liveguard.platform.port.LivePlatformPort;
 
-/** B2가 쓰는 포트(LivePlatformPort.visibility, ChannelEventPublisher)가 기존 채널 SSE와 DB에 미치는 영향을 실제 서버로 확인한다. */
+/** 방송 경로의 가시성 변경(LivePlatformPort.visibility)과 강퇴(LIVE_ACCESS_BLOCKED)가 기존 채널 SSE와 DB에 미치는 영향을 실제 서버로 확인한다. */
 @SpringBootTest(webEnvironment = WebEnvironment.RANDOM_PORT, properties = "liveguard.sse.heartbeat-interval=200ms")
 @ActiveProfiles("test")
 @Import(TestcontainersConfiguration.class)
@@ -56,10 +53,6 @@ class ChannelPublisherStreamTest {
 	@Autowired
 	private LivePlatformPort platform;
 	@Autowired
-	private ChannelEventPublisher publisher;
-	@Autowired
-	private KickStatusQuery kickStatus;
-	@Autowired
 	private TransactionTemplate tx;
 
 	private final List<Stream<String>> openStreams = new ArrayList<>();
@@ -77,7 +70,6 @@ class ChannelPublisherStreamTest {
 	@AfterEach
 	void cleanUp() {
 		openStreams.forEach(Stream::close);
-		((InMemoryKickStatus) kickStatus).clear();
 		CaseFixtures.deleteCases(jdbc);
 		jdbc.update("DELETE FROM platform.messages");
 		jdbc.update("DELETE FROM platform.channel_members WHERE user_id = ?", VIEWER2);
@@ -194,11 +186,10 @@ class ChannelPublisherStreamTest {
 		assertTrue(streams.moderator.await(line -> line.startsWith("data:")).contains(inA.toString()));
 	}
 
-	// ----- ChannelEventPublisher.userKicked -----
+	// ----- 방송 강퇴(LIVE_ACCESS_BLOCKED) → 기존 채널 SSE의 USER_KICKED -----
 
 	@Test
-	void userKickedReachesAllConnectionsOfThatUserInThatChannelThenClosesThem() throws Exception {
-		Instant until = Instant.parse("2026-10-21T12:00:00Z");
+	void liveKickReachesAllConnectionsOfThatUserInThatChannelThenClosesThem() throws Exception {
 		Lines viewerTab1 = subscribe(Client.login(port, "viewer"), CHANNEL_A);
 		Lines viewerTab2 = subscribe(Client.login(port, "viewer"), CHANNEL_A);
 		Lines viewerOtherChannel = subscribe(Client.login(port, "viewer"), CHANNEL_B);
@@ -209,14 +200,15 @@ class ChannelPublisherStreamTest {
 		}
 
 		tx.executeWithoutResult(status -> {
-			publisher.userKicked(CHANNEL_A, VIEWER, until);
+			accessBlocked(VIEWER);
 			List<String> early = drain(viewerTab1, Duration.ofMillis(700));
 			assertFalse(early.contains("event:USER_KICKED"), "커밋 전에는 보내지 않는다");
 		});
 
+		// 방송 종료까지라 until이 없다
 		for (Lines tab : List.of(viewerTab1, viewerTab2)) {
 			assertEquals("event:USER_KICKED", tab.await(line -> line.startsWith("event:")));
-			assertEquals("data:{\"until\":\"2026-10-21T12:00:00Z\"}", tab.await(line -> line.startsWith("data:")));
+			assertEquals("data:{\"until\":null}", tab.await(line -> line.startsWith("data:")));
 			tab.awaitEnd();
 		}
 		// 다른 사용자와 같은 사용자의 다른 채널 연결은 그대로 열려 있고 USER_KICKED를 받지 않는다
@@ -233,7 +225,7 @@ class ChannelPublisherStreamTest {
 		viewer.await(":connected"::equals);
 
 		tx.executeWithoutResult(status -> {
-			publisher.userKicked(CHANNEL_A, VIEWER, Instant.parse("2026-10-21T12:00:00Z"));
+			accessBlocked(VIEWER);
 			status.setRollbackOnly();
 		});
 
@@ -243,16 +235,14 @@ class ChannelPublisherStreamTest {
 	}
 
 	@Test
-	void kickedUserCannotResubscribeOnceTheKickIsVisibleToKickStatusQuery() throws Exception {
+	void kickedUserCannotResubscribeOnceTheLiveKickIsCommitted() throws Exception {
 		Client viewer = Client.login(port, "viewer");
 		Lines stream = subscribe(viewer, CHANNEL_A);
 		stream.await(":connected"::equals);
-		Instant until = Instant.now().plus(Duration.ofHours(24));
-		InMemoryKickStatus kicks = assertInstanceOf(InMemoryKickStatus.class, kickStatus);
 
 		tx.executeWithoutResult(status -> {
-			kicks.kick(CHANNEL_A, VIEWER, until);
-			publisher.userKicked(CHANNEL_A, VIEWER, until);
+			CaseFixtures.insertLiveBan(jdbc, liveOf(CHANNEL_A), CHANNEL_A, VIEWER);
+			accessBlocked(VIEWER);
 		});
 
 		stream.awaitEnd();
@@ -262,6 +252,17 @@ class ChannelPublisherStreamTest {
 	}
 
 	// ----- helpers -----
+
+	/** 강퇴 실행이 보내는 것과 같은 방송 이벤트. 기존 채널 SSE에는 대상 본인에게 USER_KICKED로 간다. */
+	private void accessBlocked(UUID userId) {
+		UUID liveId = liveOf(CHANNEL_A);
+		platform.emit(liveId, "LIVE_ACCESS_BLOCKED", Map.of("liveId", liveId, "userId", userId), userId, true);
+	}
+
+	private UUID liveOf(UUID channelId) {
+		return jdbc.queryForObject("SELECT id FROM platform.lives WHERE channel_id = ? AND ended_at IS NULL", UUID.class,
+				channelId);
+	}
 
 	private void change(UUID caseId, String visibility) {
 		tx.executeWithoutResult(status -> platform.visibility(caseId, visibility));
@@ -310,8 +311,7 @@ class ChannelPublisherStreamTest {
 	 * 사건을 연 메시지라 1차 필터는 HOLD다(PASS 메시지는 사건을 소유하지 않는다). 진행 중 방송이 없으면 바로 실패한다.
 	 */
 	private UUID insert(UUID channelId, UUID author, String text, String visibility, UUID caseId, int secondsAfterT0) {
-		UUID liveId = jdbc.queryForObject("SELECT id FROM platform.lives WHERE channel_id = ? AND ended_at IS NULL",
-				UUID.class, channelId);
+		UUID liveId = liveOf(channelId);
 		UUID id = UUID.randomUUID();
 		CaseFixtures.insertCase(jdbc, caseId, channelId, author);
 		jdbc.update("INSERT INTO platform.messages (id, channel_id, live_id, author_id, client_message_id, text, "

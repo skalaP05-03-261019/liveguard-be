@@ -13,7 +13,6 @@ import com.lifeguards.liveguard.common.ApiException;
 import com.lifeguards.liveguard.common.security.AuthenticatedUser;
 import com.lifeguards.liveguard.contracts.enums.AuthorRole;
 import com.lifeguards.liveguard.contracts.enums.ErrorCode;
-import com.lifeguards.liveguard.platform.port.KickStatusQuery;
 
 import jakarta.servlet.http.HttpServletRequest;
 
@@ -21,12 +20,10 @@ import jakarta.servlet.http.HttpServletRequest;
 class ChannelEventController {
 
 	private final JdbcChannelMembershipQuery memberships;
-	private final KickStatusQuery kickStatus;
 	private final LiveService lives;
 
-	ChannelEventController(JdbcChannelMembershipQuery memberships, KickStatusQuery kickStatus, LiveService lives) {
+	ChannelEventController(JdbcChannelMembershipQuery memberships, LiveService lives) {
 		this.memberships = memberships;
-		this.kickStatus = kickStatus;
 		this.lives = lives;
 	}
 
@@ -35,9 +32,6 @@ class ChannelEventController {
 			HttpServletRequest request) {
 		AuthorRole role = memberships.memberRole(channelId, user.userId())
 				.orElseThrow(() -> new ApiException(ErrorCode.FORBIDDEN, "Not a member of this channel"));
-		kickStatus.activeKickUntil(channelId, user.userId()).ifPresent(until -> {
-			throw new ApiException(ErrorCode.KICKED, "Kicked from this channel", until, null);
-		});
 		// 진행 중 방송에서 강퇴됐으면 이 경로로도 다시 들어오지 못한다(방송 경로와 같은 기준).
 		// 확인과 등록을 강퇴 실행과 같은 잠금 안에서 해야 강퇴 알림(USER_KICKED)을 놓친 연결이 남지 않는다
 		SseEmitter emitter = lives.subscribeChannel(channelId, user.userId(), role == AuthorRole.MODERATOR,

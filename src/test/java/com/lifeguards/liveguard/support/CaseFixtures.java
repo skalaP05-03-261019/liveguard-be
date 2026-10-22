@@ -18,6 +18,20 @@ public final class CaseFixtures {
 		}
 	}
 
+	/** 그 방송에서 사용자를 강퇴한 상태(guard.live_kicks)를 만든다. 강퇴 행이 가리키는 사건·검토·조치도 함께 넣는다. */
+	public static void insertLiveBan(JdbcTemplate jdbc, UUID liveId, UUID channelId, UUID userId) {
+		UUID caseId = UUID.randomUUID();
+		UUID review = UUID.randomUUID();
+		UUID action = UUID.randomUUID();
+		insertCase(jdbc, caseId, channelId, userId);
+		jdbc.update("INSERT INTO guard.reviews(id, case_id, kind, status, basis_snapshot_id, created_at) "
+				+ "VALUES (?, ?, 'KICK', 'DECIDED', ?, now())", review, caseId, UUID.randomUUID());
+		jdbc.update("INSERT INTO guard.live_actions(id, case_id, kind, status, created_at) "
+				+ "VALUES (?, ?, 'KICK', 'SUCCEEDED', now())", action, caseId);
+		jdbc.update("INSERT INTO guard.live_kicks(live_id, user_id, review_id, action_id) VALUES (?, ?, ?, ?)",
+				liveId, userId, review, action);
+	}
+
 	public static void deleteCases(JdbcTemplate jdbc) {
 		jdbc.update("DELETE FROM guard.agent_task_outbox");
 		jdbc.update("DELETE FROM guard.live_kicks");

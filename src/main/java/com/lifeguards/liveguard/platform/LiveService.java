@@ -22,7 +22,6 @@ public class LiveService implements LivePlatformPort {
   private final Clock clock;
   private final LiveGuardPort guard;
   private final CandidateSink candidates;
-  private final KickStatusQuery legacyKicks;
   private final MessageFilter filter;
   private final MessageRepository messages;
   private final ChannelEventHub legacyEvents;
@@ -37,7 +36,6 @@ public class LiveService implements LivePlatformPort {
       Clock clock,
       LiveGuardPort guard,
       CandidateSink candidates,
-      KickStatusQuery legacyKicks,
       MessageFilter filter,
       MessageRepository messages,
       ChannelEventHub legacyEvents,
@@ -48,7 +46,6 @@ public class LiveService implements LivePlatformPort {
     this.clock = clock;
     this.guard = guard;
     this.candidates = candidates;
-    this.legacyKicks = legacyKicks;
     this.filter = filter;
     this.messages = messages;
     this.legacyEvents=legacyEvents;
@@ -202,9 +199,6 @@ public class LiveService implements LivePlatformPort {
   public Map<String, Object> send(UUID id, AuthenticatedUser user, SendMessageRequest req) {
     authorize(id, user.userId(), false);
     var live = live(id);
-    legacyKicks.activeKickUntil(live.channelId(),user.userId()).ifPresent(until->{
-      throw new ApiException(ErrorCode.KICKED,"Kicked from this channel",until,null);
-    });
     guard.checkEntry(id,user.userId());
     if (req.text().indexOf(0)>=0) throw new ApiException(ErrorCode.VALIDATION_FAILED,"Unsupported text");
     messages.lockAuthorInChannel(live.channelId(),user.userId());

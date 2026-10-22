@@ -1,8 +1,6 @@
 package com.lifeguards.liveguard.platform;
 
 import java.time.Duration;
-import java.time.Instant;
-import java.util.Objects;
 import java.util.UUID;
 
 import org.springframework.beans.factory.annotation.Value;
@@ -13,19 +11,17 @@ import org.springframework.transaction.event.TransactionalEventListener;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import com.lifeguards.liveguard.contracts.dto.event.ChatEvent;
-import com.lifeguards.liveguard.contracts.dto.event.UserKickedEvent;
 import com.lifeguards.liveguard.contracts.enums.Visibility;
-import com.lifeguards.liveguard.platform.port.ChannelEventPublisher;
 
 import jakarta.annotation.PreDestroy;
 
 /**
  * 채팅 SSE (/api/channels/{id}/events). 메시지 커밋 후 CHAT을 공개 범위에 맞춰 보내고, 방송 경로의 공개 범위 변경·복원
- * ({@link #integrated})과 강퇴(USER_KICKED, B2용 {@link ChannelEventPublisher})를 0.6 형태로 전달한다.
+ * ({@link #integrated})과 강퇴(LIVE_ACCESS_BLOCKED → USER_KICKED, 대상 본인)를 0.6 형태로 전달한다.
  * 트랜잭션 안에서 부르면 커밋 후에 보내고 롤백되면 보내지 않는다.
  */
 @Component
-class ChannelEventHub implements ChannelEventPublisher {
+class ChannelEventHub {
 
 	private final SseRegistry registry;
 
@@ -65,15 +61,6 @@ class ChannelEventHub implements ChannelEventPublisher {
 				subscriber -> chat.visibility() == Visibility.PUBLIC || subscriber.operator()
 						|| subscriber.userId().equals(authorId),
 				"CHAT", chat);
-	}
-
-	@Override
-	public void userKicked(UUID channelId, UUID userId, Instant until) {
-		Objects.requireNonNull(channelId, "channelId");
-		Objects.requireNonNull(userId, "userId");
-		UserKickedEvent event = new UserKickedEvent(until);
-		AfterCommit.run(() -> registry.broadcast(channelId, subscriber -> subscriber.userId().equals(userId),
-				"USER_KICKED", event, true));
 	}
 
   @org.springframework.context.event.EventListener
