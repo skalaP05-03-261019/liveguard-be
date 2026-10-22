@@ -302,6 +302,53 @@ class LiveModerationIntegrationTest {
 
   static UUID id(Object value) { return UUID.fromString(value.toString()); }
 
+  /** 욕설 확정 2건 뒤 같은 문장 3회로 도배 사건(세 번째 확정)을 만들어 강퇴 분석이 큐에 들어간 상태로 둔다. */
+  UUID floodCaseAtKickThreshold(UUID live) {
+    for(String text:List.of("씨발","씨발 진짜")) {
+      lives.send(live,viewer,new SendMessageRequest(UUID.randomUUID(),text));
+      db.update("DELETE FROM guard.live_timeouts WHERE live_id=?",live);
+    }
+    UUID last=null;
+    for(int i=0;i<3;i++)last=id(lives.send(live,viewer,new SendMessageRequest(UUID.randomUUID(),"같은 문장")).get("messageId"));
+    return db.queryForObject("SELECT case_id FROM platform.messages WHERE id=?",UUID.class,last);
+  }
+
+  UUID taskOf(UUID c) { return db.queryForObject("SELECT task_id FROM guard.live_case_state WHERE case_id=?",UUID.class,c); }
+
+  @Test void floodEvidenceAppendReanalyzesThePendingKickAnalysisWithANewTask() {
+    UUID live=lives.start(channel,moderator).liveId();
+    UUID flood=floodCaseAtKickThreshold(live);
+    UUID before=taskOf(flood);
+    assertEquals("PENDING",db.queryForObject("SELECT status FROM guard.agent_task_outbox WHERE task_id=?",String.class,before));
+
+    lives.send(live,viewer,new SendMessageRequest(UUID.randomUUID(),"같은 문장"));
+
+    // 결정 전 강퇴 분석은 새 작업·새 snapshot으로 다시 넣고, 보내지 않은 이전 작업은 멈춘다
+    UUID after=taskOf(flood);
+    assertNotEquals(before,after);
+    assertEquals("case:"+flood+":analysis:2",db.queryForObject("SELECT thread_id FROM guard.live_case_state WHERE case_id=?",String.class,flood));
+    assertEquals(List.of("FAILED","SUPERSEDED"),db.queryForObject("SELECT ARRAY[status,last_error_code] FROM guard.agent_task_outbox WHERE task_id=?",
+      (rs,n)->List.of((Object[])rs.getArray(1).getArray()),before));
+    var payload=db.queryForMap("SELECT payload->>'kind' AS kind, payload->>'snapshotId' AS snapshot, payload->>'expectedEvidenceVersion' AS evidence FROM guard.agent_task_outbox WHERE task_id=?",after);
+    assertEquals("REANALYZE",payload.get("kind"));
+    assertEquals(db.queryForObject("SELECT snapshot_id::text FROM guard.cases WHERE id=?",String.class,flood),payload.get("snapshot"));
+    assertEquals("2",payload.get("evidence"));
+  }
+
+  @Test void decidedKickReviewIsNotReanalyzedWhenFloodEvidenceIsAdded() {
+    UUID live=lives.start(channel,moderator).liveId();
+    UUID flood=floodCaseAtKickThreshold(live);
+    UUID before=taskOf(flood);
+    UUID review=db.queryForObject("SELECT id FROM guard.reviews WHERE case_id=? AND kind='KICK'",UUID.class,flood);
+    decide(review,"REJECT",1);
+
+    lives.send(live,viewer,new SendMessageRequest(UUID.randomUUID(),"같은 문장"));
+
+    // 결정된 강퇴 판단의 근거(사건 3건)는 바뀌지 않으므로 다시 분석하지 않는다
+    assertEquals(before,taskOf(flood));
+    assertEquals(0,db.queryForObject("SELECT count(*) FROM guard.agent_task_outbox WHERE case_id=? AND payload->>'kind'='REANALYZE'",Integer.class,flood));
+  }
+
   @Test void independentKickReasonsSurviveCancellationOfAnotherReview() {
     UUID live=lives.start(channel,moderator).liveId();List<UUID> cs=new ArrayList<>(),rs=new ArrayList<>();
     for(int i=0;i<6;i++){UUID c=candidate(live,"너 꺼져 별도사건 "+i);cs.add(c);rs.add(proposal(c,"VIOLATION"));}
