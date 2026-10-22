@@ -86,6 +86,21 @@ class LiveSnapshotTest {
 		assertEquals(messages.subList(20, 56), ids);
 	}
 
+	@Test
+	void boundaryIsTenOnEachSideOfEvidence() {
+		UUID caseId = UUID.randomUUID();
+		CaseFixtures.insertCase(jdbc, caseId, channel, VIEWER);
+		jdbc.update("UPDATE platform.messages SET case_id = ? WHERE id = ?", caseId, messages.get(20));
+
+		// 21 떨어지면 사이 20건이 모두 어느 한 증거의 ±10 안이다
+		assertEquals(messages.subList(10, 52),
+				ids(lives.snapshot(live, messages.get(20), VIEWER, List.of(messages.get(41)))));
+		// 22 떨어지면 정확히 가운데 한 건(31번)만 빠진다
+		List<UUID> expected = new ArrayList<>(messages.subList(10, 53));
+		expected.remove(messages.get(31));
+		assertEquals(expected, ids(lives.snapshot(live, messages.get(20), VIEWER, List.of(messages.get(42)))));
+	}
+
 	private static List<UUID> ids(List<Map<String, Object>> snapshot) {
 		return snapshot.stream().map(m -> (UUID) m.get("messageId")).toList();
 	}

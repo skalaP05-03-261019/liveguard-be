@@ -278,6 +278,30 @@ class LiveModerationIntegrationTest {
     lives.end(live,moderator);UUID next=lives.start(channel,moderator).liveId();
     assertEquals("PUBLIC",lives.send(next,viewer,new SendMessageRequest(UUID.randomUUID(),"같은 응원")).get("visibility"));
   }
+  /**
+   * 증거가 멀리 떨어진 FLOOD 사건: snapshot은 증거 ±10만 담지만 Agent 문맥은 전체를 담았을 때와 같다.
+   * 메시지 순서 r1, r2, 다른 사용자 o0~o24, m(세 번째 같은 문장). 증거는 r1·r2·m.
+   */
+  @Test void farApartEvidenceKeepsTheSameAgentContextWithABoundedSnapshot() {
+    UUID live=lives.start(channel,moderator).liveId();
+    List<UUID> order=new ArrayList<>();
+    for(int i=0;i<2;i++)order.add(id(lives.send(live,viewer,new SendMessageRequest(UUID.randomUUID(),"같은 문장")).get("messageId")));
+    for(int i=0;i<25;i++)order.add(id(lives.send(live,second,new SendMessageRequest(UUID.randomUUID(),"응원 "+i)).get("messageId")));
+    order.add(id(lives.send(live,viewer,new SendMessageRequest(UUID.randomUUID(),"같은 문장")).get("messageId")));
+    UUID c=db.queryForObject("SELECT case_id FROM platform.messages WHERE id=?",UUID.class,order.getLast());
+
+    // 증거(0, 1, 27번)에서 10건 넘게 떨어진 12~16번만 snapshot에서 빠진다
+    List<UUID> kept=new ArrayList<>(order);kept.removeAll(order.subList(12,17));
+    assertEquals(kept,guard.internalCase(c).messages().stream().map(m->m.messageId()).toList());
+    // 문맥은 전체 28건 기준과 같다: 증거 3건 + 증거에 가까운 17건(2~10번, 19~26번), truncated
+    List<UUID> expected=new ArrayList<>(order.subList(0,11));expected.addAll(order.subList(19,28));
+    var context=guard.internalContext(c,10,10);
+    assertEquals(expected,context.messages().stream().map(m->m.messageId()).toList());
+    assertTrue(context.truncated());
+  }
+
+  static UUID id(Object value) { return UUID.fromString(value.toString()); }
+
   @Test void independentKickReasonsSurviveCancellationOfAnotherReview() {
     UUID live=lives.start(channel,moderator).liveId();List<UUID> cs=new ArrayList<>(),rs=new ArrayList<>();
     for(int i=0;i<6;i++){UUID c=candidate(live,"너 꺼져 별도사건 "+i);cs.add(c);rs.add(proposal(c,"VIOLATION"));}
