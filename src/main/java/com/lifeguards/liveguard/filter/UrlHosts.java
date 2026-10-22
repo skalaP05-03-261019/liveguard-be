@@ -19,8 +19,9 @@ public final class UrlHosts {
 	private static final Pattern BARE_DOMAIN = Pattern.compile(
 			"(?<![\\p{L}\\p{N}@.\\-])((?:[\\p{L}\\p{N}](?:[\\p{L}\\p{N}\\-]*[\\p{L}\\p{N}])?\\.)+[A-Za-z]{2,63})(?![\\p{L}\\p{N}\\-])");
 
-	// 이메일은 링크가 아니라 PII 후보다(TBD-01). 점이 든 로컬 파트(first.last@…)가 bare 도메인으로 잡히지 않게 먼저 지운다
-	private static final Pattern EMAIL = Pattern.compile(
+	// 이메일은 링크가 아니라 PII 후보다(TBD-01). 점이 든 로컬 파트(first.last@…)가 bare 도메인으로 잡히지 않게 먼저 지운다.
+	// PiiMasker도 같은 패턴을 써서, 링크에서 빠진 이메일은 반드시 PII 후보·마스킹 대상이 되게 한다
+	static final Pattern EMAIL = Pattern.compile(
 			"[\\p{L}\\p{N}._%+\\-]+@(?:[\\p{L}\\p{N}](?:[\\p{L}\\p{N}\\-]*[\\p{L}\\p{N}])?\\.)+[A-Za-z]{2,63}");
 
 	private UrlHosts() {

@@ -14,6 +14,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 import com.lifeguards.liveguard.contracts.enums.FilterResult;
 import com.lifeguards.liveguard.contracts.enums.HandlingRoute;
+import com.lifeguards.liveguard.contracts.enums.MatchingTag;
 import com.lifeguards.liveguard.contracts.enums.ModerationReasonCode;
 import com.lifeguards.liveguard.contracts.enums.Visibility;
 import com.lifeguards.liveguard.contracts.exception.InvalidContractException;
@@ -106,9 +107,51 @@ class MessageFilterTest {
 	}
 
 	@Test
-	void phoneOrAccountPatternAloneIsPassBecauseThePiiFilterIsNotThereYet() {
-		assertEquals(HandlingRoute.PASS, classify("연락주세요 010-1234-5678").handlingRoute());
-		assertEquals(HandlingRoute.PASS, classify("국민 123456-78-901234 입금").handlingRoute());
+	void phoneAccountOrEmailFormatIsAPiiCandidateAndHeld() {
+		FilterDecision phone = classify("연락주세요 010-1234-5678");
+		assertEquals(HandlingRoute.PII_INVESTIGATION, phone.handlingRoute());
+		assertEquals(FilterResult.HOLD, phone.result());
+		assertEquals(Visibility.HELD, phone.visibility());
+		assertNull(phone.ruleId());
+		assertEquals(ModerationReasonCode.PII_PENDING, phone.moderationReasonCode());
+		assertEquals(List.of(MatchingTag.PII_PHONE.name()), phone.matchingTags());
+
+		assertEquals(List.of(MatchingTag.PII_ACCOUNT.name()), classify("국민 123456-78-901234 입금").matchingTags());
+		assertEquals(List.of(MatchingTag.PII_EMAIL.name()), classify("메일 me@example.com").matchingTags());
+		assertEquals(List.of(MatchingTag.PII_PHONE.name(), MatchingTag.PII_ACCOUNT.name(), MatchingTag.PII_EMAIL.name()),
+				classify("010-1234-5678 / 110-123-456789 / me@example.com").matchingTags());
+	}
+
+	@ParameterizedTest
+	@ValueSource(strings = { "12345678901234", "1004", "2026-10-20 21:30", "3.5점", "1,000,000원", "123-45-6789" })
+	void numbersAloneOrShortNumberGroupsAreNotPiiCandidates(String text) {
+		// AC-06: 숫자라는 이유만으로 후보가 되지 않는다. 하이픈 묶음은 10자리 이상만 계좌 형식이다
+		assertEquals(HandlingRoute.PASS, classify(text).handlingRoute(), text);
+		assertEquals(List.of(), classify(text).matchingTags(), text);
+	}
+
+	@Test
+	void fullWidthDigitsDoNotEvadeThePhoneFormat() {
+		assertEquals(HandlingRoute.PII_INVESTIGATION, classify("연락 ０１０-１２３４-５６７８").handlingRoute());
+	}
+
+	@Test
+	void piiRanksBelowRuleAndFloodButAboveContext() {
+		// TBD-02: RULE_CONFIRMED > FLOOD_REVIEW > PII_INVESTIGATION > CONTEXT_REVIEW. 태그는 전부 남긴다
+		FilterDecision link = classify("https://evil.test 010-1234-5678");
+		assertEquals(HandlingRoute.RULE_CONFIRMED, link.handlingRoute());
+		assertTrue(link.matchingTags().contains(MatchingTag.PII_PHONE.name()));
+
+		assertEquals(HandlingRoute.FLOOD_REVIEW, classify("010-1234-5678", 3).handlingRoute());
+
+		FilterDecision context = classify("꺼져 010-1234-5678");
+		assertEquals(HandlingRoute.PII_INVESTIGATION, context.handlingRoute());
+		assertEquals(List.of(MessageFilter.ATTACK_TERM, MatchingTag.PII_PHONE.name()), context.matchingTags());
+	}
+
+	@Test
+	void numbersInsideALinkAreNotPiiCandidates() {
+		assertEquals(List.of(MessageFilter.LINK), classify("https://evil.test/order/010-1234-5678").matchingTags());
 	}
 
 	@Test
@@ -147,11 +190,10 @@ class MessageFilterTest {
 	}
 
 	@Test
-	void filterNeverEmitsReviewOrPiiRoute() {
+	void filterNeverEmitsReview() {
 		for (String text : List.of("꺼져", "씨발", "https://a.test", "공식 로그인", "같은 말", "010-1234-5678", "안녕")) {
-			FilterDecision decision = classify(text, 3);
-			assertTrue(decision.result() != FilterResult.REVIEW, text);
-			assertTrue(decision.handlingRoute() != HandlingRoute.PII_INVESTIGATION, text);
+			assertTrue(classify(text, 3).result() != FilterResult.REVIEW, text);
+			assertTrue(classify(text, 1).result() != FilterResult.REVIEW, text);
 		}
 	}
 
@@ -254,14 +296,15 @@ class MessageFilterTest {
 	}
 
 	@ParameterizedTest
-	@ValueSource(strings = { "first.last@example.com", "a.b.c+tag@sub.example.co.kr" })
+	@ValueSource(strings = { "first.last@example.com", "a.b.c+tag@sub.example.co.kr", "user@예시.com", "홍길동@example.com" })
 	void emailIsNotALinkEvenWithDottedLocalPart(String text) {
 		FilterDecision decision = classify(text);
 
-		assertEquals(HandlingRoute.PASS, decision.handlingRoute(), text);
-		assertEquals(Visibility.PUBLIC, decision.visibility(), text);
+		// 이메일은 링크가 아니라 개인정보 후보다(TBD-01). 숨김 확정이 아니라 조사용 HELD
+		assertEquals(HandlingRoute.PII_INVESTIGATION, decision.handlingRoute(), text);
+		assertEquals(Visibility.HELD, decision.visibility(), text);
 		assertNull(decision.ruleId(), text);
-		assertFalse(decision.matchingTags().contains(MessageFilter.LINK), text);
+		assertEquals(List.of(MatchingTag.PII_EMAIL.name()), decision.matchingTags(), text);
 	}
 
 	@Test
