@@ -515,13 +515,17 @@ public class LiveModerationService implements LiveGuardPort {
   }
 
   @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ)
-  public List<Map<String, Object>> cases(UUID live, AuthenticatedUser user) {
+  public List<Map<String, Object>> cases(UUID live, ConfirmationStatus confirmation, AuthenticatedUser user) {
     platform.authorize(live, user.userId(), true);
+    // confirmationStatus가 없으면 전체, 있으면 그 확정 상태의 사건만(openapi listCases)
+    List<Object> params = new ArrayList<>(List.of(live));
+    if (confirmation != null) params.add(confirmation.name());
     return db
         .sql(
-            "SELECT c.id FROM guard.cases c JOIN guard.live_case_state s ON s.case_id=c.id WHERE"
-                + " c.live_id=? ORDER BY c.created_at DESC")
-        .param(live)
+            "SELECT c.id FROM guard.cases c JOIN guard.live_case_state s ON s.case_id=c.id WHERE c.live_id=?"
+                + (confirmation == null ? "" : " AND s.confirmation_status=?")
+                + " ORDER BY c.created_at DESC, c.id DESC")
+        .params(params)
         .query(UUID.class)
         .list()
         .stream()
