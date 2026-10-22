@@ -28,6 +28,16 @@ public class AgentDeliveryWorker {
 		return deliver(null);
 	}
 
+	/** 전송 문제로 멈춘 현재 작업을 다시 보낼 수 있게 한다(Agent 재기동 후 복구). 개수만 남긴다. */
+	public int revive(java.time.Duration staleAfter) {
+		var now = clock.instant();
+		int revived = repository.revive(now, now.minus(staleAfter));
+		if (revived > 0) {
+			log.info("Agent delivery revived stalled tasks: count={}", revived);
+		}
+		return revived;
+	}
+
 	/** True means an outcome was persisted, or no eligible row exists for this notification. */
 	public boolean deliver(UUID id) {
 		if (TransactionSynchronizationManager.isActualTransactionActive()) {

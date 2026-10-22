@@ -89,6 +89,10 @@ public class AgentHttpGateway implements AutoCloseable {
 				&& "THREAD_NOT_WAITING".equals(reply.body().path("detail").path("code").stringValue(""))) {
 			return new Result(false, true, false, "THREAD_NOT_WAITING");
 		}
+		if (reply.status() == 0 && "AGENT_UNREACHABLE".equals(reply.code())) {
+			// 보내지 못했으므로 이번 시도로 불확실해지지 않는다(이전 시도가 불확실했으면 그 표시는 유지된다)
+			return new Result(false, true, reconciliation, "AGENT_UNREACHABLE");
+		}
 		if (reply.status() == 0 || Set.of(408, 429, 500, 502, 503, 504).contains(reply.status())) {
 			return new Result(false, true, reconciliation || reply.status() != 429,
 					reply.status() == 0 ? reply.code() : "AGENT_HTTP_" + reply.status());
@@ -123,6 +127,11 @@ public class AgentHttpGateway implements AutoCloseable {
 				return new Reply(response.statusCode(), null, "INVALID_AGENT_RECEIPT");
 			}
 		} catch (ExecutionException ex) {
+			// 연결 자체가 안 됐으면(거부·연결 시간 초과) 요청은 Agent에 닿지 않았다. 전달 여부가 확실하다
+			if (ex.getCause() instanceof java.net.ConnectException
+					|| ex.getCause() instanceof java.net.http.HttpConnectTimeoutException) {
+				return new Reply(0, null, "AGENT_UNREACHABLE");
+			}
 			return new Reply(0, null, "AGENT_TRANSPORT_ERROR");
 		} catch (TimeoutException ex) {
 			future.cancel(true);

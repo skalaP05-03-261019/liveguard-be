@@ -2,6 +2,7 @@ package com.lifeguards.liveguard.guard.outbox;
 
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -104,6 +105,30 @@ public class AgentOutboxRepository {
 				WHERE id = ? AND status = 'IN_FLIGHT' AND lease_token = ? AND lease_until > ?
 				""").params(status, errorCode, Timestamp.from(nextAttempt), Timestamp.from(now),
 						Timestamp.from(nextAttempt), uncertain, delivery.id(), delivery.leaseToken(), Timestamp.from(now)).update() == 1;
+	}
+
+	/** 전송 문제로 멈춘 것으로 보는 오류 코드. Agent가 다시 뜨면 보낼 수 있다. 4xx·충돌·대체·방송 종료는 아니다. */
+	static final List<String> TRANSIENT_CODES = List.of("AGENT_UNREACHABLE", "AGENT_TRANSPORT_ERROR",
+			"AGENT_RESPONSE_TIMEOUT", "DELIVERY_BUDGET_EXHAUSTED", "AGENT_HTTP_408", "AGENT_HTTP_429",
+			"AGENT_HTTP_502", "AGENT_HTTP_503", "AGENT_HTTP_504");
+
+	/**
+	 * 전송 문제로 재시도 예산을 다 쓰고 멈춘 작업(UNKNOWN·FAILED) 중 아직 그 사건의 현재 작업인 것을 다시 보낼 수 있게
+	 * 한다. staleBefore 이전에 마지막으로 바뀐 행만 고르므로 Agent가 계속 내려가 있어도 그 간격으로만 다시 시도한다.
+	 * 전달이 불확실했던 행은 표시를 유지해, 다음 전달이 먼저 상태를 조회하고 없을 때만 보낸다(중복 실행 없음).
+	 */
+	@Transactional
+	public int revive(Instant now, Instant staleBefore) {
+		return jdbc.sql("""
+				UPDATE guard.agent_task_outbox o
+				SET status = 'RETRY', attempt_count = 0, next_attempt_at = :now, notification_after = :now,
+					updated_at = :now
+				WHERE o.status IN ('UNKNOWN', 'FAILED') AND o.last_error_code IN (:codes)
+					AND o.updated_at <= :staleBefore
+					AND EXISTS (SELECT 1 FROM guard.live_case_state s
+						WHERE s.case_id = o.case_id AND s.task_id = o.task_id)
+				""").param("now", Timestamp.from(now)).param("codes", TRANSIENT_CODES)
+				.param("staleBefore", Timestamp.from(staleBefore)).update();
 	}
 
 	public record Publication(UUID id, UUID token) {
