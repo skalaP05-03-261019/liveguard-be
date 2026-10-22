@@ -296,7 +296,7 @@ class MessageFilterTest {
 	}
 
 	@ParameterizedTest
-	@ValueSource(strings = { "first.last@example.com", "a.b.c+tag@sub.example.co.kr" })
+	@ValueSource(strings = { "first.last@example.com", "a.b.c+tag@sub.example.co.kr", "user@예시.com", "홍길동@example.com" })
 	void emailIsNotALinkEvenWithDottedLocalPart(String text) {
 		FilterDecision decision = classify(text);
 

@@ -10,13 +10,15 @@ import com.lifeguards.liveguard.contracts.enums.MatchingTag;
 
 /**
  * 내부 API(Agent·모델 입력)로 보내는 본문의 개인정보·링크를 마스킹한다 (계약 MaskedMessage.text).
- * 순서: scheme 있는 URL → 이메일 → scheme 없는 도메인 → 전화번호 → 계좌·카드 번호. 원문 text에 적용한다.
+ * 순서: scheme 있는 URL → 이메일 → scheme 없는 도메인 → 전화번호 → 계좌·카드 번호. 후보 판정과 같게 NFKC만 적용한
+ * 원문에 적용한다(전각 숫자로 쓴 전화번호도 가린다).
  * (scheme URL을 먼저 처리해야 userinfo의 @가 이메일로 잡히지 않고, 이메일을 도메인보다 먼저 처리해야
  * me.name@… 의 앞부분이 도메인으로 잡히지 않는다)
  */
 public final class PiiMasker {
 
-	private static final Pattern EMAIL = Pattern.compile("[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}");
+	// 링크 판정에서 빠지는 이메일과 같은 범위 (유니코드 로컬 파트·도메인 라벨 포함)
+	private static final Pattern EMAIL = UrlHosts.EMAIL;
 	private static final Pattern URL_WITH_SCHEME = Pattern.compile("(?i)\\bhttps?://([^\\s/?#]+)\\S*");
 	private static final Pattern BARE_DOMAIN = Pattern.compile(
 			"(?<![\\p{L}\\p{N}@.:\\-])((?:[\\p{L}\\p{N}](?:[\\p{L}\\p{N}\\-]*[\\p{L}\\p{N}])?\\.)+[A-Za-z]{2,63})"
@@ -59,7 +61,7 @@ public final class PiiMasker {
 	}
 
 	public static String mask(String text) {
-		String masked = replaceWithHost(URL_WITH_SCHEME, text);
+		String masked = replaceWithHost(URL_WITH_SCHEME, Normalizer.normalize(text, Normalizer.Form.NFKC));
 		masked = EMAIL.matcher(masked).replaceAll("[EMAIL]");
 		masked = replaceWithHost(BARE_DOMAIN, masked);
 		masked = PHONE.matcher(masked).replaceAll("[PHONE]");
