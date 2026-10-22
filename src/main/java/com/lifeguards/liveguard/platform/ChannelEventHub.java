@@ -1,6 +1,7 @@
 package com.lifeguards.liveguard.platform;
 
 import java.time.Duration;
+import java.time.Instant;
 import java.util.UUID;
 
 import org.springframework.beans.factory.annotation.Value;
@@ -12,6 +13,7 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import com.lifeguards.liveguard.contracts.dto.event.ChatEvent;
 import com.lifeguards.liveguard.contracts.dto.event.UserKickedEvent;
+import com.lifeguards.liveguard.contracts.dto.event.VisibilityChangedEvent;
 import com.lifeguards.liveguard.contracts.enums.Visibility;
 
 import jakarta.annotation.PreDestroy;
@@ -70,9 +72,16 @@ class ChannelEventHub {
   void integrated(UUID channelId,UUID author,boolean restricted,String event,java.util.Map<String,Object> data) {
     if(event.equals("LIVE_ACCESS_BLOCKED")) {
       registry.broadcast(channelId,s->s.userId().equals(author),"USER_KICKED",new UserKickedEvent(null),true);
-    } else if(java.util.Set.of("CHAT","MESSAGE_VISIBILITY_CHANGED","MESSAGE_RESTORED","LIVE_ENDED").contains(event)) {
-      String name=event.equals("MESSAGE_RESTORED")?"MESSAGE_VISIBILITY_CHANGED":event;
-      registry.broadcast(channelId,s->!restricted||s.operator()||s.userId().equals(author),name,data,event.equals("LIVE_ENDED"));
+    } else if(event.equals("MESSAGE_VISIBILITY_CHANGED")||event.equals("MESSAGE_RESTORED")) {
+      // 0.6 형태는 둘 다 MESSAGE_VISIBILITY_CHANGED다. 복원이면 원문·작성자·보낸 시각을 함께 싣는다
+      boolean restored=event.equals("MESSAGE_RESTORED");
+      VisibilityChangedEvent payload=new VisibilityChangedEvent((UUID)data.get("messageId"),
+          Visibility.valueOf(data.get("visibility").toString()),((Number)data.get("version")).intValue(),
+          restored?(String)data.get("text"):null,restored?(String)data.get("authorAlias"):null,
+          restored?(Instant)data.get("sentAt"):null);
+      registry.broadcast(channelId,s->!restricted||s.operator()||s.userId().equals(author),"MESSAGE_VISIBILITY_CHANGED",payload);
+    } else if(event.equals("CHAT")||event.equals("LIVE_ENDED")) {
+      registry.broadcast(channelId,s->!restricted||s.operator()||s.userId().equals(author),event,data,event.equals("LIVE_ENDED"));
     }
   }
 

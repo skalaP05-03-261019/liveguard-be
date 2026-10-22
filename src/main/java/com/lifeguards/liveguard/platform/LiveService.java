@@ -423,17 +423,20 @@ public class LiveService implements LivePlatformPort {
           .params(now(), caseId, revoked)
           .update();
     // 소유 사건(case_id)이 아니어도 이 사건의 원인이 걸려 있던 메시지를 본다. 소유 사건이 먼저 풀리고
-    // 다른 사건의 원인이 마지막으로 남았다가 풀리는 경우, case_id만 보면 그 메시지가 복구되지 않는다
+    // 다른 사건의 원인이 마지막으로 남았다가 풀리는 경우, case_id만 보면 그 메시지가 복구되지 않는다.
+    // 가릴 때는 이 사건의 원인이 아직 걸려 있는 메시지만 본다. 이미 풀린 원인의 메시지를 다시 가리지 않는다
+    boolean release = visibility.equals("PUBLIC");
     var ids =
         db.sql(
                 "SELECT id FROM platform.messages WHERE case_id=? OR id IN (SELECT"
-                    + " message_id FROM platform.message_hold_reasons WHERE case_id=?)"
-                    + " ORDER BY id FOR UPDATE")
+                    + " message_id FROM platform.message_hold_reasons WHERE case_id=?"
+                    + (release ? "" : " AND released_at IS NULL")
+                    + ") ORDER BY id FOR UPDATE")
             .params(caseId, caseId)
             .query(UUID.class)
             .list();
     for (UUID id : ids) {
-      if (visibility.equals("PUBLIC")
+      if (release
           && db.sql(
                       "SELECT count(*) FROM platform.message_hold_reasons WHERE message_id=? AND"
                           + " released_at IS NULL")
@@ -441,6 +444,11 @@ public class LiveService implements LivePlatformPort {
                   .query(Integer.class)
                   .single()
               > 0) continue;
+      var before =
+          db.sql("SELECT visibility,author_id FROM platform.messages WHERE id=?")
+              .param(id)
+              .query((r, n) -> Map.entry(r.getString(1), r.getObject(2, UUID.class)))
+              .single();
       int changed =
           db.sql(
                   "UPDATE platform.messages SET visibility=?,version=version+1 WHERE id=? AND"
@@ -450,13 +458,18 @@ public class LiveService implements LivePlatformPort {
       if (changed > 0) {
         var data = message(id, new UUID(0, 0));
         UUID liveId = (UUID) data.get("liveId");
-        emit(
-            liveId,
-            "MESSAGE_VISIBILITY_CHANGED",
-            Map.of("messageId", id, "visibility", visibility, "version", data.get("version")),
-            null,
-            false);
-        if (visibility.equals("PUBLIC")) emit(liveId, "MESSAGE_RESTORED", chatEvent(data), null, false);
+        if (release) {
+          // 계약: PUBLIC 복원은 MESSAGE_RESTORED(ChatEvent) 하나로 보낸다
+          emit(liveId, "MESSAGE_RESTORED", chatEvent(data), null, false);
+        } else {
+          // 원문 없이 ID만. 공개였던 메시지면 모두에게, 처음부터 가려져 있던 메시지면 그것을 본 작성자·담당 운영자에게만
+          emit(
+              liveId,
+              "MESSAGE_VISIBILITY_CHANGED",
+              Map.of("messageId", id, "visibility", visibility, "version", data.get("version")),
+              before.getValue(),
+              !before.getKey().equals("PUBLIC"));
+        }
       }
     }
   }
