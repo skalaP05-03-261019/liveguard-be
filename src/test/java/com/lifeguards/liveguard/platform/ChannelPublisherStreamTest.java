@@ -143,6 +143,35 @@ class ChannelPublisherStreamTest {
 	}
 
 	@Test
+	void liveStreamHidingAHeldMessageOnlyReachesTheAuthorAndModerator() throws Exception {
+		UUID heldCase = UUID.randomUUID();
+		UUID sentinelCase = UUID.randomUUID();
+		UUID held = insert(CHANNEL_A, VIEWER, "held text", "HELD", heldCase, 0);
+		UUID sentinel = insert(CHANNEL_A, VIEWER, "sentinel", "PUBLIC", sentinelCase, 1);
+		String path = "/api/lives/" + liveOf(CHANNEL_A) + "/events";
+		Lines author = subscribePath(Client.login(port, "viewer"), path);
+		Lines otherViewer = subscribePath(Client.login(port, "viewer3"), path);
+		Lines moderator = subscribePath(Client.login(port, "moderator"), path);
+		for (Lines lines : List.of(author, otherViewer, moderator)) {
+			lines.await(":connected"::equals);
+		}
+
+		change(heldCase, "HIDDEN");
+		change(sentinelCase, "HIDDEN");
+
+		for (Lines lines : List.of(author, moderator)) {
+			assertEquals(MESSAGE_EVENT, lines.await(line -> line.startsWith("event:")));
+			assertTrue(lines.await(line -> line.startsWith("data:")).contains(held.toString()));
+			assertEquals(MESSAGE_EVENT, lines.await(line -> line.startsWith("event:")));
+			assertTrue(lines.await(line -> line.startsWith("data:")).contains(sentinel.toString()));
+		}
+		// 다른 시청자는 HELD 메시지를 본 적이 없으므로 그 알림도 받지 않는다. 첫 알림이 곧 sentinel이다
+		assertEquals(MESSAGE_EVENT, otherViewer.await(line -> line.startsWith("event:")));
+		String first = otherViewer.await(line -> line.startsWith("data:"));
+		assertTrue(first.contains(sentinel.toString()) && !first.contains(held.toString()), first);
+	}
+
+	@Test
 	void liveStreamGetsOnlyMessageRestoredOnRestore() throws Exception {
 		UUID caseId = UUID.randomUUID();
 		UUID message = insert(CHANNEL_A, VIEWER, "방송 복원", "HELD", caseId, 6);
