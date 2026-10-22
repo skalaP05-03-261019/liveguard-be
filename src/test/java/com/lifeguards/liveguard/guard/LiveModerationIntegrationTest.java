@@ -1051,8 +1051,10 @@ class LiveModerationIntegrationTest {
     assertEquals("SUCCEEDED:-:1",kickAction(kick));
     assertEquals(ErrorCode.KICKED,assertThrows(ApiException.class,()->guard.checkEntry(live,user)).code());
     assertEquals(List.of(),guard.kickApprovalsAwaitingHandoff(HANDOFF,20));
-    // Agent가 늦게 재개해도 같은 명령과 실행 결과를 돌려받는다. 그 사이 대상 상태가 바뀌어도 이미 실행한 검토를 무효로 돌리지 않는다
+    // Agent가 늦게 재개해도 같은 명령과 실행 결과를 돌려받는다. 그 사이 대상 상태가 바뀌거나 승인한 운영자의 권한이
+    // 회수돼도 이미 실행한 강퇴의 검토를 무효로 돌리지 않는다
     db.update("UPDATE guard.live_user_state SET version=version+1 WHERE live_id=? AND user_id=?",live,user);
+    db.update("UPDATE platform.channel_members SET member_role='VIEWER' WHERE channel_id=? AND user_id=?",channel,operator);
     var late=guard.revalidate(kick,d);
     assertEquals("APPROVED",late.get("status"));
     var command=(Map<String,Object>)late.get("actionCommand");
@@ -1096,11 +1098,17 @@ class LiveModerationIntegrationTest {
     UUID live=lives.start(channel,moderator).liveId();
     UUID kick=ruleKick(live);
     UUID d=UUID.fromString(decide(kick,"APPROVE",1).get("decisionId").toString());
-    // 승인한 운영자의 권한이 회수됐다. 다시 해도 같은 결과이므로 한 번에 FAILED로 남긴다
+    // 승인한 운영자의 권한이 회수됐다. 다시 해도 같은 결과이므로 한 번에 FAILED로 남긴다. 재검증 단계라 강퇴는 시도하지 않았다
     db.update("UPDATE platform.channel_members SET member_role='VIEWER' WHERE channel_id=? AND user_id=?",channel,operator);
     ageDecision(d,HANDOFF.plusSeconds(1));
     runPendingKicks();
-    assertEquals("FAILED:FORBIDDEN:1",kickAction(kick));
+    assertEquals("FAILED:FORBIDDEN:0",kickAction(kick));
+    assertNull(db.queryForObject("SELECT result->>'startedAt' FROM guard.live_actions WHERE kind='KICK'",String.class));
+    // 실패를 알린 뒤 Agent가 늦게 재검증해도 새 명령을 만들지 않는다(실행 기록은 하나)
+    db.update("UPDATE platform.channel_members SET member_role='MODERATOR' WHERE channel_id=? AND user_id=?",channel,operator);
+    assertEquals("INVALID",guard.revalidate(kick,d).get("status"));
+    assertEquals(1,db.queryForObject("SELECT count(*) FROM guard.live_actions WHERE kind='KICK'",Integer.class));
+    runPendingKicks();
     assertEquals(List.of(),guard.kickApprovalsAwaitingHandoff(HANDOFF,20));
     assertEquals(0,db.queryForObject("SELECT count(*) FROM guard.live_kicks WHERE live_id=?",Integer.class,live));
   }

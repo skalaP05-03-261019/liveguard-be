@@ -22,6 +22,8 @@ import com.lifeguards.liveguard.contracts.enums.ErrorCode;
  * Agent가 분석 중 실패하면 재개할 곳이 없다. 그래서 승인 뒤 {@code kick-handoff.deadline}이 지나도 Agent가 재검증하지 않은
  * 승인은 BE가 재검증해 실행 명령을 남기고(넘겨받기), Agent가 kick_user로 부르던 실행을 BE가 부른다. 실행 명령(PENDING)은 DB에
  * 남으므로 재시작해도 잃지 않는다. 업무 오류는 바로 FAILED, 그 밖의 일시 오류는 최초 포함 3회까지 다시 시도한다(TBD-07).
+ * 넘겨받은 명령도 이 실행기가 실행하므로 둘은 한 스위치({@code kick-without-agent.enabled})로 함께 켜고 끈다. 끄면 BE는 강퇴를
+ * 실행하지 않고 모두 Agent에 맡긴다.
  */
 @Component
 @EnableScheduling
@@ -78,13 +80,13 @@ class KickWithoutAgentExecutor {
 				log.info("Kick approval handed off to backend: decisionId={}", decision);
 			} catch (ApiException ex) {
 				// 방송 종료·권한 회수처럼 다시 해도 같은 결과인 실패다
-				failHandoff(decision, ex.code(), handoffFailures.merge(decision, 1, Integer::sum));
+				failHandoff(decision, ex.code());
 			} catch (RuntimeException ex) {
 				int attempts = handoffFailures.merge(decision, 1, Integer::sum);
 				log.warn("Kick approval not handed off: decisionId={} attempt={} error={}", decision, attempts,
 						ex.getClass().getSimpleName());
 				if (attempts >= MAX_ATTEMPTS) {
-					failHandoff(decision, ErrorCode.INTERNAL_ERROR, attempts);
+					failHandoff(decision, ErrorCode.INTERNAL_ERROR);
 				}
 			}
 		}
@@ -119,9 +121,9 @@ class KickWithoutAgentExecutor {
 		}
 	}
 
-	private void failHandoff(UUID decision, ErrorCode code, int attempts) {
+	private void failHandoff(UUID decision, ErrorCode code) {
 		try {
-			moderation.failKickHandoff(decision, code, attempts);
+			moderation.failKickHandoff(decision, code);
 			handoffFailures.remove(decision);
 		} catch (RuntimeException ex) {
 			log.warn("Kick handoff failure not recorded: decisionId={} code={} error={}", decision, code,
