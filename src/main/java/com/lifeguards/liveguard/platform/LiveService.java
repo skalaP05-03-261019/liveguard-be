@@ -378,14 +378,22 @@ public class LiveService implements LivePlatformPort {
                       OR id=ANY(string_to_array(:evidence,',')::uuid[]))),
                 first_target AS (SELECT * FROM evidence ORDER BY sent_at,id LIMIT 1),
                 last_target AS (SELECT * FROM evidence ORDER BY sent_at DESC,id DESC LIMIT 1),
-                selected AS (
+                span AS (
                   (SELECT id FROM platform.messages WHERE live_id=:live
                     AND (sent_at,id)<(SELECT sent_at,id FROM first_target) ORDER BY sent_at DESC,id DESC LIMIT 10)
                   UNION (SELECT id FROM platform.messages WHERE live_id=:live
                     AND (sent_at,id)>=(SELECT sent_at,id FROM first_target)
                     AND (sent_at,id)<=(SELECT sent_at,id FROM last_target))
                   UNION (SELECT id FROM platform.messages WHERE live_id=:live
-                    AND (sent_at,id)>(SELECT sent_at,id FROM last_target) ORDER BY sent_at,id LIMIT 10))
+                    AND (sent_at,id)>(SELECT sent_at,id FROM last_target) ORDER BY sent_at,id LIMIT 10)),
+                positioned AS (
+                  SELECT m.id,row_number() OVER (ORDER BY m.sent_at,m.id) AS pos FROM platform.messages m
+                    WHERE m.id IN (SELECT id FROM span)),
+                -- 증거 사이가 길어도 각 증거 앞뒤 10건만 담는다. Agent 문맥(증거 ±10 안에서 최대 20건)은 그대로다
+                selected AS (
+                  SELECT p.id FROM positioned p WHERE EXISTS (
+                    SELECT 1 FROM positioned e WHERE e.id IN (SELECT id FROM evidence)
+                      AND p.pos BETWEEN e.pos-10 AND e.pos+10))
                 SELECT id,author_id,text,visibility,version,sent_at FROM platform.messages
                   WHERE id IN (SELECT id FROM selected) ORDER BY sent_at DESC,id DESC
                 """)
