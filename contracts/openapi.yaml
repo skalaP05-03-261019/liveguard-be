@@ -1314,7 +1314,7 @@ components:
         OFFICIAL_CLAIM: 공식 주체 자칭. CREDENTIAL_REQUEST: 로그인·인증 요구.
         LINK: 공식 링크 포함 모든 URL. v3.1은 방송 내 링크를 예외 없이 금지한다. v0.6의 UNOFFICIAL_URL을 대체한다.
         REPEATED_TEXT: 10초 안에 같은 정규화 문장 3회 이상(FLOOD).
-        PII_PHONE·PII_ACCOUNT·PII_EMAIL: 전화번호·계좌·이메일 형식 후보(PII_INVESTIGATION). PII 필터 구현 전이라 아직 만들지 않는다.
+        PII_PHONE·PII_ACCOUNT·PII_EMAIL: 전화번호·계좌(하이픈 묶음 10자리 이상)·이메일 형식 후보(PII_INVESTIGATION). 숫자 나열만으로는 붙지 않는다(AC-06).
         저장된 값은 데이터 마이그레이션 없이 바뀐다(A-15).
       enum: [ATTACK_TERM, CERTAIN_PROFANITY, OFFICIAL_CLAIM, CREDENTIAL_REQUEST, LINK, REPEATED_TEXT, PII_PHONE, PII_ACCOUNT, PII_EMAIL]
     CaseStatus:
