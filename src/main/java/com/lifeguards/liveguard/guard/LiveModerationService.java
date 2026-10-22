@@ -883,6 +883,11 @@ public class LiveModerationService implements LiveGuardPort {
   public Map<String, Object> reviewCard(UUID r) {
     var rev = review(r, false);
     var c = row(id(rev.get("case_id")), false);
+    boolean kick = rev.get("kind").equals("KICK");
+    // 강퇴 카드의 증거는 기준 사건 중 가장 최근 사건(basisCaseIds 마지막)에서 보여 준다. 보통은 검토가 붙은 사건과 같지만,
+    // 오판 취소로 예약이 풀린 뒤 다른 사건(정상 확정 포함)의 결정에서 검토가 생기면 그 사건은 기준이 아니다.
+    // caseId는 검토가 붙은 사건 그대로다(강퇴 결과 이벤트의 caseId와 같다)
+    var shown = kick ? row(basis(rev).getLast(), false) : c;
     var data = new LinkedHashMap<String, Object>();
     data.put("reviewId", r);
     data.put("kind", rev.get("kind"));
@@ -891,23 +896,23 @@ public class LiveModerationService implements LiveGuardPort {
     data.put("status", rev.get("status"));
     data.put("version", rev.get("version"));
     data.put("createdAt", rev.get("created_at"));
-    data.put("evidenceVersion", c.get("evidence_version"));
-    data.put("messages", parse(c.get("snapshot").toString()).get("messages"));
-    data.put("targetMessageIds", parse(c.get("snapshot").toString()).get("targetMessageIds"));
+    data.put("evidenceVersion", shown.get("evidence_version"));
+    data.put("messages", parse(shown.get("snapshot").toString()).get("messages"));
+    data.put("targetMessageIds", parse(shown.get("snapshot").toString()).get("targetMessageIds"));
     data.put(
         "findings",
-        c.get("judgment") == null
+        shown.get("judgment") == null
             ? List.of()
-            : parse(c.get("judgment").toString()).get("messageFindings"));
-    // 강퇴 카드는 확정 위반을 근거로 하므로 카드가 붙은 사건의 AI 판정과 관계없이 VIOLATION이다(운영자가 AI 정상 제안을
-    // 뒤집어 확정한 사건도 같다). findings는 그 사건의 AI 제안 그대로다
-    data.put("aiVerdict", rev.get("kind").equals("KICK") ? "VIOLATION" : aiVerdict(c));
+            : parse(shown.get("judgment").toString()).get("messageFindings"));
+    // 강퇴 카드는 확정 위반을 근거로 하므로 사건의 AI 판정과 관계없이 VIOLATION이다(운영자가 AI 정상 제안을 뒤집어 확정한
+    // 사건도 같다). findings는 그 사건의 AI 제안 그대로다
+    data.put("aiVerdict", kick ? "VIOLATION" : aiVerdict(c));
     data.put("basisCaseIds", basis(rev));
     data.put("basisSnapshotId", rev.get("basis_snapshot_id"));
     data.put("userAlias", "U1");
     data.put(
         "summary",
-        rev.get("kind").equals("KICK")
+        kick
             ? "서로 다른 확정 사건 3건 — 방송 종료까지 차단 승인 요청"
             : c.get("judgment") == null
                 ? "AI 분석 결과를 받지 못했습니다. 주변 문맥을 확인하고 직접 결정해 주세요"
