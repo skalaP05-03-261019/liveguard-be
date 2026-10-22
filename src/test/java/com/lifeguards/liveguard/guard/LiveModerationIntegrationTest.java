@@ -377,7 +377,7 @@ class LiveModerationIntegrationTest {
   void maskedContextUncertaintyAndOtherHoldReasonPreventsRelease() {
     UUID live = lives.start(channel, moderator).liveId();
     UUID c = candidate(live, "꺼져 연락 010-1234-5678");
-    assertEquals("CONTEXT_REVIEW", guard.snapshot(c).get("handlingRoute"));
+    assertEquals("PII_INVESTIGATION", guard.snapshot(c).get("handlingRoute"));
     UUID r = proposal(c, "NEEDS_REVIEW");
     assertNotNull(r);
     assertFalse(guard.context(c).toString().contains("010-1234-5678"));
