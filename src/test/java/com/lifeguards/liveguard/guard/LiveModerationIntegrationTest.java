@@ -771,23 +771,42 @@ class LiveModerationIntegrationTest {
     assertEquals("NO_VIOLATION",card.get("aiVerdict"));
     assertEquals(1,((List<?>)card.get("findings")).size());
     assertEquals("AI 제안을 확인하고 최종 결정해 주세요",card.get("summary"));
-    // 판정이 붙었으므로 결정은 기존대로 Agent가 재개해 적용한다
-    var d=decide(r,"CONFIRM_NORMAL",1);
+    // AI 제안이 생겼으므로 검토 버전이 오른다. 제안을 보기 전 버전으로 낸 결정은 받지 않는다
+    assertEquals(2,card.get("version"));
+    assertEquals(ErrorCode.STALE_VERSION,assertThrows(ApiException.class,()->decide(r,"CONFIRM_NORMAL",1)).code());
+    // 판정이 붙었으므로(Agent가 결정을 기다림) 결정은 기존대로 Agent가 재개해 적용한다
+    var d=decide(r,"CONFIRM_NORMAL",2);
     assertEquals(1,resumeTasks(c));
     assertEquals("HELD",visibilityOf(c));
     apply(c,r,d);
     assertEquals("PUBLIC",visibilityOf(c));
   }
 
-  @Test void lateJudgmentOnPiiCaseDoesNotAutoReleaseWhenReviewIsOpen() {
+  @Test void lateDefiniteJudgmentOnPiiCaseIsRejectedWhileReviewIsOpen() {
     UUID live=lives.start(channel,moderator).liveId();
     UUID c=candidate(live,"연락 010-2222-3333 판정 없음");
     assertEquals("PII_INVESTIGATION",guard.snapshot(c).get("handlingRoute"));
     assertTrue(guard.openReviewWithoutJudgment(c,java.time.Duration.ZERO));
-    // 평소에는 개인정보 경로의 NO_VIOLATION이 바로 공개하지만, 사람 검토가 열려 있으면 그 검토에 맡긴다
-    assertEquals(contextReview(c),proposal(c,"NO_VIOLATION"));
+    // 평소에는 개인정보 경로의 NO_VIOLATION이 바로 공개하지만, 사람 검토가 열려 있으면 받지 않는다(Agent는 이 판정에
+    // 문맥 검토 응답을 받지 않아 결정을 기다리지 않으므로 붙여도 재개할 수 없다). 운영자 결정은 BE가 바로 적용한다
+    assertEquals(ErrorCode.STALE_VERSION,assertThrows(ApiException.class,()->proposal(c,"NO_VIOLATION")).code());
     assertEquals("HELD",visibilityOf(c));
+    assertNull(db.queryForObject("SELECT judgment::text FROM guard.live_case_state WHERE case_id=?",String.class,c));
+    // NEEDS_REVIEW는 Agent가 결정을 기다리므로 붙는다
+    assertEquals(contextReview(c),proposal(c,"NEEDS_REVIEW"));
     assertEquals("PENDING",db.queryForObject("SELECT confirmation_status FROM guard.live_case_state WHERE case_id=?",String.class,c));
+  }
+
+  @Test void ruleConfirmedKickReviewCardStillShowsViolation() {
+    UUID live=lives.start(channel,moderator).liveId();
+    for(String text:List.of("씨발 하나","씨발 둘","씨발 셋")) {
+      candidate(live,text);
+      // 두 번째부터 채팅 제한이 걸리므로 다음 전송을 위해 해제한다(강퇴 집계는 확정 사건 수로 한다)
+      db.update("UPDATE guard.live_timeouts SET revoked_at=current_timestamp WHERE live_id=?",live);
+    }
+    UUID kick=db.queryForObject("SELECT r.id FROM guard.reviews r JOIN guard.cases c ON c.id=r.case_id WHERE c.live_id=? AND r.kind='KICK'",UUID.class,live);
+    // 규칙 확정 사건은 판정이 없지만 강퇴 카드는 확정 위반을 근거로 한다
+    assertEquals("VIOLATION",guard.reviewCard(kick).get("aiVerdict"));
   }
 
   @Test void rejectedAnalysisOpensReviewBeforeTheDeadlineButLiveEndAndSupersedeDoNot() {
