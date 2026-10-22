@@ -54,6 +54,8 @@ class MessageService {
 		MessageCursor after=cursor==null?null:MessageCursor.decode(cursor);
 		AuthorRole role=memberships.memberRole(channelId,viewer.userId())
 			.orElseThrow(()->new ApiException(ErrorCode.FORBIDDEN,"Not a member of this channel"));
+		// 비회원에게 강퇴 여부가 드러나지 않도록 회원 확인 뒤에 한다
+		moderation.checkChannelEntry(channelId,viewer.userId());
 		var rows=messages.history(channelId,null,viewer.userId(),role==AuthorRole.MODERATOR,after,limit+1);
 		var page=rows.subList(0,Math.min(limit,rows.size()));
 		List<Message> items=page.stream().map(row->{
