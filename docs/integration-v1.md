@@ -24,7 +24,7 @@ Agent 작업은 `guard.agent_task_outbox`에 결정·사건과 같은 트랜잭�
 
 문맥·개인정보 사건의 판정이 마감(`liveguard.guard.judgment-fallback.deadline`, 기본 3분) 안에 오지 않거나 분석 작업이 Agent 거절로 FAILED가 되면(LIVE_ENDED·SUPERSEDED 제외), 진행 중인 방송에 한해 AI 판정 없이 CONTEXT 검토를 연다. 카드의 aiVerdict는 NEEDS_REVIEW, findings는 빈 배열이고 summary로 안내한다. 기다리는 Agent thread가 없으므로 운영자 결정은 BE가 바로 적용한다. 아직 보내지 않은 분석 작업은 FAILED(`DECIDED_WITHOUT_JUDGMENT`)로 멈춘다.
 결정 전에 판정이 오면, 결정을 기다리는 판정(CONTEXT 경로, 또는 NEEDS_REVIEW 포함)만 같은 검토의 AI 제안으로 붙이고 검토 version을 올려 CONTEXT_REVIEW_REQUIRED를 다시 보낸다. 이후 결정은 기존대로 Agent가 재개해 적용한다. 개인정보 경로의 확정 판정이나 결정 뒤에 온 판정은 STALE_VERSION으로 거절한다.
-강퇴 검토가 붙은 사건이 AI 판정 없는 문맥·개인정보 사건이면(Agent가 그 사건에서 결정을 기다리지 않음), 승인 결정과 같은 트랜잭션에서 재검증해 실행 명령(`live_actions` PENDING)을 남기고 BE 실행기(`liveguard.guard.kick-without-agent.*`)가 실행한다. 업무 오류는 바로 FAILED, 일시 오류는 최초 포함 3회 뒤 FAILED이며 ACTION_FAILED를 보낸다. 일시 오류 횟수는 실행기 프로세스 메모리에서 세므로 BE가 재시작하면 다시 센다(명령 자체는 DB에 남아 잃지 않는다). Agent 경로의 강퇴 명령은 Agent가 kick_user로 실행한다.
+강퇴 검토가 붙은 사건이 AI 판정 없는 문맥·개인정보 사건이면(Agent가 그 사건에서 결정을 기다리지 않음), 승인 결정과 같은 트랜잭션에서 재검증해 실행 명령(`live_actions` PENDING)을 남기고 BE 실행기(`liveguard.guard.kick-without-agent.*`)가 실행한다. 업무 오류는 바로 FAILED, 일시 오류는 최초 포함 3회 뒤 FAILED이며 ACTION_FAILED를 보낸다. 일시 오류 횟수는 실행기 프로세스 메모리에서 세므로 BE가 재시작하면 다시 센다(명령 자체는 DB에 남아 잃지 않는다). Agent 경로의 강퇴 명령은 Agent가 kick_user로 실행한다. 다만 승인 뒤 `liveguard.guard.kick-handoff.deadline`(기본 3분) 안에 Agent가 재검증하지 않으면(분석 중 실패해 재개할 곳이 없는 경우 등) 같은 실행기가 재검증해 명령을 남기고 실행하며, Agent가 재검증만 하고 마감까지 실행하지 않은 명령도 실행한다. Agent가 늦게 재개하면 같은 명령과 실행 결과를 돌려받는다.
 
 기존 channel 전송은 같은 live 정책/제재 경로를 사용한다. 종료 후 같은 clientMessageId 재시도는 최초 메시지를 반환하며 새 전송은 LIVE_ENDED409다. 기존 channel 이력은 전체 방송/NULL 메시지 포함, 기존 SSE는 raw payload를 유지한다. 새 live SSE는 envelope를 사용한다.
 
