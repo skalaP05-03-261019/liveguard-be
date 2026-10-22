@@ -605,7 +605,12 @@ class LiveModerationIntegrationTest {
     db.update("UPDATE platform.users SET password_hash=? WHERE id=?",passwordEncoder.encode("liveguard-local"),operator);
     var session=com.lifeguards.liveguard.support.LoginSupport.login(mvc,operator.toString());
 
-    listCases(session,live,"").andExpect(jsonPath("$.data.length()").value(4));
+    // 목록 항목은 사건 상세(CaseDetail)다. 운영 화면이 쓰는 대상 메시지·AI 제안·확정 위반·누적 수가 있다
+    listCases(session,live,"").andExpect(jsonPath("$.data.length()").value(4))
+      .andExpect(jsonPath("$.data[*].targetMessageIds").exists())
+      .andExpect(jsonPath("$.data[*].findings").exists())
+      .andExpect(jsonPath("$.data[*].confirmedFindings").exists())
+      .andExpect(jsonPath("$.data[*].violationCount").exists());
     for(var expected:List.of(List.of("PENDING",pending),List.of("CONFIRMED_VIOLATION",violation),
         List.of("CONFIRMED_NORMAL",normal),List.of("CANCELLED",cancelled)))
       listCases(session,live,"&confirmationStatus="+expected.get(0))
