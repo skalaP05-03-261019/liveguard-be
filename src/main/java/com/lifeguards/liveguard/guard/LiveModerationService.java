@@ -26,21 +26,17 @@ public class LiveModerationService implements LiveGuardPort {
   private final FindingService findings;
   private final PolicyProperties policy;
   private final LiveMessageQuery messages;
-  private final org.springframework.context.ApplicationEventPublisher events;
 
   /** Agent가 판정을 제출하고 결정을 기다리는(조사) 처리 경로. */
   private static final Set<String> INVESTIGATION_ROUTES = Set.of("CONTEXT_REVIEW", "PII_INVESTIGATION");
-
-  /** AI 판정 없는 사건의 강퇴 승인(A-25). 결정이 커밋된 뒤 {@link KickWithoutAgentExecutor}가 실행한다. */
-  record KickApprovedWithoutAgent(UUID reviewId, UUID decisionId) {}
+  private static final String INVESTIGATION_SQL = "'CONTEXT_REVIEW','PII_INVESTIGATION'";
 
   public LiveModerationService(
       JdbcClient db,
       Clock clock,
       @Lazy LivePlatformPort platform,
       JsonMapper json,
-      AgentTaskOutbox outbox, FindingService findings, PolicyProperties policy, LiveMessageQuery messages,
-      org.springframework.context.ApplicationEventPublisher events) {
+      AgentTaskOutbox outbox, FindingService findings, PolicyProperties policy, LiveMessageQuery messages) {
     this.db = db;
     this.clock = clock;
     this.platform = platform;
@@ -49,7 +45,6 @@ public class LiveModerationService implements LiveGuardPort {
     this.findings = findings;
     this.policy = policy;
     this.messages = messages;
-    this.events = events;
   }
 
   private Timestamp now() {
@@ -851,7 +846,7 @@ public class LiveModerationService implements LiveGuardPort {
   }
 
   private static final String WITHOUT_JUDGMENT="SELECT c.id,c.live_id FROM guard.cases c JOIN guard.live_case_state s ON s.case_id=c.id"
-      + " WHERE c.handling_route IN ("+String.join(",",INVESTIGATION_ROUTES.stream().map(r->"'"+r+"'").sorted().toList())+") AND s.judgment IS NULL"
+      + " WHERE c.handling_route IN ("+INVESTIGATION_SQL+") AND s.judgment IS NULL"
       + " AND NOT EXISTS(SELECT 1 FROM guard.reviews r WHERE r.case_id=c.id AND r.kind='CONTEXT')"
       + " AND (c.created_at<=? OR EXISTS(SELECT 1 FROM guard.agent_task_outbox o WHERE o.task_id=s.task_id"
       + " AND o.status='FAILED' AND coalesce(o.last_error_code,'') NOT IN ('LIVE_ENDED','SUPERSEDED')))";
@@ -978,8 +973,11 @@ public class LiveModerationService implements LiveGuardPort {
         stopUndeliveredAnalysis("o.case_id=?", cId, "DECIDED_WITHOUT_JUDGMENT", now());
         applyContext(review(r, false), row(cId, false), decision(r, d, true));
       } else if (kind.equals("KICK") && value.equals("APPROVE")) {
-        // Agent가 재개해 kick_user로 부르던 재검증·실행을 결정이 커밋된 뒤 BE가 부른다. 실행이 실패해도 결정은 남는다
-        events.publishEvent(new KickApprovedWithoutAgent(r, d));
+        // Agent가 재개해 부르던 재검증을 결정과 함께 하고, 통과하면 실행 명령(PENDING)이 결정과 같이 남는다. 실행은 커밋
+        // 뒤 KickWithoutAgentExecutor가 한다(재시작에도 남고, 실패해도 결정은 그대로다)
+        var validated = revalidate(r, d);
+        if (!Boolean.TRUE.equals(validated.get("valid")))
+          recordKickFailure(UUID.randomUUID(), c, d, ErrorCode.REVIEW_NOT_APPROVED, 0, null, true);
       }
       // 강퇴 거절·보류는 실행할 것이 없다
     }
@@ -994,27 +992,48 @@ public class LiveModerationService implements LiveGuardPort {
     return c.get("judgment") != null || !INVESTIGATION_ROUTES.contains(Objects.toString(c.get("handling_route"), ""));
   }
 
-  /**
-   * AI 판정 없는 사건의 강퇴(A-25)를 실행하지 못했다. 그 결정의 강퇴 실행 기록을 FAILED로 남기고 ACTION_FAILED를 보낸다.
-   * 결정은 그대로 둔다(결정 저장과 강퇴 결과는 따로 본다).
-   */
-  public void kickFailedWithoutAgent(UUID r, UUID d, String errorCode) {
-    var rev = review(r, true);
-    var c = row(id(rev.get("case_id")), true);
-    var existing = db.sql("SELECT id,result::text FROM guard.live_actions WHERE decision_id=? AND kind='KICK' FOR UPDATE")
-        .param(d).query(new org.springframework.jdbc.core.ColumnMapRowMapper()).optional();
-    if (existing.isPresent() && existing.get().get("result") != null) return;
-    UUID action = existing.map(a -> id(a.get("id"))).orElseGet(UUID::randomUUID);
-    var result = new LinkedHashMap<String, Object>();
-    result.put("actionId", action); result.put("caseId", c.get("id")); result.put("liveId", c.get("live_id"));
-    result.put("type", "KICK"); result.put("status", "FAILED"); result.put("observation", "CONFIRMED"); result.put("applied", false);
-    result.put("attemptCount", 1); result.put("retryCount", 0); result.put("startedAt", clock.instant()); result.put("errorCode", errorCode);
-    if (existing.isPresent())
-      db.sql("UPDATE guard.live_actions SET status='FAILED',result=?::jsonb WHERE id=?").params(encode(result), action).update();
-    else
+  /** AI 판정 없는 사건의 아직 실행하지 않은 강퇴 명령(A-25). Agent 경로의 명령은 Agent가 실행하므로 고르지 않는다. */
+  @Transactional(readOnly=true)
+  public List<UUID> pendingKicksWithoutAgent(int limit) {
+    return db.sql("SELECT a.id FROM guard.live_actions a JOIN guard.cases c ON c.id=a.case_id JOIN guard.live_case_state s ON s.case_id=c.id"
+        + " WHERE a.kind='KICK' AND a.status='PENDING' AND a.result IS NULL AND a.command IS NOT NULL AND s.judgment IS NULL"
+        + " AND c.handling_route IN ("+INVESTIGATION_SQL+") ORDER BY a.created_at LIMIT ?")
+      .param(limit).query(UUID.class).list();
+  }
+
+  /** 저장된 강퇴 명령을 실행한다(A-25). 실행 검증은 Agent 경로의 실행과 같다. */
+  public Map<String, Object> executePendingKick(UUID a) {
+    String command=db.sql("SELECT command::text FROM guard.live_actions WHERE id=?").param(a).query(String.class).single();
+    return execute(a, parse(command));
+  }
+
+  /** 강퇴 명령을 실행하지 못했다(A-25). 결정은 그대로 두고 실행 기록을 FAILED로 남겨 ACTION_FAILED를 보낸다. */
+  public void failPendingKick(UUID a, ErrorCode code, int attempts) {
+    UUID owner=db.sql("SELECT case_id FROM guard.live_actions WHERE id=?").param(a).query(UUID.class).single();
+    var c=row(owner,true);
+    var stored=db.sql("SELECT decision_id,result::text FROM guard.live_actions WHERE id=? FOR UPDATE").param(a)
+      .query(new org.springframework.jdbc.core.ColumnMapRowMapper()).single();
+    if(stored.get("result")!=null)return;
+    recordKickFailure(a,c,id(stored.get("decision_id")),code,attempts,clock.instant(),false);
+  }
+
+  private void recordKickFailure(UUID a, Map<String,Object> c, UUID d, ErrorCode code, int attempts, Instant startedAt, boolean insert) {
+    var result=failedKickResult(a,c.get("id"),c.get("live_id"),attempts,startedAt,code.name());
+    if(insert)
       db.sql("INSERT INTO guard.live_actions(id,case_id,decision_id,kind,status,result,created_at) VALUES(?,?,?,'KICK','FAILED',?::jsonb,?)")
-        .params(action, c.get("id"), d, encode(result), now()).update();
-    platform.emit(id(c.get("live_id")), "ACTION_FAILED", parse(encode(result)), id(c.get("user_id")), true);
+        .params(a,c.get("id"),d,encode(result),now()).update();
+    else
+      db.sql("UPDATE guard.live_actions SET status='FAILED',result=?::jsonb WHERE id=?").params(encode(result),a).update();
+    platform.emit(id(c.get("live_id")),"ACTION_FAILED",parse(encode(result)),id(c.get("user_id")),true);
+  }
+
+  /** 실행하지 못한 강퇴의 결과(ActionExecutionResult). 시도하지 않았으면 attempts=0, startedAt=null이다. */
+  private Map<String,Object> failedKickResult(Object a, Object caseId, Object liveId, int attempts, Instant startedAt, String code) {
+    var result=new LinkedHashMap<String,Object>();
+    result.put("actionId",a);result.put("caseId",caseId);result.put("liveId",liveId);
+    result.put("type","KICK");result.put("status","FAILED");result.put("observation","CONFIRMED");result.put("applied",false);
+    result.put("attemptCount",attempts);result.put("retryCount",Math.max(0,attempts-1));result.put("startedAt",startedAt);result.put("errorCode",code);
+    return result;
   }
 
   @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ)
@@ -1348,10 +1367,7 @@ public class LiveModerationService implements LiveGuardPort {
     var pending=db.sql("SELECT a.id,a.case_id FROM guard.live_actions a JOIN guard.cases c ON c.id=a.case_id WHERE c.live_id=? AND a.kind='KICK' AND a.status='PENDING' AND a.result IS NULL FOR UPDATE OF a")
       .param(event.liveId()).query(new org.springframework.jdbc.core.ColumnMapRowMapper()).list();
     for(var action:pending) {
-      var result=new LinkedHashMap<String,Object>();
-      result.put("actionId",action.get("id"));result.put("caseId",action.get("case_id"));result.put("liveId",event.liveId());
-      result.put("type","KICK");result.put("status","FAILED");result.put("observation","CONFIRMED");result.put("applied",false);
-      result.put("attemptCount",0);result.put("retryCount",0);result.put("startedAt",null);result.put("errorCode","LIVE_ENDED");
+      var result=failedKickResult(action.get("id"),action.get("case_id"),event.liveId(),0,null,"LIVE_ENDED");
       db.sql("UPDATE guard.live_actions SET status='FAILED',result=?::jsonb WHERE id=?")
         .params(encode(result),action.get("id")).update();
     }
