@@ -100,6 +100,10 @@ class LiveModerationIntegrationTest {
   }
 
   Map<String, Object> decide(UUID r, String value, int version) {
+    return decide(r, value, version, List.of("HARASSMENT"));
+  }
+
+  Map<String, Object> decide(UUID r, String value, int version, List<String> categories) {
     var card = guard.reviewCard(r);
     var request = new LinkedHashMap<String, Object>();
     request.put("clientRequestId", UUID.randomUUID().toString());
@@ -107,7 +111,7 @@ class LiveModerationIntegrationTest {
     request.put("decision", value);
     request.put("reason", "operator examined evidence");
     if (value.equals("CONFIRM_VIOLATION")) {
-      request.put("categories", List.of("HARASSMENT"));
+      request.put("categories", categories);
       request.put("evidenceMessageIds", card.get("targetMessageIds"));
     }
     var d = guard.decide(r, request, moderator, card.get("kind").toString());
@@ -1003,5 +1007,84 @@ class LiveModerationIntegrationTest {
     assertFalse(guard.casesAwaitingJudgment(java.time.Duration.ZERO,50).contains(c));
     assertFalse(guard.openReviewWithoutJudgment(c,java.time.Duration.ZERO));
     assertEquals(0,db.queryForObject("SELECT count(*) FROM guard.reviews WHERE case_id=?",Integer.class,c));
+  }
+
+  // ---- 수용 시나리오 (PROJECT.md AC) ----
+
+  /** 사건에 적용된 TIMEOUT(초). 조치 시각부터 만료까지다. */
+  List<Long> timeoutSeconds(UUID c) {
+    return db.queryForList("SELECT round(extract(epoch FROM t.expires_at-a.created_at))::bigint FROM guard.live_timeouts t"
+        + " JOIN guard.live_actions a ON a.id=t.action_id WHERE t.case_id=?",Long.class,c);
+  }
+
+  UUID confirmViolation(UUID live, String text, List<String> categories) {
+    UUID c=candidate(live,text);UUID r=proposal(c,"VIOLATION");
+    apply(c,r,decide(r,"CONFIRM_VIOLATION",1,categories));
+    return c;
+  }
+
+  @Test void ac11MultipleCategoriesInOneCaseCountOnceAndApplyOnlyTheLongestTimeout() {
+    UUID live=lives.start(channel,moderator).liveId();
+    // 첫 위반 기준: PROFANITY는 HIDE만, HARASSMENT·PHISHING은 600초. 합산(1200초)이 아니라 가장 긴 하나만 적용한다
+    UUID multi=confirmViolation(live,"너 꺼져 여러 유형",List.of("PROFANITY","HARASSMENT","PHISHING"));
+    assertEquals(3,db.queryForObject("SELECT count(DISTINCT category) FROM guard.findings WHERE case_id=? AND source='BACKEND'"
+        + " AND status='CONFIRMED'",Integer.class,multi));
+    assertEquals(List.of(600L),timeoutSeconds(multi));
+    assertEquals(1,db.queryForObject("SELECT count(*) FROM guard.live_actions WHERE case_id=? AND kind='TIMEOUT'",Integer.class,multi));
+    assertEquals("HIDDEN",visibilityOf(multi));
+    // 강퇴 집계에는 사건 하나로 들어간다
+    assertEquals(1,queries.kickEligibility(multi).count());
+  }
+
+  @Test void ac12TwoConfirmedCasesDoNotRequestKickReviewButTheThirdDoes() {
+    UUID live=lives.start(channel,moderator).liveId();
+    UUID first=confirmViolation(live,"너 꺼져 강퇴 집계 하나",List.of("PROFANITY","HARASSMENT"));
+    db.update("UPDATE guard.live_timeouts SET revoked_at=current_timestamp WHERE live_id=?",live);
+    UUID c=candidate(live,"너 꺼져 강퇴 집계 둘");UUID r=proposal(c,"VIOLATION");
+    var applied=apply(c,r,decide(r,"CONFIRM_VIOLATION",1));
+    // 유형이 여럿인 첫 사건을 포함해도 확정 사건은 2건이다
+    assertEquals(false,((Map<?,?>)applied.get("kickReview")).get("required"));
+    assertEquals(2,queries.kickEligibility(c).count());
+    assertEquals(0,db.queryForObject("SELECT count(*) FROM guard.reviews r JOIN guard.cases c ON c.id=r.case_id"
+        + " WHERE c.live_id=? AND r.kind='KICK'",Integer.class,live));
+    db.update("UPDATE guard.live_timeouts SET revoked_at=current_timestamp WHERE live_id=?",live);
+    UUID third=confirmViolation(live,"너 꺼져 강퇴 집계 셋",List.of("HARASSMENT"));
+    UUID kick=db.queryForObject("SELECT id FROM guard.reviews WHERE case_id=? AND kind='KICK'",UUID.class,third);
+    assertEquals(List.of(first,c,third).stream().map(UUID::toString).toList(),
+        ((List<?>)guard.reviewCard(kick).get("basisCaseIds")).stream().map(Object::toString).toList());
+  }
+
+  @Test void ac20NewLiveIsNotBlockedByThePreviousLivesKickOrTimeout() {
+    UUID live=lives.start(channel,moderator).liveId();
+    kick(live);
+    assertTrue(db.queryForObject("SELECT count(*) FROM guard.live_timeouts WHERE live_id=? AND user_id=? AND revoked_at IS NULL"
+        + " AND expires_at>current_timestamp",Integer.class,live,user)>0);
+    assertEquals(ErrorCode.KICKED,assertThrows(ApiException.class,
+        ()->lives.send(live,viewer,new SendMessageRequest(UUID.randomUUID(),"강퇴 중"))).code());
+    lives.end(live,moderator);
+    UUID next=lives.start(channel,moderator).liveId();
+    assertDoesNotThrow(()->lives.history(next,viewer));
+    assertDoesNotThrow(()->lives.send(next,viewer,new SendMessageRequest(UUID.randomUUID(),"새 방송 인사")));
+    // 이전 방송의 위반은 새 방송의 집계에 들어가지 않는다
+    UUID c=candidate(next,"너 꺼져 새 방송");
+    assertEquals(0,queries.userHistory(c,null).violationCount());
+  }
+
+  @Test void ac21TimeoutExpiryDoesNotCancelTheViolationOrItsHistory() {
+    UUID live=lives.start(channel,moderator).liveId();
+    UUID first=confirmViolation(live,"너 꺼져 만료 전",List.of("HARASSMENT"));
+    assertEquals(ErrorCode.TIMED_OUT,assertThrows(ApiException.class,
+        ()->lives.send(live,viewer,new SendMessageRequest(UUID.randomUUID(),"제한 중"))).code());
+    // 취소가 아니라 시간만 지난 것: 만료 시각을 과거로 둔다
+    db.update("UPDATE guard.live_timeouts SET expires_at=current_timestamp-interval '1 second' WHERE case_id=?",first);
+    assertDoesNotThrow(()->lives.send(live,viewer,new SendMessageRequest(UUID.randomUUID(),"만료 뒤 인사")));
+    assertEquals("CONFIRMED_VIOLATION",db.queryForObject("SELECT confirmation_status FROM guard.live_case_state WHERE case_id=?",String.class,first));
+    assertEquals(1,db.queryForObject("SELECT count(*) FROM guard.findings WHERE case_id=? AND status='CONFIRMED' AND revoked_at IS NULL",Integer.class,first));
+    assertEquals("HIDDEN",visibilityOf(first));
+    // 다음 위반은 만료된 이력을 이전 확정으로 센다: 두 번째 HARASSMENT는 86400초
+    UUID secondCase=confirmViolation(live,"너 꺼져 만료 후",List.of("HARASSMENT"));
+    assertEquals(1,queries.userHistory(secondCase,null).violationCount());
+    assertEquals(List.of(86400L),timeoutSeconds(secondCase));
+    assertEquals(2,queries.kickEligibility(secondCase).count());
   }
 }
