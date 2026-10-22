@@ -322,7 +322,7 @@ UNKNOWN은 `applied=null`이며 성공·실패로 확정하지 않습니다. KIC
 문맥 AI 제안은 운영자의 정상/위반/보류 결정 전 HELD를 유지해야 합니다.
 강퇴 승인은 별도이며 거절·실패가 기존 가림이나 제한을 해제하지 않습니다.
 판정·CONTEXT apply·강퇴 재검증과 KICK action 실행은 통합 경로에서 동작합니다.
-구형 강퇴 실행·reconcile 및 별도 MCP HIDE/TIMEOUT/RELEASE_HELD 실행은 미지원입니다.
+구형 강퇴 실행(`/internal/kick-reviews/{reviewId}/execute`)과 `/history` 별칭은 삭제했습니다(A-12). reconcile은 501 스텁이고, 별도 MCP HIDE/TIMEOUT/RELEASE_HELD 실행은 미지원입니다.
 
 ### Agent 저장소에 필요한 후속 변경
 
@@ -332,7 +332,7 @@ UNKNOWN은 `applied=null`이며 성공·실패로 확정하지 않습니다. KIC
 2. `context?view=moderationCase`는 `/cases/{caseId}`로,
    `view=streamInfo/officialLinks`는 `/channel-info`로, `view=securityFacts`는 `/security-facts`로 변경합니다.
    `/context`는 문맥 전용이며 이전 `view=chatContext`만 호환합니다. 다른 view는 400으로 거부합니다.
-3. `/history`는 폐기 예정 별칭입니다. `/user-history`로 전환하고 고정 `days=30` 정책을 제거합니다.
+3. `/history` 별칭은 삭제했습니다(A-12). `/user-history`를 쓰고 고정 `days=30` 정책을 제거합니다.
 4. `get_kick_eligibility`, `get_kick_review_basis`, `get_channel_user_role`을 등록합니다.
 5. 실행 명령의 `violationIds`를 `basisCaseIds`로 바꾸고 `liveId`와 KICK 승인·검증 참조를 연결합니다.
    응답의 UNKNOWN·실제 적용 여부와 지속 재시도 예산을 처리합니다.

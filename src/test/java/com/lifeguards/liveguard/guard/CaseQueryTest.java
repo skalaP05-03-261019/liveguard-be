@@ -165,9 +165,6 @@ class CaseQueryTest {
 		for(String days:List.of("1","31","0","-1","2147483647","bad"))
 			mvc.perform(get("/internal/cases/{id}/user-history",current).param("days",days).header("X-Service-Token","query-test-token"))
 				.andExpect(status().isBadRequest());
-		// 레거시 별칭 /history는 삭제했다(A-12)
-		mvc.perform(get("/internal/cases/{id}/history",current).header("X-Service-Token","query-test-token"))
-			.andExpect(status().isNotFound());
 		mvc.perform(get("/internal/cases/{id}/kick-eligibility",current).header("X-Service-Token","query-test-token"))
 			.andExpect(status().isOk()).andExpect(jsonPath("$.data.count").value(0));
 		assertEquals(0,jdbc.queryForObject("SELECT count(*) FROM guard.live_reservations",Integer.class));

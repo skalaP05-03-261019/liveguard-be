@@ -59,6 +59,21 @@ class BusinessToolControllerTest {
 				.andExpect(jsonPath("$.data").doesNotExist());
 	}
 
+	@Test
+	void removedLegacyHistoryAliasIsNotFound() throws Exception {
+		// A-12: /user-history의 옛 별칭은 삭제했다
+		mockMvc.perform(internal(get("/internal/cases/{id}/history", ID)))
+				.andExpect(status().isNotFound())
+				.andExpect(jsonPath("$.error.code").value("NOT_FOUND"));
+	}
+
+	@Test
+	void removedLegacyKickExecuteIsNotFound() throws Exception {
+		mockMvc.perform(internal(post("/internal/kick-reviews/{id}/execute", ID)).header("Idempotency-Key", "kick:" + ID))
+				.andExpect(status().isNotFound())
+				.andExpect(jsonPath("$.error.code").value("NOT_FOUND"));
+	}
+
 	@ParameterizedTest
 	@ValueSource(strings = {"", "invalid-trace", "11111111-1111-4111-8111-111111111ABC"})
 	void traceNormalizationMatchesHeaderAndBody(String trace) throws Exception {

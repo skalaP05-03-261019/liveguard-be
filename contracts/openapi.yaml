@@ -12,7 +12,6 @@ info:
     내부 사건·문맥은 같은 불변 마스킹 snapshot을 읽고 대상 버전은 현재 값을 반환한다.
     사용자 이력은 같은 방송 전체이며 days는 거부한다. 강퇴 후보와 원 결정의 기준/소진 소유권도 읽기 전용으로 구현된다.
     표시된 미지원 legacy/business action은 HTTP 501 `NOT_IMPLEMENTED` (retryable=false)이다.
-    `x-implementation-status: planned`는 미래/레거시 계약일 뿐 현재 구현을 의미하지 않는다.
     사건 필수 정보나 불변 snapshot 미준비는 409 CASE_NOT_READY다. 외부 Agent/RAG 배포 완료를 의미하지 않는다.
 
     공통 규칙
@@ -1045,7 +1044,8 @@ paths:
       description: |
         Deprecated contract stub (501); not the CONTEXT/KICK decision or resume API.
         Does not approve KICK, unconsume cases, or automatically undo existing HIDE/TIMEOUT actions.
-        Body caseId and decisionId must match the path. business-mcp reconcile_review가 사용하므로 유지한다(A-12).
+        Body caseId and decisionId must match the path. BE는 항상 501을 돌려주는 스텁이다. business-mcp에 reconcile_review 도구가 남아 있어,
+        경로를 지우면 응답이 501에서 404로 바뀌므로 Agent 쪽 도구를 지울 때 함께 지운다(A-12).
       deprecated: true
       x-implementation-status: stub
       x-owner: B2
