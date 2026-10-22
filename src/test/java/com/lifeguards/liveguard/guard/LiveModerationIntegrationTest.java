@@ -901,6 +901,29 @@ class LiveModerationIntegrationTest {
     assertEquals("NO_VIOLATION",guard.reviewCard(r).get("aiVerdict"));
   }
 
+  @Test void kickReviewCreatedOnANormalDecisionShowsTheLatestBasisCase() {
+    UUID live=lives.start(channel,moderator).liveId();
+    List<UUID> cs=new ArrayList<>(),rs=new ArrayList<>();
+    for(int i=0;i<5;i++){UUID c=candidate(live,"너 꺼져 카드 근거 "+i);cs.add(c);rs.add(proposal(c,i<4?"VIOLATION":"NO_VIOLATION"));}
+    for(int i=0;i<4;i++)apply(cs.get(i),rs.get(i),decide(rs.get(i),"CONFIRM_VIOLATION",1));
+    // A·B·C로 강퇴 검토가 C에 생기고 D는 예약되지 않는다. A를 오판 취소하면 검토가 무효가 되고 B·C 예약이 풀린다
+    recovery.revoke(confirmedFinding(cs.get(0)),revokeRequest(cs.get(0)),moderator);
+    // 다음 결정(E를 정상 확정)에서 B·C·D로 강퇴 검토가 E에 생긴다
+    var applied=apply(cs.get(4),rs.get(4),decide(rs.get(4),"CONFIRM_NORMAL",1));
+    UUID kick=UUID.fromString(((Map<?,?>)applied.get("kickReview")).get("reviewId").toString());
+    var card=guard.reviewCard(kick);
+    assertEquals(cs.get(4),card.get("caseId"));
+    var basis=((List<?>)card.get("basisCaseIds")).stream().map(Object::toString).toList();
+    assertEquals(java.util.Set.of(cs.get(1).toString(),cs.get(2).toString(),cs.get(3).toString()),java.util.Set.copyOf(basis));
+    // 증거는 정상 사건 E가 아니라 가장 늦게 확정된 기준 사건(보통 D)의 것이다
+    UUID shown=UUID.fromString(basis.getLast());
+    UUID shownMessage=db.queryForObject("SELECT id FROM platform.messages WHERE case_id=?",UUID.class,shown);
+    assertEquals(List.of(shownMessage.toString()),((List<?>)card.get("targetMessageIds")).stream().map(Object::toString).toList());
+    assertNotEquals(db.queryForObject("SELECT id FROM platform.messages WHERE case_id=?",UUID.class,cs.get(4)),shownMessage);
+    assertEquals(List.of("VIOLATION"),((List<Map<String,Object>>)card.get("findings")).stream().map(f->f.get("verdict")).toList());
+    assertEquals(db.queryForObject("SELECT evidence_version FROM guard.cases WHERE id=?",Integer.class,shown),card.get("evidenceVersion"));
+  }
+
   @Test void contextReviewVerdictAggregatesAllTargetFindings() {
     UUID live=lives.start(channel,moderator).liveId();
     UUID c=candidate(live,"너 꺼져 여러 대상");
