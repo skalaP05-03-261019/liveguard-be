@@ -50,7 +50,7 @@ class CanonicalUpgradeTest {
 				}
 				var result=Flyway.configure().dataSource(url,postgres.getUsername(),postgres.getPassword())
 					.locations("classpath:db/migration").outOfOrder(true).load().migrate();
-				assertEquals(3,result.migrationsExecuted);
+				assertEquals(4,result.migrationsExecuted); // V103·V104·V205·V206
 				try(Connection db=DriverManager.getConnection(url,postgres.getUsername(),postgres.getPassword())){
 					try(var rows=db.createStatement().executeQuery("SELECT confirmed_at,revoked_at FROM guard.findings")){
 						assertTrue(rows.next());

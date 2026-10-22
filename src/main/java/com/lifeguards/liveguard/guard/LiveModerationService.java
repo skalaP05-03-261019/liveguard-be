@@ -1082,9 +1082,7 @@ public class LiveModerationService implements LiveGuardPort {
       } else if (kind.equals("KICK") && value.equals("APPROVE")) {
         // Agent가 재개해 부르던 재검증을 결정과 함께 하고, 통과하면 실행 명령(PENDING)이 결정과 같이 남는다. 실행은 커밋
         // 뒤 KickWithoutAgentExecutor가 한다(재시작에도 남고, 실패해도 결정은 그대로다)
-        var validated = revalidate(r, d);
-        if (!Boolean.TRUE.equals(validated.get("valid")))
-          recordKickFailure(UUID.randomUUID(), c, d, ErrorCode.REVIEW_NOT_APPROVED, 0, null, true);
+        revalidateOrRecordFailure(r, d, c);
       }
       // 강퇴 거절·보류는 실행할 것이 없다
     }
@@ -1099,13 +1097,67 @@ public class LiveModerationService implements LiveGuardPort {
     return c.get("judgment") != null || !INVESTIGATION_ROUTES.contains(Objects.toString(c.get("handling_route"), ""));
   }
 
-  /** AI 판정 없는 사건의 아직 실행하지 않은 강퇴 명령(A-25). Agent 경로의 명령은 Agent가 실행하므로 고르지 않는다. */
+  /**
+   * BE가 실행할 아직 실행하지 않은 강퇴 명령(A-25). AI 판정 없는 사건의 명령과, 승인 뒤 {@code handoff}가 지나도 실행되지 않은
+   * 명령이다. Agent 경로의 명령은 그 전까지 Agent가 실행하므로 고르지 않는다.
+   */
   @Transactional(readOnly=true)
-  public List<UUID> pendingKicksWithoutAgent(int limit) {
+  public List<UUID> pendingKicksWithoutAgent(Duration handoff, int limit) {
     return db.sql("SELECT a.id FROM guard.live_actions a JOIN guard.cases c ON c.id=a.case_id JOIN guard.live_case_state s ON s.case_id=c.id"
-        + " WHERE a.kind='KICK' AND a.status='PENDING' AND a.result IS NULL AND a.command IS NOT NULL AND s.judgment IS NULL"
-        + " AND c.handling_route IN ("+INVESTIGATION_SQL+") ORDER BY a.created_at LIMIT ?")
-      .param(limit).query(UUID.class).list();
+        + " JOIN guard.decisions d ON d.id=a.decision_id"
+        + " WHERE a.kind='KICK' AND a.status='PENDING' AND a.result IS NULL AND a.command IS NOT NULL"
+        + " AND ((s.judgment IS NULL AND c.handling_route IN ("+INVESTIGATION_SQL+")) OR d.decided_at<=?) ORDER BY a.created_at LIMIT ?")
+      .params(Timestamp.from(clock.instant().minus(handoff)),limit).query(UUID.class).list();
+  }
+
+  /**
+   * 승인 뒤 {@code after}가 지나도 Agent가 재검증하지 않은 강퇴 결정(A-25). Agent가 분석 중 실패해 결정을 기다리지 않으면 재개할
+   * 곳이 없어 실행 명령이 생기지 않는다. 끝난 방송의 강퇴 검토는 INVALIDATED라 고르지 않는다. 넘겨받거나 실패로 기록하면 실행
+   * 기록이 생겨 빠지므로, 오래 밀린 승인도 하한 없이 고른다(실행도 실패 알림도 없이 남지 않게).
+   */
+  @Transactional(readOnly=true)
+  public List<UUID> kickApprovalsAwaitingHandoff(Duration after, int limit) {
+    return db.sql("SELECT d.id FROM guard.decisions d JOIN guard.reviews r ON r.id=d.review_id"
+        + " WHERE r.kind='KICK' AND r.status='DECIDED' AND d.value='APPROVE' AND d.decided_at<=?"
+        + " AND NOT EXISTS(SELECT 1 FROM guard.live_actions a WHERE a.decision_id=d.id AND a.kind='KICK')"
+        + " ORDER BY d.decided_at LIMIT ?")
+      .params(Timestamp.from(clock.instant().minus(after)),limit).query(UUID.class).list();
+  }
+
+  /**
+   * Agent가 이어받지 않은 강퇴 승인을 BE가 재검증해 실행 명령(PENDING)을 남긴다(A-25). 그 사이 Agent가 재검증했으면 같은 명령을
+   * 돌려받으므로 두 번 만들지 않는다. 재검증을 통과하지 못하면 실패로 기록한다. 실행은 {@link KickWithoutAgentExecutor}가 한다.
+   */
+  public void handOffKick(UUID d) {
+    UUID r=reviewOf(d);
+    revalidateOrRecordFailure(r,d,row(id(review(r,false).get("case_id")),false));
+  }
+
+  /**
+   * 강퇴 승인을 넘겨받지 못했다(A-25). 재검증 단계의 실패라 강퇴를 시도하지 않았다(attemptCount 0). 그 사이 실행 기록이
+   * 생겼으면 두고, 아니면 FAILED로 남겨 ACTION_FAILED를 보낸다.
+   */
+  public void failKickHandoff(UUID d, ErrorCode code) {
+    var rev=review(reviewOf(d),true);
+    if(!noKickAction(d))return;
+    recordKickFailure(UUID.randomUUID(),row(id(rev.get("case_id")),false),d,code,0,null,true);
+  }
+
+  /** 승인 재검증을 하고, 통과하지 못하면 시도하지 않은 실패로 기록한다. 실행 명령은 재검증이 남긴다. */
+  private void revalidateOrRecordFailure(UUID r, UUID d, Map<String, Object> c) {
+    var validated=revalidate(r,d);
+    if(!Boolean.TRUE.equals(validated.get("valid"))&&noKickAction(d))
+      recordKickFailure(UUID.randomUUID(),c,d,ErrorCode.REVIEW_NOT_APPROVED,0,null,true);
+  }
+
+  private UUID reviewOf(UUID d) {
+    return db.sql("SELECT review_id FROM guard.decisions WHERE id=?").param(d).query(UUID.class).optional()
+      .orElseThrow(()->error(ErrorCode.NOT_FOUND,"Decision not found"));
+  }
+
+  private boolean noKickAction(UUID d) {
+    return !db.sql("SELECT EXISTS(SELECT 1 FROM guard.live_actions WHERE decision_id=? AND kind='KICK')").param(d)
+      .query(Boolean.class).single();
   }
 
   /** 저장된 강퇴 명령을 실행한다(A-25). 실행 검증은 Agent 경로의 실행과 같다. */
@@ -1360,20 +1412,29 @@ public class LiveModerationService implements LiveGuardPort {
       result.put("status", "REJECTED");
       return parse(encode(result));
     }
+    // 이 결정의 기존 실행 기록. 이미 성공한 강퇴는 권한·기준을 다시 보지 않고 같은 명령을 돌려준다: BE가 넘겨받아 실행한 뒤
+    // Agent가 늦게 재검증해도 검토를 무효로 돌리지 않는다(A-25). 명령 없이 실패로 기록된 결정(재검증·넘겨받기 실패)은
+    // 새 명령을 만들지 않는다(운영자에게 이미 ACTION_FAILED로 알렸다)
+    var old =
+        db.sql("SELECT command::text AS command,status FROM guard.live_actions WHERE decision_id=? AND kind='KICK' ORDER BY created_at LIMIT 1")
+            .param(decision)
+            .query(new org.springframework.jdbc.core.ColumnMapRowMapper())
+            .optional();
+    if (old.isPresent() && old.get().get("command") == null) {
+      result.put("status", "INVALID");
+      return parse(encode(result));
+    }
+    if (old.isPresent() && "SUCCEEDED".equals(old.get().get("status")))
+      return approved(result, rev, parse(old.get().get("command").toString()));
     platform.authorize(id(c.get("live_id")), id(d.get("operatorId")), true);
     if (!validBasis(r, c)) {
       result.put("status", "INVALID");
       db.sql("UPDATE guard.reviews SET status='INVALIDATED',version=version+1 WHERE id=?").param(r).update();
       return parse(encode(result));
     }
-    var old =
-        db.sql("SELECT command::text FROM guard.live_actions WHERE decision_id=? AND kind='KICK'")
-            .param(decision)
-            .query(String.class)
-            .optional();
     Map<String, Object> command;
     if (old.isPresent()) {
-      command=parse(old.get());
+      command=parse(old.get().get("command").toString());
       if(((Number)command.get("expectedTargetVersion")).intValue()!=targetVersion(id(c.get("live_id")),id(c.get("user_id")))) {
         db.sql("UPDATE guard.reviews SET status='INVALIDATED',version=version+1 WHERE id=?").param(r).update();
         result.put("status","INVALID");return parse(encode(result));
@@ -1404,6 +1465,10 @@ public class LiveModerationService implements LiveGuardPort {
           .params(action, c.get("id"), decision, encode(command), now())
           .update();
     }
+    return approved(result, rev, command);
+  }
+
+  private Map<String, Object> approved(Map<String, Object> result, Map<String, Object> rev, Map<String, Object> command) {
     result.put("status", "APPROVED");
     result.put("valid", true);
     result.put("validationRef", command.get("validationRef"));

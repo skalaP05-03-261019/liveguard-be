@@ -936,9 +936,11 @@ class LiveModerationIntegrationTest {
     return db.queryForObject("SELECT id FROM guard.reviews WHERE case_id=? AND kind='KICK'",UUID.class,c);
   }
 
-  /** 시험에서는 주기 작업 대신 실행기를 직접 돌린다. */
+  static final java.time.Duration HANDOFF=java.time.Duration.ofMinutes(3);
+
+  /** 시험에서는 주기 작업 대신 실행기를 직접 돌린다. 넘겨받기 마감은 기본값(3분)이다. */
   void runPendingKicks() {
-    new KickWithoutAgentExecutor(guard).executePending();
+    new KickWithoutAgentExecutor(guard,HANDOFF).executePending();
   }
 
   String kickAction(UUID kick) {
@@ -961,7 +963,7 @@ class LiveModerationIntegrationTest {
     assertEquals(1,db.queryForObject("SELECT count(*) FROM guard.live_kicks WHERE live_id=? AND user_id=? AND review_id=?",Integer.class,live,user,kick));
     assertEquals(ErrorCode.KICKED,assertThrows(ApiException.class,()->guard.checkEntry(live,user)).code());
     // 실행한 명령은 다시 고르지 않는다
-    assertEquals(List.of(),guard.pendingKicksWithoutAgent(20));
+    assertEquals(List.of(),guard.pendingKicksWithoutAgent(HANDOFF,20));
   }
 
   @Test void kickThatFailsRevalidationKeepsTheDecisionAndRecordsTheFailure() {
@@ -990,7 +992,7 @@ class LiveModerationIntegrationTest {
     assertEquals("FAILED:STALE_VERSION:1",kickAction(kick));
     assertEquals("APPROVE",db.queryForObject("SELECT value FROM guard.decisions WHERE review_id=?",String.class,kick));
     assertEquals(0,db.queryForObject("SELECT count(*) FROM guard.live_kicks WHERE live_id=?",Integer.class,live));
-    assertEquals(List.of(),guard.pendingKicksWithoutAgent(20));
+    assertEquals(List.of(),guard.pendingKicksWithoutAgent(HANDOFF,20));
   }
 
   @Test void rejectedKickWithoutJudgmentExecutesNothing() {
@@ -1013,8 +1015,102 @@ class LiveModerationIntegrationTest {
     var d=decide(kick,"APPROVE",1);
     guard.revalidate(kick,UUID.fromString(d.get("decisionId").toString()));
     // AI 판정이 있는 사건의 강퇴 명령은 Agent가 kick_user로 실행한다. BE 실행기는 고르지 않는다
-    assertEquals(List.of(),guard.pendingKicksWithoutAgent(20));
+    assertEquals(List.of(),guard.pendingKicksWithoutAgent(HANDOFF,20));
     assertEquals(1,db.queryForObject("SELECT count(*) FROM guard.agent_task_outbox WHERE payload->>'reviewId'=?",Integer.class,kick.toString()));
+  }
+
+  // ---- Agent가 이어받지 않은 강퇴 승인 넘겨받기(A-25) ----
+
+  /** 규칙 확정 사건 3건으로 강퇴 검토를 만든다. Agent는 분석 작업으로 이 검토의 결정을 기다리는 것으로 본다. */
+  UUID ruleKick(UUID live) {
+    for(String text:List.of("씨발 넘김 하나","씨발 넘김 둘","씨발 넘김 셋")) {
+      candidate(live,text);
+      db.update("UPDATE guard.live_timeouts SET revoked_at=current_timestamp WHERE live_id=?",live);
+    }
+    return db.queryForObject("SELECT r.id FROM guard.reviews r JOIN guard.cases c ON c.id=r.case_id WHERE c.live_id=? AND r.kind='KICK'",UUID.class,live);
+  }
+
+  /** 승인 뒤 시간이 지난 것과 같게 결정 시각을 앞당긴다. */
+  void ageDecision(UUID d, java.time.Duration by) {
+    db.update("UPDATE guard.decisions SET decided_at=decided_at-?::interval WHERE id=?",by.toSeconds()+" seconds",d);
+  }
+
+  @Test void ruleKickApprovalNotTakenByAgentIsHandedOffAfterTheDeadline() {
+    UUID live=lives.start(channel,moderator).liveId();
+    UUID kick=ruleKick(live);
+    UUID d=UUID.fromString(decide(kick,"APPROVE",1).get("decisionId").toString());
+    // 규칙 사건은 Agent가 결정을 기다리므로 재개 작업을 보낸다. 마감 전에는 BE가 가져가지 않는다
+    assertEquals(1,db.queryForObject("SELECT count(*) FROM guard.agent_task_outbox WHERE payload->>'reviewId'=?",Integer.class,kick.toString()));
+    assertEquals(List.of(),guard.kickApprovalsAwaitingHandoff(HANDOFF,20));
+    runPendingKicks();
+    assertEquals(0,db.queryForObject("SELECT count(*) FROM guard.live_actions WHERE kind='KICK'",Integer.class));
+    // Agent가 분석 중 실패해 재개할 곳이 없으면 재검증이 오지 않는다. 마감이 지나면 BE가 재검증해 실행한다
+    ageDecision(d,HANDOFF.plusSeconds(1));
+    assertEquals(List.of(d),guard.kickApprovalsAwaitingHandoff(HANDOFF,20));
+    runPendingKicks();
+    assertEquals("SUCCEEDED:-:1",kickAction(kick));
+    assertEquals(ErrorCode.KICKED,assertThrows(ApiException.class,()->guard.checkEntry(live,user)).code());
+    assertEquals(List.of(),guard.kickApprovalsAwaitingHandoff(HANDOFF,20));
+    // Agent가 늦게 재개해도 같은 명령과 실행 결과를 돌려받는다. 그 사이 대상 상태가 바뀌거나 승인한 운영자의 권한이
+    // 회수돼도 이미 실행한 강퇴의 검토를 무효로 돌리지 않는다
+    db.update("UPDATE guard.live_user_state SET version=version+1 WHERE live_id=? AND user_id=?",live,user);
+    db.update("UPDATE platform.channel_members SET member_role='VIEWER' WHERE channel_id=? AND user_id=?",channel,operator);
+    var late=guard.revalidate(kick,d);
+    assertEquals("APPROVED",late.get("status"));
+    var command=(Map<String,Object>)late.get("actionCommand");
+    UUID action=UUID.fromString(command.get("actionId").toString());
+    assertEquals("SUCCEEDED",guard.execute(action,command).get("status"));
+    assertEquals("DECIDED",db.queryForObject("SELECT status FROM guard.reviews WHERE id=?",String.class,kick));
+    assertEquals(1,db.queryForObject("SELECT count(*) FROM guard.live_kicks WHERE live_id=?",Integer.class,live));
+    assertEquals(1,db.queryForObject("SELECT count(*) FROM guard.live_actions WHERE kind='KICK'",Integer.class));
+  }
+
+  @Test void agentCommandLeftUnexecutedIsExecutedAfterTheDeadline() {
+    UUID live=lives.start(channel,moderator).liveId();
+    UUID kick=ruleKick(live);
+    UUID d=UUID.fromString(decide(kick,"APPROVE",1).get("decisionId").toString());
+    // Agent가 재검증해 명령을 받았지만 kick_user를 부르기 전에 멈췄다
+    guard.revalidate(kick,d);
+    runPendingKicks();
+    assertEquals("PENDING:-:-",kickAction(kick));
+    ageDecision(d,HANDOFF.plusSeconds(1));
+    // 명령이 이미 있으므로 넘겨받기 대상은 아니고, 마감이 지난 미실행 명령으로 실행한다
+    assertEquals(List.of(),guard.kickApprovalsAwaitingHandoff(HANDOFF,20));
+    runPendingKicks();
+    assertEquals("SUCCEEDED:-:1",kickAction(kick));
+  }
+
+  @Test void handoffThatFailsRevalidationIsRecordedAsFailed() {
+    UUID live=lives.start(channel,moderator).liveId();
+    UUID kick=ruleKick(live);
+    UUID d=UUID.fromString(decide(kick,"APPROVE",1).get("decisionId").toString());
+    // 승인 뒤 기준 사건 하나의 위반이 취소됐다
+    db.update("UPDATE guard.findings SET revoked_at=current_timestamp WHERE case_id=(SELECT basis_case_ids[1] FROM guard.reviews WHERE id=?)",kick);
+    ageDecision(d,HANDOFF.plusSeconds(1));
+    runPendingKicks();
+    assertEquals("FAILED:REVIEW_NOT_APPROVED:0",kickAction(kick));
+    assertEquals("INVALIDATED",db.queryForObject("SELECT status FROM guard.reviews WHERE id=?",String.class,kick));
+    assertEquals(List.of(),guard.kickApprovalsAwaitingHandoff(HANDOFF,20));
+    assertDoesNotThrow(()->guard.checkEntry(live,user));
+  }
+
+  @Test void handoffRejectedByOperatorAuthorityIsRecordedWithItsCode() {
+    UUID live=lives.start(channel,moderator).liveId();
+    UUID kick=ruleKick(live);
+    UUID d=UUID.fromString(decide(kick,"APPROVE",1).get("decisionId").toString());
+    // 승인한 운영자의 권한이 회수됐다. 다시 해도 같은 결과이므로 한 번에 FAILED로 남긴다. 재검증 단계라 강퇴는 시도하지 않았다
+    db.update("UPDATE platform.channel_members SET member_role='VIEWER' WHERE channel_id=? AND user_id=?",channel,operator);
+    ageDecision(d,HANDOFF.plusSeconds(1));
+    runPendingKicks();
+    assertEquals("FAILED:FORBIDDEN:0",kickAction(kick));
+    assertNull(db.queryForObject("SELECT result->>'startedAt' FROM guard.live_actions WHERE kind='KICK'",String.class));
+    // 실패를 알린 뒤 Agent가 늦게 재검증해도 새 명령을 만들지 않는다(실행 기록은 하나)
+    db.update("UPDATE platform.channel_members SET member_role='MODERATOR' WHERE channel_id=? AND user_id=?",channel,operator);
+    assertEquals("INVALID",guard.revalidate(kick,d).get("status"));
+    assertEquals(1,db.queryForObject("SELECT count(*) FROM guard.live_actions WHERE kind='KICK'",Integer.class));
+    runPendingKicks();
+    assertEquals(List.of(),guard.kickApprovalsAwaitingHandoff(HANDOFF,20));
+    assertEquals(0,db.queryForObject("SELECT count(*) FROM guard.live_kicks WHERE live_id=?",Integer.class,live));
   }
 
   @Test void decisionOnCaseWithoutRouteDoesNotFail() {
