@@ -24,6 +24,9 @@ class PiiMaskerTest {
 			"https://evil.test/login?token=SECRET 접속 | [URL:evil.test] 접속",
 			"HTTP://User:pw@Evil.Test:8443/a#x | [URL:evil.test]",
 			"evil.test/login?id=1 로 가세요 | [URL:evil.test] 로 가세요",
+			"연락 ０１０-１２３４-５６７８ | 연락 [PHONE]",
+			"메일 user@예시.com 로 | 메일 [EMAIL] 로",
+			"메일 홍길동@example.com 로 | 메일 [EMAIL] 로",
 	})
 	void masksPersonalDataAndLinks(String input, String expected) {
 		assertEquals(expected, PiiMasker.mask(input));

@@ -13,11 +13,11 @@ import com.lifeguards.liveguard.contracts.enums.MatchingTag;
  * <ol>
  * <li>RULE_CONFIRMED(HIDDEN): 확실한 욕설 또는 링크. 공식 링크도 예외 없이 금지한다</li>
  * <li>FLOOD_REVIEW(HELD): 같은 사용자·방송에서 10초 안에 같은 정규화 문장 3회 이상 (세 번째부터)</li>
- * <li>PII_INVESTIGATION(HELD): 개인정보 필터 PR 전까지 나오지 않는다</li>
+ * <li>PII_INVESTIGATION(HELD): 전화번호·계좌·이메일 형식({@link PiiMasker#candidates}). 숫자 나열만으로는 아니다(AC-06)</li>
  * <li>CONTEXT_REVIEW(HELD): 공격·비하 사전 매칭, 또는 링크 없는 공식 자칭 + 로그인·인증 요구</li>
  * <li>PASS(PUBLIC)</li>
  * </ol>
- * 전화·계좌 패턴만으로는 후보가 아니다. 입력만으로 결정하는 순수 함수다.
+ * 개인정보 후보는 위반 확정이 아니라 AI 조사 대상이다. 입력만으로 결정하는 순수 함수다.
  */
 @Component
 public class MessageFilter {
@@ -58,6 +58,7 @@ public class MessageFilter {
 		boolean credential = containsAny(normalized, dictionary.credentialTerms());
 		boolean link = !UrlHosts.extract(input.text()).isEmpty();
 		boolean repeated = input.sameTextCountInWindow() >= FLOOD_THRESHOLD || input.floodRecurrence();
+		List<MatchingTag> pii = PiiMasker.candidates(input.text());
 
 		List<String> tags = new ArrayList<>();
 		if (attack) {
@@ -78,6 +79,7 @@ public class MessageFilter {
 		if (repeated) {
 			tags.add(REPEATED_TEXT);
 		}
+		pii.forEach(tag -> tags.add(tag.name()));
 
 		if (certainProfanity) {
 			return new FilterDecision(HandlingRoute.RULE_CONFIRMED, RULE_CERTAIN_PROFANITY, tags);
@@ -87,6 +89,9 @@ public class MessageFilter {
 		}
 		if (repeated) {
 			return new FilterDecision(HandlingRoute.FLOOD_REVIEW, null, tags);
+		}
+		if (!pii.isEmpty()) {
+			return new FilterDecision(HandlingRoute.PII_INVESTIGATION, null, tags);
 		}
 		if (attack || (officialClaim && credential)) {
 			return new FilterDecision(HandlingRoute.CONTEXT_REVIEW, null, tags);
