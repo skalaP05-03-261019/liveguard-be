@@ -3,9 +3,8 @@ package com.lifeguards.liveguard.platform.port;
 import java.util.UUID;
 
 /**
- * 1차 필터가 PASS가 아닌 메시지를 사건(case)으로 넘기는 포트. platform이 정의하고 guard(B2)가 구현한다.
- * B2 구현이 없으면 {@link InMemoryCandidateSink}가 쓰인다. B2는 구현을 {@code @Component}/{@code @Service}로
- * 등록하면 되고, 임시 구현은 {@code @ConditionalOnMissingBean}이라 별도 설정 없이 빠진다.
+ * 1차 필터가 PASS가 아닌 메시지를 사건(case)으로 넘기는 포트. platform이 정의하고 guard(B2)가 구현한다
+ * ({@code JdbcCandidateSink}).
  *
  * <p>
  * 호출 규약

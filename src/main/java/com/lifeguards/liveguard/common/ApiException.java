@@ -22,7 +22,7 @@ public class ApiException extends RuntimeException {
 		this(code, message, null, null);
 	}
 
-	/** @param until KICKED의 강퇴 만료 시각, @param currentVersion STALE_VERSION의 현재 버전 */
+	/** @param until TIMED_OUT의 TIMEOUT 만료 시각(KICKED는 방송 종료까지라 없음), @param currentVersion STALE_VERSION의 현재 버전 */
 	public ApiException(ErrorCode code, String message, Instant until, Integer currentVersion) {
 		super(Objects.requireNonNull(message, "message"));
 		this.code = Objects.requireNonNull(code, "code");
