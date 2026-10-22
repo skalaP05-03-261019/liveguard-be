@@ -41,20 +41,19 @@ public class AgentDeliveryWorker {
 			return id != null;
 		}
 		var delivery = claimed.get();
-		// POST 예산은 전달이 불확실한 행에만 적용한다(Agent가 받았을 수 있는 작업을 거듭 보내지 않는다). 이전 시도가 모두
-		// 확실히 닿지 않았으면 다시 보내도 두 번 실행될 수 없다
 		var result = gateway.deliver(delivery.envelope(), delivery.uncertain(),
-				!delivery.uncertain() || delivery.attemptCount() <= properties.maxAttempts());
+				delivery.attemptCount() <= properties.maxAttempts());
 		var now = clock.instant();
-		// Agent에 닿지 않은 실패(AGENT_UNREACHABLE)는 끝내지 않고 최대 간격으로 계속 시도한다. Agent 재시작·배포가 예산보다
-		// 길어도 분석이 멈추지 않게 한다. 방송 종료·대체 처리는 RETRY 행을 정리한다
-		boolean unreachable = "AGENT_UNREACHABLE".equals(result.code()) && !result.uncertain() && !delivery.uncertain();
-		boolean retry = result.retryable() && (unreachable || delivery.attemptCount() < properties.maxAttempts());
+		// Agent에 확실히 닿지 않은 시도는 전달 예산을 쓰지 않는다. Agent 재시작·배포가 예산보다 길어도 끝나지 않고,
+		// 돌아온 뒤에도 예산이 그대로 남는다. 간격은 연결 차단기 간격을 따른다(최대 maxBackoff)
+		int spent = delivery.attemptCount() - (result.notSent() ? 1 : 0);
+		boolean retry = result.retryable() && spent < properties.maxAttempts();
 		boolean uncertain = result.uncertain() || delivery.uncertain();
 		String status = result.accepted() ? "ACCEPTED" : retry ? "RETRY"
 				: uncertain ? "UNKNOWN" : "FAILED";
-		var next = retry ? now.plus(properties.backoff(delivery.attemptCount())) : now;
-		boolean saved = repository.finish(delivery, status, result.code(), next, now, uncertain);
+		var next = !retry ? now
+				: now.plus(result.notSent() ? gateway.unreachableBackoff() : properties.backoff(delivery.attemptCount()));
+		boolean saved = repository.finish(delivery, status, result.code(), next, now, uncertain, result.notSent());
 		if (!saved) {
 			log.warn("Agent delivery lease lost: outboxId={}", delivery.id());
 		} else if (!result.accepted()) {

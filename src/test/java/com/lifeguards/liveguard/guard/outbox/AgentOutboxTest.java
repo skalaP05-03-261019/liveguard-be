@@ -282,15 +282,9 @@ class AgentOutboxTest {
 	}
 
 	@Test
-	void unreachableAgentKeepsRetryingPastTheBudgetAndDeliversOnceItIsBack() throws Exception {
+	void unreachableAttemptsDoNotSpendTheBudgetAndRecoveryKeepsTheFullBudget() throws Exception {
 		enqueue(task);
-		int closedPort;
-		try (var socket = new java.net.ServerSocket(0)) {
-			closedPort = socket.getLocalPort();
-		}
-		var unreachable = new AgentDeliveryProperties(true, URI.create("http://127.0.0.1:" + closedPort),
-				"test-agent-secret", Duration.ofMillis(100), Duration.ofSeconds(1), Duration.ofSeconds(60),
-				Duration.ofSeconds(1), Duration.ofSeconds(2), Duration.ofSeconds(10), 3, 5, 2);
+		var unreachable = unreachableProperties(closedPort());
 		try (var down = new AgentHttpGateway(unreachable, mapper)) {
 			var downWorker = new AgentDeliveryWorker(repository, down, unreachable, clock);
 			for (int i = 0; i < 6; i++) {
@@ -298,18 +292,51 @@ class AgentOutboxTest {
 				time.advance(Duration.ofMinutes(1));
 			}
 		}
-		// 연결 거부는 요청이 닿지 않은 것이므로 예산(3)을 넘어도 끝내지 않고, 불확실 표시 없이 최대 간격(10초)으로 다시 시도한다
+		// 연결 거부는 요청이 닿지 않은 것이므로 예산(3)을 넘겨 시도해도 시도 수가 늘지 않고, 불확실 표시도 없다
 		assertEquals("RETRY", status(task));
 		assertEquals("AGENT_UNREACHABLE", errorCode(task));
 		assertFalse(uncertain(task));
-		assertEquals(6, attempts(task));
-		assertTrue(jdbc.queryForObject("SELECT next_attempt_at <= ? FROM guard.agent_task_outbox WHERE operation_id = ?",
-				Boolean.class, java.sql.Timestamp.from(time.instant()), task.operationId()));
+		assertEquals(0, attempts(task));
+		// 다음 시도는 최대 간격(10초) 안이다
+		assertTrue(jdbc.queryForObject("SELECT next_attempt_at - updated_at <= interval '10 seconds' "
+				+ "FROM guard.agent_task_outbox WHERE operation_id = ?", Boolean.class, task.operationId()));
 
-		// Agent가 다시 뜨면 다음 시도에서 바로 보낸다(이전 시도는 모두 닿지 않았으므로 POST 예산에 묶이지 않는다)
+		// Agent가 돌아온 직후 일시 오류(429)가 나도 예산이 그대로라 끝나지 않는다
+		behavior = exchange -> respond(exchange, 429, "{}");
+		worker.deliverOne();
+		assertEquals("RETRY", status(task));
+		assertEquals(1, attempts(task));
+		time.advance(Duration.ofMinutes(1));
+		behavior = exchange -> respond(exchange, 202, receipt(task, "QUEUED", false));
 		worker.deliverOne();
 		assertEquals("ACCEPTED", status(task));
-		assertEquals(List.of("POST"), methods);
+	}
+
+	@Test
+	void breakerSkipsTheNetworkAfterAConnectionFailureUntilTheBackoffPasses() throws Exception {
+		int port = closedPort();
+		try (var down = new AgentHttpGateway(unreachableProperties(port), mapper)) {
+			assertTrue(down.deliver(task, false, true).notSent());
+			AtomicInteger hits = new AtomicInteger();
+			HttpServer revived = HttpServer.create(new InetSocketAddress("127.0.0.1", port), 0);
+			revived.createContext("/", exchange -> {
+				hits.incrementAndGet();
+				respond(exchange, 202, receipt(task, "QUEUED", false));
+			});
+			revived.start();
+			try {
+				// 차단 중에는 Agent가 이미 떠 있어도 네트워크를 쓰지 않고 "닿지 않음"으로 답한다
+				var skipped = down.deliver(task, false, true);
+				assertTrue(skipped.notSent());
+				assertEquals(0, hits.get());
+				// 첫 차단 간격(initialBackoff 2초)이 지나면 다시 연결한다
+				Thread.sleep(2100);
+				assertTrue(down.deliver(task, false, true).accepted());
+				assertEquals(1, hits.get());
+			} finally {
+				revived.stop(0);
+			}
+		}
 	}
 
 	@Test
@@ -524,6 +551,19 @@ class AgentOutboxTest {
 	private String status(AgentTaskEnvelope envelope) {
 		return jdbc.queryForObject("SELECT status FROM guard.agent_task_outbox WHERE operation_id = ?",
 				String.class, envelope.operationId());
+	}
+
+	/** 지금 아무도 쓰지 않는 로컬 포트(연결 거부). */
+	private static int closedPort() throws IOException {
+		try (var socket = new java.net.ServerSocket(0)) {
+			return socket.getLocalPort();
+		}
+	}
+
+	private static AgentDeliveryProperties unreachableProperties(int port) {
+		return new AgentDeliveryProperties(true, URI.create("http://127.0.0.1:" + port), "test-agent-secret",
+				Duration.ofMillis(100), Duration.ofSeconds(1), Duration.ofSeconds(60), Duration.ofSeconds(1),
+				Duration.ofSeconds(2), Duration.ofSeconds(10), 3, 5, 2);
 	}
 
 	private String errorCode(AgentTaskEnvelope envelope) {

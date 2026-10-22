@@ -193,6 +193,9 @@ class LiveModerationIntegrationTest {
       UUID action=UUID.fromString(command.get("actionId").toString());
       db.update("UPDATE guard.agent_task_outbox SET status='ACCEPTED' WHERE case_id=? AND payload->>'kind'='ANALYZE'",cs.getFirst());
       db.update("UPDATE guard.agent_task_outbox SET status='RETRY',delivery_uncertain=true WHERE payload->>'reviewId'=?",approved.toString());
+      // 아직 Agent에 닿지 않은 분석 작업(1)과 전달이 불확실한 분석 작업(2)
+      db.update("UPDATE guard.agent_task_outbox SET status='RETRY',last_error_code='AGENT_UNREACHABLE' WHERE case_id=? AND payload->>'kind'='ANALYZE'",cs.get(1));
+      db.update("UPDATE guard.agent_task_outbox SET status='RETRY',delivery_uncertain=true WHERE case_id=? AND payload->>'kind'='ANALYZE'",cs.get(2));
       long findings=db.queryForObject("SELECT count(*) FROM guard.findings",Long.class);
       var ended=lives.end(live,moderator);
       assertEquals(2,db.queryForObject("SELECT count(*) FROM guard.reviews WHERE kind='KICK' AND status='INVALIDATED'",Integer.class));
@@ -201,6 +204,9 @@ class LiveModerationIntegrationTest {
       assertEquals("PENDING",guard.reviewCard(rs.get(6)).get("status"));
       assertEquals("ACCEPTED",db.queryForObject("SELECT status FROM guard.agent_task_outbox WHERE case_id=? AND payload->>'kind'='ANALYZE'",String.class,cs.getFirst()));
       assertEquals("UNKNOWN",db.queryForObject("SELECT status FROM guard.agent_task_outbox WHERE payload->>'reviewId'=?",String.class,approved.toString()));
+      // 끝난 방송에는 판정을 낼 수 없으므로 닿지 않은 분석 작업은 멈추고, Agent가 받았을 수 있는 작업은 그대로 둔다
+      assertEquals("FAILED:LIVE_ENDED",db.queryForObject("SELECT status||':'||last_error_code FROM guard.agent_task_outbox WHERE case_id=? AND payload->>'kind'='ANALYZE'",String.class,cs.get(1)));
+      assertEquals("RETRY",db.queryForObject("SELECT status FROM guard.agent_task_outbox WHERE case_id=? AND payload->>'kind'='ANALYZE'",String.class,cs.get(2)));
       assertEquals(findings,db.queryForObject("SELECT count(*) FROM guard.findings",Long.class));
       assertEquals(0,queries.kickEligibility(cs.getFirst()).count());
       assertEquals("LIVE_ENDED",guard.actionStatus(action).get("errorCode"));

@@ -20,11 +20,26 @@ import tools.jackson.databind.json.JsonMapper;
 
 public class AgentHttpGateway implements AutoCloseable {
 
-	public record Result(boolean accepted, boolean retryable, boolean uncertain, String code) {
+	/**
+	 * @param notSent 요청이 Agent에 확실히 닿지 않았다(연결 실패, 또는 연결이 끊긴 동안 보내지 않음). 이런 시도는 전달
+	 *        예산을 쓰지 않는다
+	 */
+	public record Result(boolean accepted, boolean retryable, boolean uncertain, String code, boolean notSent) {
+		public Result(boolean accepted, boolean retryable, boolean uncertain, String code) {
+			this(accepted, retryable, uncertain, code, false);
+		}
+
 		static Result acceptedResult() {
 			return new Result(true, false, false, null);
 		}
+
+		/** 이번 시도는 닿지 않았다. 이전 시도가 불확실했으면 그 표시는 유지한다(uncertain). */
+		static Result unreachable(boolean uncertain) {
+			return new Result(false, true, uncertain, "AGENT_UNREACHABLE", true);
+		}
 	}
+
+	private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(AgentHttpGateway.class);
 
 	private static final Set<String> AGENT_STATES = Set.of("QUEUED", "RUNNING", "WAITING_REVIEW",
 			"SUCCEEDED", "NEEDS_REVIEW", "FAILED", "UNKNOWN");
@@ -33,6 +48,11 @@ public class AgentHttpGateway implements AutoCloseable {
 	private final AgentDeliveryProperties properties;
 	private final JsonMapper mapper;
 	private final HttpClient client;
+	// 연결 차단기: Agent에 연결하지 못하면 그 뒤 일정 시간은 네트워크를 쓰지 않고 바로 "닿지 않음"으로 답한다.
+	// 연속으로 실패할수록 간격을 늘린다(최대 maxBackoff). 장애가 길어도 시도가 쌓여 새 작업을 밀어내지 않게 한다
+	private final Object breaker = new Object();
+	private int consecutiveUnreachable;
+	private long reopenAtNanos;
 
 	public AgentHttpGateway(AgentDeliveryProperties properties, JsonMapper mapper) {
 		this.properties = properties;
@@ -42,6 +62,9 @@ public class AgentHttpGateway implements AutoCloseable {
 	}
 
 	public Result deliver(AgentTaskEnvelope envelope, boolean reconcileFirst, boolean allowPost) {
+		if (breakerOpen()) {
+			return Result.unreachable(reconcileFirst);
+		}
 		if (reconcileFirst) {
 			Reply reply = exchange(envelope, "/agent/tasks/" + envelope.taskId(), false);
 			if (reply.status() == 200 && matches(reply.body(), envelope)) {
@@ -91,7 +114,7 @@ public class AgentHttpGateway implements AutoCloseable {
 		}
 		if (reply.status() == 0 && "AGENT_UNREACHABLE".equals(reply.code())) {
 			// 보내지 못했으므로 이번 시도로 불확실해지지 않는다(이전 시도가 불확실했으면 그 표시는 유지된다)
-			return new Result(false, true, reconciliation, "AGENT_UNREACHABLE");
+			return Result.unreachable(reconciliation);
 		}
 		if (reply.status() == 0 || Set.of(408, 429, 500, 502, 503, 504).contains(reply.status())) {
 			return new Result(false, true, reconciliation || reply.status() != 429,
@@ -118,6 +141,16 @@ public class AgentHttpGateway implements AutoCloseable {
 		} else {
 			builder.GET();
 		}
+		Reply reply = send(builder);
+		if ("AGENT_UNREACHABLE".equals(reply.code())) {
+			breakerTrip();
+		} else {
+			breakerReset();
+		}
+		return reply;
+	}
+
+	private Reply send(HttpRequest.Builder builder) {
 		var future = client.sendAsync(builder.build(), info -> new LimitedBodySubscriber());
 		try {
 			HttpResponse<String> response = future.get(properties.requestTimeout().toMillis(), TimeUnit.MILLISECONDS);
@@ -181,6 +214,40 @@ public class AgentHttpGateway implements AutoCloseable {
 		@Override
 		public void onComplete() {
 			delegate.onComplete();
+		}
+	}
+
+	/** 지금 연결 차단 중인지. 차단 중이면 다음 연결 시도 시각까지 남은 시간이 있다. */
+	private boolean breakerOpen() {
+		synchronized (breaker) {
+			return consecutiveUnreachable > 0 && System.nanoTime() - reopenAtNanos < 0;
+		}
+	}
+
+	/** 다음 시도까지 기다릴 시간. 연결 차단 중이면 차단이 풀리는 시각까지, 아니면 기본 재시도 간격이다. */
+	java.time.Duration unreachableBackoff() {
+		synchronized (breaker) {
+			return properties.backoff(Math.max(1, consecutiveUnreachable));
+		}
+	}
+
+	private void breakerTrip() {
+		synchronized (breaker) {
+			consecutiveUnreachable++;
+			reopenAtNanos = System.nanoTime() + properties.backoff(consecutiveUnreachable).toNanos();
+			if (consecutiveUnreachable == 1) {
+				// 차단을 시작할 때 한 번만 남긴다(주소·포트 설정 오류도 여기서 드러난다)
+				log.error("Agent unreachable; pausing delivery attempts: baseUrl={}", properties.baseUrl());
+			}
+		}
+	}
+
+	private void breakerReset() {
+		synchronized (breaker) {
+			if (consecutiveUnreachable > 0) {
+				log.info("Agent reachable again after {} failed connection attempts", consecutiveUnreachable);
+			}
+			consecutiveUnreachable = 0;
 		}
 	}
 
