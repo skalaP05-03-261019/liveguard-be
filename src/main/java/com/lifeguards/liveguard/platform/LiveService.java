@@ -111,6 +111,28 @@ public class LiveService implements LivePlatformPort {
     return liveQueries.currentLive(channel).orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND,"No live in progress"));
   }
 
+  /**
+   * 기존 채널 경로(A-18)의 입장 확인. 그 채널의 진행 중 방송에서 강퇴됐으면 방송 경로와 같이 403 KICKED
+   * (방송 종료까지라 until 없음, POLICY §10). 진행 중 방송이 없으면 막지 않는다.
+   */
+  public void checkChannelEntry(UUID channel, UUID user) {
+    liveQueries.currentLive(channel).ifPresent(current -> guard.checkEntry(current.liveId(), user));
+  }
+
+  /**
+   * 기존 채널 SSE 구독(A-18). 강퇴 확인과 등록을 진행 중 방송 행 잠금 안에서 한다. 강퇴 실행도 같은 행을 잠그므로,
+   * 확인을 통과한 뒤 등록 전에 강퇴가 끝나 USER_KICKED를 받지 못한 연결이 남는 일이 없다({@link #subscribe}와 같은 방식).
+   */
+  @Transactional
+  public org.springframework.web.servlet.mvc.method.annotation.SseEmitter subscribeChannel(
+      UUID channel, UUID user, boolean operator, String session) {
+    liveQueries.currentLive(channel).ifPresent(current -> {
+      lockLive(current.liveId());
+      guard.checkEntry(current.liveId(), user);
+    });
+    return legacyEvents.subscribe(channel, user, operator, session);
+  }
+
   @Transactional
   public Live end(UUID id, AuthenticatedUser user) {
     requireHost(live(id).channelId(),user.userId());
@@ -455,13 +477,10 @@ public class LiveService implements LivePlatformPort {
         () -> {
           if (event.equals("LIVE_ACCESS_BLOCKED"))
             chats.broadcast(id, s -> s.userId().equals(author), event, envelope, true);
-          else if (Set.of(
-                  "CHAT",
-                  "MESSAGE_VISIBILITY_CHANGED",
-                  "MESSAGE_RESTORED",
-                  "LIVE_ENDED",
-                  "ACTION_APPLIED",
-                  "ACTION_FAILED")
+          else if (event.equals("ACTION_APPLIED") || event.equals("ACTION_FAILED")) {
+            // 채팅 스트림에서는 조치 대상 본인에게만 보낸다(계약). 운영자는 guard 스트림으로 받는다
+            if (author != null) chats.broadcast(id, s -> s.userId().equals(author), event, envelope, false);
+          } else if (Set.of("CHAT", "MESSAGE_VISIBILITY_CHANGED", "MESSAGE_RESTORED", "LIVE_ENDED")
               .contains(event))
             chats.broadcast(
                 id,

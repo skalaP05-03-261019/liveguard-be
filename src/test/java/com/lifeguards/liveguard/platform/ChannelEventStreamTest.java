@@ -19,6 +19,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
@@ -35,6 +36,7 @@ import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.servlet.mvc.method.annotation.ResponseBodyEmitter;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter.SseEventBuilder;
@@ -62,6 +64,8 @@ class ChannelEventStreamTest {
 	private JdbcTemplate jdbc;
 	@Autowired
 	private ChannelEventHub hub;
+	@Autowired
+	private TransactionTemplate tx;
 
 	private final List<Stream<String>> openStreams = new ArrayList<>();
 
@@ -104,6 +108,46 @@ class ChannelEventStreamTest {
 			assertTrue(data.contains("\"authorAlias\":\"시청자\""));
 			assertTrue(data.contains("\"visibility\":\"PUBLIC\""));
 		}
+	}
+
+	/**
+	 * 기존 채널 구독은 강퇴 실행과 같은 방송 행 잠금을 기다린다. 잠금 없이 확인하고 등록하면, 확인 뒤 등록 전에 강퇴가 끝나
+	 * USER_KICKED를 받지 못한 연결이 남는다.
+	 */
+	@Test
+	void channelSubscriptionWaitsForTheLiveRowLockHeldByAKick() throws Exception {
+		UUID liveId = jdbc.queryForObject("SELECT id FROM platform.lives WHERE channel_id = ? AND ended_at IS NULL",
+				UUID.class, CHANNEL_A);
+		Client viewer = Client.login(port, "viewer");
+		CountDownLatch locked = new CountDownLatch(1);
+		CountDownLatch release = new CountDownLatch(1);
+		Thread kick = new Thread(() -> tx.executeWithoutResult(status -> {
+			jdbc.queryForObject("SELECT id FROM platform.lives WHERE id = ? FOR UPDATE", UUID.class, liveId);
+			locked.countDown();
+			try {
+				release.await();
+			} catch (InterruptedException ex) {
+				Thread.currentThread().interrupt();
+			}
+		}));
+		kick.start();
+		CompletableFuture<HttpResponse<Stream<String>>> pending;
+		try {
+			assertTrue(locked.await(5, TimeUnit.SECONDS));
+			pending = viewer.http.sendAsync(
+					viewer.request("/api/channels/" + CHANNEL_A + "/events").header("Accept", "text/event-stream")
+							.GET().build(),
+					HttpResponse.BodyHandlers.ofLines());
+			Thread.sleep(300);
+			assertFalse(pending.isDone(), "강퇴가 방송 행을 잡고 있는 동안에는 구독 등록을 마치지 않는다");
+		} finally {
+			// 실패해도 잠금을 풀어야 같은 방송 행을 쓰는 다음 테스트가 멈추지 않는다
+			release.countDown();
+			kick.join();
+		}
+		HttpResponse<Stream<String>> response = pending.get(5, TimeUnit.SECONDS);
+		openStreams.add(response.body());
+		assertEquals(200, response.statusCode());
 	}
 
 	@Test

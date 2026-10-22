@@ -476,6 +476,36 @@ class LiveModerationIntegrationTest {
   }
 
   @Test
+  void kickedViewerCannotReadOrSubscribeThroughLegacyChannelPaths() throws Exception {
+    UUID live=lives.start(channel,moderator).liveId();
+    kick(live);
+    db.update("UPDATE platform.users SET password_hash=? WHERE id=?",passwordEncoder.encode("liveguard-local"),user);
+    var session=com.lifeguards.liveguard.support.LoginSupport.login(mvc,user.toString());
+    // POLICY §10: 방송 종료까지 재입장과 채팅 금지는 기존 채널 경로에도 같다. 방송 종료까지라 until은 없다
+    for(String path:List.of("/api/channels/"+channel+"/messages","/api/channels/"+channel+"/events"))
+      mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get(path).session(session)
+          .accept("application/json","text/event-stream"))
+        .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isForbidden())
+        .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.error.code").value("KICKED"))
+        .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.error.until").doesNotExist());
+    lives.end(live,moderator);
+    mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/channels/"+channel+"/messages").session(session))
+      .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isOk());
+  }
+
+  /** 확정 사건 3건 → 강퇴 승인 → 재검증 → 실행으로 viewer를 이 방송에서 강퇴한다. */
+  void kick(UUID live) {
+    List<UUID> cases=new ArrayList<>(),reviews=new ArrayList<>();
+    for(int i=0;i<3;i++){UUID c=candidate(live,"꺼져 강퇴 "+i);cases.add(c);reviews.add(proposal(c,"VIOLATION"));}
+    Map<String,Object> applied=Map.of();
+    for(int i=0;i<3;i++)applied=apply(cases.get(i),reviews.get(i),decide(reviews.get(i),"CONFIRM_VIOLATION",1));
+    UUID review=UUID.fromString(((Map<String,Object>)applied.get("kickReview")).get("reviewId").toString());
+    UUID d=UUID.fromString(decide(review,"APPROVE",1).get("decisionId").toString());
+    var command=(Map<String,Object>)guard.revalidate(review,d).get("actionCommand");
+    assertEquals("SUCCEEDED",guard.execute(UUID.fromString(command.get("actionId").toString()),command).get("status"));
+  }
+
+  @Test
   void threeConfirmedCasesRequireSeparateKickApprovalAndIdempotentExecution() {
     UUID live = lives.start(channel, moderator).liveId();
     List<UUID> cases = new ArrayList<>();
