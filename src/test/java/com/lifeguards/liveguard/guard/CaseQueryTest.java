@@ -159,14 +159,12 @@ class CaseQueryTest {
 		jdbc.update("UPDATE guard.live_reservations SET state='RELEASED' WHERE case_id=?",past);
 		assertEquals(1,queries.kickEligibility(current).count());
 	}
-	@Test void daysIsRejectedOnBothAliasesAndReadOnlyEligibilityIsImplemented() throws Exception {
-		for(String alias:List.of("history","user-history")){
-			mvc.perform(get("/internal/cases/{id}/"+alias,current).header("X-Service-Token","query-test-token"))
-				.andExpect(status().isOk()).andExpect(jsonPath("$.data.windowHours").doesNotExist());
-			for(String days:List.of("1","31","0","-1","2147483647","bad"))
-				mvc.perform(get("/internal/cases/{id}/"+alias,current).param("days",days).header("X-Service-Token","query-test-token"))
-					.andExpect(status().isBadRequest());
-		}
+	@Test void daysIsRejectedAndReadOnlyEligibilityIsImplemented() throws Exception {
+		mvc.perform(get("/internal/cases/{id}/user-history",current).header("X-Service-Token","query-test-token"))
+			.andExpect(status().isOk()).andExpect(jsonPath("$.data.windowHours").doesNotExist());
+		for(String days:List.of("1","31","0","-1","2147483647","bad"))
+			mvc.perform(get("/internal/cases/{id}/user-history",current).param("days",days).header("X-Service-Token","query-test-token"))
+				.andExpect(status().isBadRequest());
 		mvc.perform(get("/internal/cases/{id}/kick-eligibility",current).header("X-Service-Token","query-test-token"))
 			.andExpect(status().isOk()).andExpect(jsonPath("$.data.count").value(0));
 		assertEquals(0,jdbc.queryForObject("SELECT count(*) FROM guard.live_reservations",Integer.class));

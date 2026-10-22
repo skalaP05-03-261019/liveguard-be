@@ -12,7 +12,6 @@ info:
     내부 사건·문맥은 같은 불변 마스킹 snapshot을 읽고 대상 버전은 현재 값을 반환한다.
     사용자 이력은 같은 방송 전체이며 days는 거부한다. 강퇴 후보와 원 결정의 기준/소진 소유권도 읽기 전용으로 구현된다.
     표시된 미지원 legacy/business action은 HTTP 501 `NOT_IMPLEMENTED` (retryable=false)이다.
-    `x-implementation-status: planned`는 미래/레거시 계약일 뿐 현재 구현을 의미하지 않는다.
     사건 필수 정보나 불변 snapshot 미준비는 409 CASE_NOT_READY다. 외부 Agent/RAG 배포 완료를 의미하지 않는다.
 
     공통 규칙
@@ -43,7 +42,7 @@ info:
     | rag-mcp | policy://{version}/{documentId}/{sectionId} | Resource | 정책 원문 |
 
     `POST /internal/cases/{caseId}/judgment`는 CONTRACTS §5 Agent 출력을 받아 AI 제안과 BE 확정을 구분한다.
-    `POST /internal/kick-reviews/{reviewId}/execute`는 deprecated 레거시 계약이다(A-12).
+    v0.5 레거시 `POST /internal/kick-reviews/{reviewId}/execute`·`GET /internal/cases/{caseId}/history`는 삭제했다(A-12).
     새 action 실행의 canonical 계약은 `/internal/actions/{actionId}/execute`이며 Backend 발급 KICK만 실행한다.
     Judgment의 Agent context 판정은 사람의 결정 전 최종 판정이 아니며 자동 kick을 의미하지 않는다.
     Agent 재개(`POST /agent/tasks/{id}/resume`)는 Agent 저장소 계약이라 이 문서에 넣지 않는다(A-10).
@@ -727,45 +726,6 @@ paths:
         '409':
           $ref: '#/components/responses/Error'
 
-  /internal/cases/{caseId}/history:
-    parameters:
-      - $ref: '#/components/parameters/CaseId'
-      - $ref: '#/components/parameters/TraceIdHeader'
-    get:
-      tags: [Internal]
-      operationId: internalGetUserHistoryLegacy
-      summary: Legacy user-history alias
-      description: Deprecated alias with the same TIMEOUT-only, excludes-current-case semantics as `/user-history`. 삭제 여부는 B2 확인 후 정한다(A-12).
-      deprecated: true
-      x-implementation-status: implemented
-      x-owner: B2
-      security:
-        - serviceToken: []
-      parameters:
-        - name: days
-          in: query
-          required: false
-          deprecated: true
-          description: Unsupported; any supplied days value returns 400.
-          schema:
-            type: integer
-            minimum: 1
-      responses:
-        '200':
-          description: Same whole-broadcast history as /user-history.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/UserHistoryResponse'
-        '400':
-          $ref: '#/components/responses/Error'
-        '403':
-          $ref: '#/components/responses/Error'
-        '404':
-          $ref: '#/components/responses/Error'
-        '409':
-          $ref: '#/components/responses/Error'
-
   /internal/cases/{caseId}/kick-eligibility:
     parameters:
       - $ref: '#/components/parameters/CaseId'
@@ -946,36 +906,6 @@ paths:
         '409':
           $ref: '#/components/responses/Error'
 
-  /internal/kick-reviews/{reviewId}/execute:
-    parameters:
-      - $ref: '#/components/parameters/ReviewId'
-      - $ref: '#/components/parameters/TraceIdHeader'
-    post:
-      tags: [Internal]
-      operationId: internalExecuteKick
-      summary: Planned legacy kick execution contract
-      description: |
-        Planned, unimplemented legacy contract. Legacy kick execution is pending consolidation with
-        canonical `POST /internal/actions/{actionId}/execute`; this path does not imply kick execution.
-        v1.0: deprecated. 24시간 강퇴(KickResultResponse.expiresAt)는 v3.1에 없다. 삭제 여부는 B2 확인 후 정한다(A-12).
-      deprecated: true
-      x-owner: B2
-      x-implementation-status: planned
-      security:
-        - serviceToken: []
-      parameters:
-        - name: Idempotency-Key
-          in: header
-          required: true
-          schema:
-            type: string
-            examples: ['kick:review-uuid']
-      responses:
-        '403':
-          $ref: '#/components/responses/Error'
-        '501':
-          $ref: '#/components/responses/NotImplemented'
-
   /internal/kick-reviews/{reviewId}/basis:
     parameters:
       - $ref: '#/components/parameters/ReviewId'
@@ -1114,7 +1044,8 @@ paths:
       description: |
         Deprecated contract stub (501); not the CONTEXT/KICK decision or resume API.
         Does not approve KICK, unconsume cases, or automatically undo existing HIDE/TIMEOUT actions.
-        Body caseId and decisionId must match the path. 삭제 여부는 B2 확인 후 정한다(A-12).
+        Body caseId and decisionId must match the path. BE는 항상 501을 돌려주는 스텁이다. business-mcp에 reconcile_review 도구가 남아 있어,
+        경로를 지우면 응답이 501에서 404로 바뀌므로 Agent 쪽 도구를 지울 때 함께 지운다(A-12).
       deprecated: true
       x-implementation-status: stub
       x-owner: B2
@@ -1349,11 +1280,6 @@ components:
     Category:
       type: string
       enum: [PROFANITY, HARASSMENT, FLOOD, PHISHING, PII_EXPOSURE]
-    KickReviewStatus:
-      type: string
-      deprecated: true
-      description: v0.5 강퇴 검토 상태. ReviewStatus(결정)와 ActionStatus(실행)로 대체됐다. 레거시 KickResultResponse에서만 쓴다(A-12).
-      enum: [PENDING, APPROVED, REJECTED, EXECUTED, FAILED]
     ErrorCode:
       type: string
       description: |
@@ -2737,29 +2663,6 @@ components:
         traceId:
           type: string
           format: uuid
-    KickResultResponse:
-      type: object
-      deprecated: true
-      description: 레거시 /internal/kick-reviews/{reviewId}/execute 전용(24시간 강퇴). v3.1에 없으며 B2 확인 후 삭제한다(A-12).
-      required: [data, traceId]
-      properties:
-        data:
-          type: object
-          required: [reviewId, status, startsAt, expiresAt, replayed]
-          properties:
-            reviewId:
-              $ref: '#/components/schemas/Uuid'
-            status:
-              $ref: '#/components/schemas/KickReviewStatus'
-            startsAt:
-              $ref: '#/components/schemas/Timestamp'
-            expiresAt:
-              $ref: '#/components/schemas/Timestamp'
-            replayed:
-              type: boolean
-              description: 같은 Idempotency-Key 재요청이면 true
-        traceId:
-          type: string
     AgentEventRequest:
       type: object
       required: [event, payload]

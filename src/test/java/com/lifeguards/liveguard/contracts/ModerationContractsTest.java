@@ -39,7 +39,6 @@ import com.lifeguards.liveguard.contracts.dto.response.CaseSummary;
 import com.lifeguards.liveguard.contracts.dto.response.ContextData;
 import com.lifeguards.liveguard.contracts.dto.response.ErrorResponse;
 import com.lifeguards.liveguard.contracts.dto.response.JudgmentResult;
-import com.lifeguards.liveguard.contracts.dto.response.KickResult;
 import com.lifeguards.liveguard.contracts.dto.response.MaskedMessage;
 import com.lifeguards.liveguard.contracts.dto.response.Me;
 import com.lifeguards.liveguard.contracts.dto.response.Message;
@@ -57,7 +56,6 @@ import com.lifeguards.liveguard.contracts.enums.ErrorCode;
 import com.lifeguards.liveguard.contracts.enums.FilterResult;
 import com.lifeguards.liveguard.contracts.enums.HandlingRoute;
 import com.lifeguards.liveguard.contracts.enums.KickDecision;
-import com.lifeguards.liveguard.contracts.enums.KickReviewStatus;
 import com.lifeguards.liveguard.contracts.enums.MatchingTag;
 import com.lifeguards.liveguard.contracts.enums.ModerationReasonCode;
 import com.lifeguards.liveguard.contracts.enums.Observation;
@@ -82,7 +80,7 @@ class ModerationContractsTest {
 		}
 		List<Class<? extends Enum<?>>> types = List.of(ActionStatus.class, ActionType.class, AuthorRole.class,
 				CaseStatus.class, Category.class, ConfirmationStatus.class, ContextDecision.class, ErrorCode.class,
-				FilterResult.class, HandlingRoute.class, KickDecision.class, KickReviewStatus.class, MatchingTag.class,
+				FilterResult.class, HandlingRoute.class, KickDecision.class, MatchingTag.class,
 				ModerationReasonCode.class, Observation.class, ReviewKind.class, ReviewStatus.class, Role.class,
 				Verdict.class, Visibility.class);
 		for (Class<? extends Enum<?>> type : types) {
@@ -196,8 +194,6 @@ class ModerationContractsTest {
 				() -> new ChatEvent(id, null, "U1", "본문", Visibility.PUBLIC, 1, now));
 		// 방송 강퇴는 방송 종료까지라 until이 없다
 		assertNull(new UserKickedEvent(null).until());
-		assertThrows(InvalidContractException.class,
-				() -> new KickResult(id, KickReviewStatus.EXECUTED, now, null, false));
 		assertThrows(InvalidContractException.class, () -> new MessagePage(null, null));
 		assertThrows(InvalidContractException.class, () -> new ContextData(null, false));
 	}
