@@ -4,3 +4,7 @@ spring:
 liveguard:
   internal:
     service-token: test-service-token-for-tests-only
+  guard:
+    # 테스트는 주기 작업 대신 서비스 메서드를 직접 부른다(시각을 테스트가 정한다)
+    judgment-fallback:
+      enabled: false

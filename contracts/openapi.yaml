@@ -498,7 +498,8 @@ paths:
         CONFIRM_NORMAL: 정상 확정, 이 사건의 hold 원인만 해제(다른 원인이 남아 있으면 HELD 유지).
         CONFIRM_VIOLATION: 위반 확정, categories·evidenceMessageIds 필수(A-7). HIDE와 유형별 TIMEOUT 후 강퇴 집계를 확인한다.
         DEFER: 보류. 최종 확정이 아니며 HELD와 검토 PENDING을 유지하고, 이후 최종 결정을 받을 수 있다.
-        결정을 저장한 뒤 Agent의 같은 threadId를 재개한다. 강퇴 승인을 겸하지 않는다.
+        결정을 저장한 뒤 Agent의 같은 threadId를 재개한다. 단, AI 판정 없이 연 검토(A-25)는 재개할 Agent가 없으므로
+        CONFIRM_NORMAL·CONFIRM_VIOLATION을 BE가 같은 요청에서 바로 적용한다. 강퇴 승인을 겸하지 않는다.
         같은 clientRequestId 재전송은 저장된 같은 결정을 반환한다. 최종 결정이 저장된 뒤 다른 요청은 409 IDEMPOTENCY_CONFLICT,
         expectedReviewVersion이 다르면 409 STALE_VERSION. 담당 운영자 권한과 liveId 범위를 검사한다.
       x-owner: B2
@@ -899,6 +900,8 @@ paths:
         본문 caseId는 경로와 같아야 하고, snapshotId·evidenceVersion이 현재 사건과 다르면 409 STALE_VERSION,
         policyVersion이 활성 버전(v3.1)과 다르면 400 VALIDATION_FAILED다. 같은 snapshotId·evidenceVersion 재제출은 같은 결과를 반환한다.
         TARGET 메시지마다 messageFindings가 정확히 하나 있어야 한다. 임의 TIMEOUT 기간이나 승인 여부는 받지 않는다.
+        AI 판정 없이 CONTEXT 검토가 이미 열린 사건(A-25): 검토가 결정 전(PENDING)이면 판정을 그 검토의 AI 제안으로 붙이고
+        경로와 무관하게 자동 확정·공개 없이 confirmationStatus=PENDING을 반환한다. 이미 결정됐으면 409 STALE_VERSION.
       x-implementation-status: implemented
       x-owner: B2
       security:
@@ -1591,7 +1594,10 @@ components:
           $ref: '#/components/schemas/Timestamp'
     ContextReview:
       type: object
-      description: 문맥 확정 검토. AI 정상 제안(aiVerdict=NO_VIOLATION)이어도 운영자 결정 전까지 PENDING이다.
+      description: |
+        문맥 확정 검토. AI 정상 제안(aiVerdict=NO_VIOLATION)이어도 운영자 결정 전까지 PENDING이다.
+        Agent 판정이 마감 안에 오지 않았거나 분석이 거절되면 AI 판정 없이 열린다(A-25). 이때 aiVerdict=NEEDS_REVIEW,
+        findings는 빈 배열이며 summary로 안내한다. 결정 전에 판정이 오면 aiVerdict·findings가 채워진다.
       required: [reviewId, kind, liveId, caseId, aiVerdict, evidenceVersion, status, version, createdAt]
       properties:
         reviewId:
@@ -1912,7 +1918,7 @@ components:
           description: TOOL_END에만
     ContextReviewRequiredEvent:
       type: object
-      description: 담당 운영자에게. AI 정상 제안이어도 결정이 필요하다.
+      description: 담당 운영자에게. AI 정상 제안이어도 결정이 필요하다. AI 판정 없이 열린 검토는 aiVerdict=NEEDS_REVIEW(A-25).
       required: [reviewId, caseId, aiVerdict]
       properties:
         reviewId:

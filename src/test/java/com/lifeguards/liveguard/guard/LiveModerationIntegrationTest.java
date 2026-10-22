@@ -686,4 +686,126 @@ class LiveModerationIntegrationTest {
             Integer.class,
             live));
   }
+
+  // ---- AI 판정 없는 문맥 검토(A-25) ----
+
+  UUID contextReview(UUID c) {
+    return db.queryForObject("SELECT id FROM guard.reviews WHERE case_id=? AND kind='CONTEXT'", UUID.class, c);
+  }
+
+  String visibilityOf(UUID c) {
+    return db.queryForObject("SELECT visibility FROM platform.messages WHERE case_id=?", String.class, c);
+  }
+
+  String analysisOutbox(UUID c) {
+    return db.queryForObject("SELECT status||':'||coalesce(last_error_code,'-') FROM guard.agent_task_outbox"
+        + " WHERE case_id=? AND payload->>'kind'='ANALYZE'", String.class, c);
+  }
+
+  int resumeTasks(UUID c) {
+    return db.queryForObject("SELECT count(*) FROM guard.agent_task_outbox WHERE case_id=? AND payload->>'kind'='RESUME_REVIEW'",
+        Integer.class, c);
+  }
+
+  @Test void judgmentDeadlineOpensReviewWithoutAiAndOperatorDecisionAppliesDirectly() {
+    UUID live=lives.start(channel,moderator).liveId();
+    UUID c=candidate(live,"너 꺼져 판정 없음");
+    // 마감 전에는 열지 않는다
+    assertFalse(guard.casesAwaitingJudgment(java.time.Duration.ofHours(1),50).contains(c));
+    assertFalse(guard.openReviewWithoutJudgment(c,java.time.Duration.ofHours(1)));
+    assertTrue(guard.casesAwaitingJudgment(java.time.Duration.ZERO,50).contains(c));
+    assertTrue(guard.openReviewWithoutJudgment(c,java.time.Duration.ZERO));
+    assertFalse(guard.openReviewWithoutJudgment(c,java.time.Duration.ZERO));
+    assertFalse(guard.casesAwaitingJudgment(java.time.Duration.ZERO,50).contains(c));
+
+    UUID r=contextReview(c);
+    var card=guard.reviewCard(r);
+    // 계약 스키마는 그대로다: aiVerdict는 NEEDS_REVIEW, findings는 비어 있고 안내 문구로 알린다
+    assertEquals("NEEDS_REVIEW",card.get("aiVerdict"));
+    assertEquals(List.of(),card.get("findings"));
+    assertTrue(card.get("summary").toString().startsWith("AI 분석 결과를 받지 못했습니다"));
+    assertEquals("PENDING",card.get("status"));
+    assertEquals("HELD",visibilityOf(c));
+
+    decide(r,"CONFIRM_NORMAL",1);
+    // Agent 재개 없이 BE가 바로 적용한다. 아직 보내지 않은 분석은 멈춘다
+    assertEquals("PUBLIC",visibilityOf(c));
+    assertEquals("CONFIRMED_NORMAL",db.queryForObject("SELECT confirmation_status FROM guard.live_case_state WHERE case_id=?",String.class,c));
+    assertEquals(0,resumeTasks(c));
+    assertEquals("FAILED:DECIDED_WITHOUT_JUDGMENT",analysisOutbox(c));
+    // 결정 뒤에 온 판정은 받지 않는다
+    assertEquals(ErrorCode.STALE_VERSION,assertThrows(ApiException.class,()->proposal(c,"VIOLATION")).code());
+    assertNull(db.queryForObject("SELECT judgment::text FROM guard.live_case_state WHERE case_id=?",String.class,c));
+  }
+
+  @Test void violationDecisionWithoutAiConfirmsDirectly() {
+    UUID live=lives.start(channel,moderator).liveId();
+    UUID c=candidate(live,"너 꺼져 판정 없는 위반");
+    assertTrue(guard.openReviewWithoutJudgment(c,java.time.Duration.ZERO));
+    decide(contextReview(c),"CONFIRM_VIOLATION",1);
+    assertEquals("HIDDEN",visibilityOf(c));
+    assertEquals("CONFIRMED_VIOLATION",db.queryForObject("SELECT confirmation_status FROM guard.live_case_state WHERE case_id=?",String.class,c));
+    assertEquals(1,db.queryForObject("SELECT count(*) FROM guard.findings WHERE case_id=? AND status='CONFIRMED' AND category='HARASSMENT'",Integer.class,c));
+    assertEquals(0,resumeTasks(c));
+  }
+
+  @Test void deferWithoutAiKeepsReviewPendingAndAppliesNothing() {
+    UUID live=lives.start(channel,moderator).liveId();
+    UUID c=candidate(live,"너 꺼져 보류");
+    assertTrue(guard.openReviewWithoutJudgment(c,java.time.Duration.ZERO));
+    decide(contextReview(c),"DEFER",1);
+    assertEquals("PENDING",guard.reviewCard(contextReview(c)).get("status"));
+    assertEquals("HELD",visibilityOf(c));
+    assertEquals(0,resumeTasks(c));
+    assertEquals("PENDING:-",analysisOutbox(c));
+  }
+
+  @Test void lateJudgmentAttachesToOpenReviewAndDecisionGoesThroughAgent() {
+    UUID live=lives.start(channel,moderator).liveId();
+    UUID c=candidate(live,"너 꺼져 늦은 판정");
+    assertTrue(guard.openReviewWithoutJudgment(c,java.time.Duration.ZERO));
+    UUID r=contextReview(c);
+    // 결정 전에 온 판정은 같은 검토에 AI 제안으로 붙는다
+    assertEquals(r,proposal(c,"NO_VIOLATION"));
+    var card=guard.reviewCard(r);
+    assertEquals("NO_VIOLATION",card.get("aiVerdict"));
+    assertEquals(1,((List<?>)card.get("findings")).size());
+    assertEquals("AI 제안을 확인하고 최종 결정해 주세요",card.get("summary"));
+    // 판정이 붙었으므로 결정은 기존대로 Agent가 재개해 적용한다
+    var d=decide(r,"CONFIRM_NORMAL",1);
+    assertEquals(1,resumeTasks(c));
+    assertEquals("HELD",visibilityOf(c));
+    apply(c,r,d);
+    assertEquals("PUBLIC",visibilityOf(c));
+  }
+
+  @Test void lateJudgmentOnPiiCaseDoesNotAutoReleaseWhenReviewIsOpen() {
+    UUID live=lives.start(channel,moderator).liveId();
+    UUID c=candidate(live,"연락 010-2222-3333 판정 없음");
+    assertEquals("PII_INVESTIGATION",guard.snapshot(c).get("handlingRoute"));
+    assertTrue(guard.openReviewWithoutJudgment(c,java.time.Duration.ZERO));
+    // 평소에는 개인정보 경로의 NO_VIOLATION이 바로 공개하지만, 사람 검토가 열려 있으면 그 검토에 맡긴다
+    assertEquals(contextReview(c),proposal(c,"NO_VIOLATION"));
+    assertEquals("HELD",visibilityOf(c));
+    assertEquals("PENDING",db.queryForObject("SELECT confirmation_status FROM guard.live_case_state WHERE case_id=?",String.class,c));
+  }
+
+  @Test void rejectedAnalysisOpensReviewBeforeTheDeadlineButLiveEndAndSupersedeDoNot() {
+    UUID live=lives.start(channel,moderator).liveId();
+    UUID rejected=candidate(live,"너 꺼져 거절된 분석"),ended=candidate(live,"너 꺼져 종료로 멈춤");
+    db.update("UPDATE guard.agent_task_outbox SET status='FAILED',last_error_code='AGENT_HTTP_400' WHERE case_id=?",rejected);
+    db.update("UPDATE guard.agent_task_outbox SET status='FAILED',last_error_code='LIVE_ENDED' WHERE case_id=?",ended);
+    var due=guard.casesAwaitingJudgment(java.time.Duration.ofHours(1),50);
+    assertTrue(due.contains(rejected));
+    assertFalse(due.contains(ended));
+  }
+
+  @Test void endedLiveGetsNoReviewWithoutJudgment() {
+    UUID live=lives.start(channel,moderator).liveId();
+    UUID c=candidate(live,"너 꺼져 끝난 방송");
+    lives.end(live,moderator);
+    assertFalse(guard.casesAwaitingJudgment(java.time.Duration.ZERO,50).contains(c));
+    assertFalse(guard.openReviewWithoutJudgment(c,java.time.Duration.ZERO));
+    assertEquals(0,db.queryForObject("SELECT count(*) FROM guard.reviews WHERE case_id=?",Integer.class,c));
+  }
 }
