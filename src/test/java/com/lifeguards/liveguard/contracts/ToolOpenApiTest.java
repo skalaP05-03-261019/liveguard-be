@@ -19,7 +19,10 @@ import com.lifeguards.liveguard.contracts.dto.request.ContextDecisionRequest;
 import com.lifeguards.liveguard.contracts.dto.request.JudgmentRequest;
 import com.lifeguards.liveguard.contracts.dto.request.KickDecisionRequest;
 import com.lifeguards.liveguard.contracts.dto.response.ActionExecutionResult;
+import com.lifeguards.liveguard.contracts.dto.response.CaseDetail;
 import com.lifeguards.liveguard.contracts.dto.response.CaseSummary;
+import com.lifeguards.liveguard.contracts.dto.response.ConfirmedFinding;
+import com.lifeguards.liveguard.contracts.dto.response.KickReviewState;
 import com.lifeguards.liveguard.contracts.dto.response.ContextReview;
 import com.lifeguards.liveguard.contracts.dto.response.Decision;
 import com.lifeguards.liveguard.contracts.dto.response.KickRevalidation;
@@ -82,12 +85,38 @@ class ToolOpenApiTest {
 				Map.entry(ContextReviewRequiredEvent.class, "ContextReviewRequiredEvent"),
 				Map.entry(KickReviewRequiredEvent.class, "KickReviewRequiredEvent"),
 				Map.entry(ReviewDecidedEvent.class, "ReviewDecidedEvent"),
-				Map.entry(ActionEvent.class, "ActionEvent"));
+				Map.entry(ActionEvent.class, "ActionEvent"),
+				Map.entry(ConfirmedFinding.class, "ConfirmedFinding"),
+				Map.entry(KickReviewState.class, "KickReviewState"),
+				Map.entry(CaseDetail.class, "CaseDetail"));
 		for (var entry : records.entrySet()) {
 			Set<String> fields = Arrays.stream(entry.getKey().getRecordComponents()).map(component -> component.getName())
 					.collect(Collectors.toSet());
-			assertEquals(fields, map(map(schemas, entry.getValue()), "properties").keySet(), entry.getValue());
+			assertEquals(fields, properties(schemas, map(schemas, entry.getValue())), entry.getValue());
 		}
+	}
+
+	/**
+	 * schema의 속성 이름. 자기 properties에 allOf의 $ref·inline object 속성을 펼쳐 합친다(평탄한 record와 비교).
+	 * allOf 안의 조건(if/then/else)처럼 속성이 없는 부분은 건너뛴다.
+	 */
+	private Set<Object> properties(Map<?, ?> schemas, Map<?, ?> schema) {
+		Set<Object> names = new HashSet<>();
+		if (schema.get("properties") instanceof Map<?, ?> own) {
+			names.addAll(own.keySet());
+		}
+		if (schema.get("allOf") instanceof List<?> parts) {
+			for (Object part : parts) {
+				Map<?, ?> piece = assertInstanceOf(Map.class, part);
+				if (piece.get("$ref") instanceof String ref) {
+					names.addAll(properties(schemas, map(schemas, ref.substring(ref.lastIndexOf('/') + 1))));
+				} else if (piece.containsKey("properties")) {
+					names.addAll(properties(schemas, piece));
+				}
+			}
+		}
+		assertTrue(!names.isEmpty(), "schema without properties: " + schema.keySet());
+		return names;
 	}
 
 	@Test

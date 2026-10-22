@@ -605,7 +605,16 @@ class LiveModerationIntegrationTest {
     db.update("UPDATE platform.users SET password_hash=? WHERE id=?",passwordEncoder.encode("liveguard-local"),operator);
     var session=com.lifeguards.liveguard.support.LoginSupport.login(mvc,operator.toString());
 
-    listCases(session,live,"").andExpect(jsonPath("$.data.length()").value(4));
+    // 목록 항목은 사건 상세(CaseDetail)다. 운영 화면이 쓰는 대상 메시지·AI 제안·확정 위반·누적 수가 있다
+    var all=listCases(session,live,"").andExpect(jsonPath("$.data.length()").value(4));
+    // 항목마다(4개 모두) 필수 필드가 있다
+    for(String field:List.of("targetMessageIds","findings","confirmedFindings","violationCount","kickReview"))
+      all.andExpect(jsonPath("$.data[*]."+field,org.hamcrest.Matchers.hasSize(4)));
+    UUID pendingMessage=db.queryForObject("SELECT id FROM platform.messages WHERE case_id=?",UUID.class,pending);
+    all.andExpect(jsonPath("$.data[?(@.caseId=='"+pending+"')].targetMessageIds[0]").value(pendingMessage.toString()))
+      .andExpect(jsonPath("$.data[?(@.caseId=='"+pending+"')].findings[*]",org.hamcrest.Matchers.empty()))
+      .andExpect(jsonPath("$.data[?(@.caseId=='"+normal+"')].findings[0].verdict").value("NO_VIOLATION"))
+      .andExpect(jsonPath("$.data[?(@.caseId=='"+pending+"')].kickReview.required").value(false));
     for(var expected:List.of(List.of("PENDING",pending),List.of("CONFIRMED_VIOLATION",violation),
         List.of("CONFIRMED_NORMAL",normal),List.of("CANCELLED",cancelled)))
       listCases(session,live,"&confirmationStatus="+expected.get(0))

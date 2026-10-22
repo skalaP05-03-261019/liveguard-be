@@ -5,6 +5,7 @@ import java.util.List;
 import java.util.UUID;
 
 import com.lifeguards.liveguard.contracts.dto.DtoValidation;
+import com.lifeguards.liveguard.contracts.dto.request.JudgmentRequest;
 import com.lifeguards.liveguard.contracts.enums.CaseStatus;
 import com.lifeguards.liveguard.contracts.enums.Category;
 import com.lifeguards.liveguard.contracts.enums.ConfirmationStatus;
@@ -29,9 +30,12 @@ public record CaseDetail(
 		List<Message> messages,
 		String reason,
 		List<UUID> evidenceMessageIds,
+		List<UUID> targetMessageIds,
+		List<JudgmentRequest.MessageFinding> findings,
 		List<PolicySnapshot> policySnapshots,
+		List<ConfirmedFinding> confirmedFindings,
 		int violationCount,
-		KickReview kickReview,
+		KickReviewState kickReview,
 		String traceUrl) {
 	public CaseDetail {
 		DtoValidation.requireNonNull(caseId, "caseId");
@@ -45,6 +49,10 @@ public record CaseDetail(
 		DtoValidation.requireNonNull(createdAt, "createdAt");
 		messages = DtoValidation.immutableList(messages, "messages");
 		evidenceMessageIds = DtoValidation.immutableList(evidenceMessageIds, "evidenceMessageIds");
+		targetMessageIds = DtoValidation.immutableList(targetMessageIds, "targetMessageIds");
+		findings = DtoValidation.immutableList(findings, "findings");
 		policySnapshots = DtoValidation.immutableList(policySnapshots, "policySnapshots");
+		confirmedFindings = DtoValidation.immutableList(confirmedFindings, "confirmedFindings");
+		DtoValidation.requireNonNull(kickReview, "kickReview");
 	}
 }
