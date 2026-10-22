@@ -187,12 +187,13 @@ public class LiveService implements LivePlatformPort {
     if (req.text().indexOf(0)>=0) throw new ApiException(ErrorCode.VALIDATION_FAILED,"Unsupported text");
     messages.lockAuthorInChannel(live.channelId(),user.userId());
     lockLive(id);
-    guard.checkAccess(id,user.userId());
+    // 재전송은 타임아웃보다 먼저 확인한다. 저장된 메시지가 건 타임아웃 때문에 첫 응답을 잃으면 안 된다(A-18). 강퇴는 위에서 막는다
     var old=messages.find(live.channelId(),user.userId(),req.clientMessageId());
     if(old.isPresent()) {
       if(!old.get().text().equals(req.text())) throw new ApiException(ErrorCode.IDEMPOTENCY_CONFLICT,"Message request conflict");
       return message(old.get().id(),user.userId());
     }
+    guard.checkAccess(id,user.userId());
     active(id);
     Timestamp at = now();
     String normalized = TextNormalizer.normalize(req.text());

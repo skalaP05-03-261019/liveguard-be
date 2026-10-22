@@ -465,6 +465,17 @@ class LiveModerationIntegrationTest {
   }
 
   @Test
+  void replayIsNotBlockedByTheTimeoutItsOwnMessageStarted() {
+    UUID live=lives.start(channel,moderator).liveId();UUID request=UUID.randomUUID();
+    var first=lives.send(live,viewer,new SendMessageRequest(request,"여기 https://evil.test 접속"));
+    // 첫 링크 위반에 PHISHING 타임아웃이 걸린다. 응답을 잃고 같은 요청을 다시 보내면 저장된 메시지를 돌려준다(A-18)
+    assertEquals("HIDDEN",first.get("visibility"));
+    assertEquals(first.get("messageId"),lives.send(live,viewer,new SendMessageRequest(request,"여기 https://evil.test 접속")).get("messageId"));
+    assertEquals(first.get("messageId"),lives.sendToChannel(channel,viewer,new SendMessageRequest(request,"여기 https://evil.test 접속")).get("messageId"));
+    assertEquals(ErrorCode.TIMED_OUT,assertThrows(ApiException.class,()->lives.send(live,viewer,new SendMessageRequest(UUID.randomUUID(),"new"))).code());
+  }
+
+  @Test
   void threeConfirmedCasesRequireSeparateKickApprovalAndIdempotentExecution() {
     UUID live = lives.start(channel, moderator).liveId();
     List<UUID> cases = new ArrayList<>();
