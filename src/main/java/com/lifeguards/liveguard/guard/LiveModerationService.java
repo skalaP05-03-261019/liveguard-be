@@ -26,13 +26,21 @@ public class LiveModerationService implements LiveGuardPort {
   private final FindingService findings;
   private final PolicyProperties policy;
   private final LiveMessageQuery messages;
+  private final org.springframework.context.ApplicationEventPublisher events;
+
+  /** Agent가 판정을 제출하고 결정을 기다리는(조사) 처리 경로. */
+  private static final Set<String> INVESTIGATION_ROUTES = Set.of("CONTEXT_REVIEW", "PII_INVESTIGATION");
+
+  /** AI 판정 없는 사건의 강퇴 승인(A-25). 결정이 커밋된 뒤 {@link KickWithoutAgentExecutor}가 실행한다. */
+  record KickApprovedWithoutAgent(UUID reviewId, UUID decisionId) {}
 
   public LiveModerationService(
       JdbcClient db,
       Clock clock,
       @Lazy LivePlatformPort platform,
       JsonMapper json,
-      AgentTaskOutbox outbox, FindingService findings, PolicyProperties policy, LiveMessageQuery messages) {
+      AgentTaskOutbox outbox, FindingService findings, PolicyProperties policy, LiveMessageQuery messages,
+      org.springframework.context.ApplicationEventPublisher events) {
     this.db = db;
     this.clock = clock;
     this.platform = platform;
@@ -41,6 +49,7 @@ public class LiveModerationService implements LiveGuardPort {
     this.findings = findings;
     this.policy = policy;
     this.messages = messages;
+    this.events = events;
   }
 
   private Timestamp now() {
@@ -597,7 +606,7 @@ public class LiveModerationService implements LiveGuardPort {
       if (!Objects.toString(snapshot.get(key)).equals(Objects.toString(input.get(key))))
         throw error(ErrorCode.STALE_VERSION, "Case evidence or policy mismatch");
     }
-    if (!Set.of("CONTEXT_REVIEW", "PII_INVESTIGATION").contains(input.get("handlingRoute")))
+    if (!INVESTIGATION_ROUTES.contains(input.get("handlingRoute")))
       throw error(ErrorCode.VALIDATION_FAILED, "Investigation route required");
     if (current.get("judgment") != null) {
       if (!parse(current.get("judgment").toString()).equals(input))
@@ -842,7 +851,7 @@ public class LiveModerationService implements LiveGuardPort {
   }
 
   private static final String WITHOUT_JUDGMENT="SELECT c.id,c.live_id FROM guard.cases c JOIN guard.live_case_state s ON s.case_id=c.id"
-      + " WHERE c.handling_route IN ('CONTEXT_REVIEW','PII_INVESTIGATION') AND s.judgment IS NULL"
+      + " WHERE c.handling_route IN ("+String.join(",",INVESTIGATION_ROUTES.stream().map(r->"'"+r+"'").sorted().toList())+") AND s.judgment IS NULL"
       + " AND NOT EXISTS(SELECT 1 FROM guard.reviews r WHERE r.case_id=c.id AND r.kind='CONTEXT')"
       + " AND (c.created_at<=? OR EXISTS(SELECT 1 FROM guard.agent_task_outbox o WHERE o.task_id=s.task_id"
       + " AND o.status='FAILED' AND coalesce(o.last_error_code,'') NOT IN ('LIVE_ENDED','SUPERSEDED')))";
@@ -953,32 +962,59 @@ public class LiveModerationService implements LiveGuardPort {
       db.sql("UPDATE guard.live_reservations SET state='CONSUMED' WHERE review_id=?")
           .param(r)
           .update();
-    // 문맥·개인정보 사건은 Agent가 판정을 제출해야 그 thread가 결정을 기다린다. 판정이 없으면(A-25) 재개할 Agent 대기
-    // 지점이 없으므로 BE가 결정을 바로 적용한다. 규칙·도배 사건의 강퇴는 판정 없이 Agent가 분석 작업으로 기다린다
-    boolean withoutJudgment = c.get("judgment") == null
-        && Set.of("CONTEXT_REVIEW", "PII_INVESTIGATION").contains(c.get("handling_route"));
-    if (!withoutJudgment) enqueue(c, r, d, kind);
+    boolean agentWaits = agentAwaitsDecision(c);
+    if (agentWaits) enqueue(c, r, d, kind);
     platform.emit(
         id(c.get("live_id")),
         "REVIEW_DECIDED",
         Map.of("reviewId", r, "decisionId", d, "kind", kind, "value", value),
         null,
         true);
-    if (withoutJudgment && kind.equals("CONTEXT") && !value.equals("DEFER")) {
+    if (!agentWaits) {
+      // 재개할 Agent 대기 지점이 없으므로(A-25) 운영자 결정을 BE가 적용한다. 사람 결정 뒤에만 실행하는 것은 같다
       UUID cId = id(c.get("id"));
-      // 아직 Agent에 닿지 않은 분석은 멈춘다. 전달이 불확실한 작업은 Agent가 받았을 수 있으므로 두고, 늦은 판정은 거절된다
-      stopUndeliveredAnalysis("o.case_id=?", cId, "DECIDED_WITHOUT_JUDGMENT", now());
-      applyContext(review(r, false), row(cId, false), decision(r, d, true));
-    }
-    if (withoutJudgment && kind.equals("KICK") && value.equals("APPROVE")) {
-      // Agent가 재개해 부르던 재검증·실행을 같은 요청에서 부른다. 승인 뒤에만 실행하는 것은 같다
-      var validated = revalidate(r, d);
-      if (Boolean.TRUE.equals(validated.get("valid"))) {
-        var command = (Map<String, Object>) validated.get("actionCommand");
-        execute(id(command.get("actionId")), command);
+      if (kind.equals("CONTEXT") && !value.equals("DEFER")) {
+        // 아직 Agent에 닿지 않은 분석은 멈춘다. 전달이 불확실한 작업은 Agent가 받았을 수 있으므로 두고, 늦은 판정은 거절된다
+        stopUndeliveredAnalysis("o.case_id=?", cId, "DECIDED_WITHOUT_JUDGMENT", now());
+        applyContext(review(r, false), row(cId, false), decision(r, d, true));
+      } else if (kind.equals("KICK") && value.equals("APPROVE")) {
+        // Agent가 재개해 kick_user로 부르던 재검증·실행을 결정이 커밋된 뒤 BE가 부른다. 실행이 실패해도 결정은 남는다
+        events.publishEvent(new KickApprovedWithoutAgent(r, d));
       }
+      // 강퇴 거절·보류는 실행할 것이 없다
     }
     return decision(r, d, false);
+  }
+
+  /**
+   * 이 사건의 Agent thread가 운영자 결정을 기다리는지. 조사 경로(문맥·개인정보)의 Agent는 판정을 제출해야 결정을 기다리므로
+   * 판정이 없으면 기다리지 않는다(A-25). 규칙·도배 사건의 강퇴는 판정 없이 Agent가 분석 작업으로 기다린다.
+   */
+  private boolean agentAwaitsDecision(Map<String, Object> c) {
+    return c.get("judgment") != null || !INVESTIGATION_ROUTES.contains(Objects.toString(c.get("handling_route"), ""));
+  }
+
+  /**
+   * AI 판정 없는 사건의 강퇴(A-25)를 실행하지 못했다. 그 결정의 강퇴 실행 기록을 FAILED로 남기고 ACTION_FAILED를 보낸다.
+   * 결정은 그대로 둔다(결정 저장과 강퇴 결과는 따로 본다).
+   */
+  public void kickFailedWithoutAgent(UUID r, UUID d, String errorCode) {
+    var rev = review(r, true);
+    var c = row(id(rev.get("case_id")), true);
+    var existing = db.sql("SELECT id,result::text FROM guard.live_actions WHERE decision_id=? AND kind='KICK' FOR UPDATE")
+        .param(d).query(new org.springframework.jdbc.core.ColumnMapRowMapper()).optional();
+    if (existing.isPresent() && existing.get().get("result") != null) return;
+    UUID action = existing.map(a -> id(a.get("id"))).orElseGet(UUID::randomUUID);
+    var result = new LinkedHashMap<String, Object>();
+    result.put("actionId", action); result.put("caseId", c.get("id")); result.put("liveId", c.get("live_id"));
+    result.put("type", "KICK"); result.put("status", "FAILED"); result.put("observation", "CONFIRMED"); result.put("applied", false);
+    result.put("attemptCount", 1); result.put("retryCount", 0); result.put("startedAt", clock.instant()); result.put("errorCode", errorCode);
+    if (existing.isPresent())
+      db.sql("UPDATE guard.live_actions SET status='FAILED',result=?::jsonb WHERE id=?").params(encode(result), action).update();
+    else
+      db.sql("INSERT INTO guard.live_actions(id,case_id,decision_id,kind,status,result,created_at) VALUES(?,?,?,'KICK','FAILED',?::jsonb,?)")
+        .params(action, c.get("id"), d, encode(result), now()).update();
+    platform.emit(id(c.get("live_id")), "ACTION_FAILED", parse(encode(result)), id(c.get("user_id")), true);
   }
 
   @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ)

@@ -535,7 +535,8 @@ paths:
       description: |
         결정 저장과 기준 사건 소진을 함께 기록하고 Agent의 같은 threadId를 재개한다. 승인·거절 모두 소진한다.
         단, AI 판정 없는 문맥·개인정보 사건의 강퇴 검토(A-25)는 기다리는 Agent thread가 없으므로 재개하지 않고,
-        승인이면 BE가 같은 요청에서 기준을 재검증하고 강퇴를 실행한다(ACTION_APPLIED). 재검증 실패면 검토는 INVALIDATED.
+        승인이면 결정이 저장된 뒤 BE가 기준을 재검증하고 강퇴를 실행한다(ACTION_APPLIED). 재검증·실행에 실패하면
+        결정은 그대로 두고 ACTION_FAILED(재검증 실패면 검토도 INVALIDATED)로 알린다.
         APPROVE면 Agent가 원 기준을 재검증한 뒤 kick_user를 실행한다. 결정 저장 성공은 강퇴 성공이 아니며,
         결과는 ACTION_APPLIED·ACTION_FAILED로 따로 알린다. REJECT면 강퇴 없이 끝나고 HIDE·TIMEOUT은 유지한다.
         같은 clientRequestId 재전송은 저장된 같은 결정을 반환한다. 이미 결정된 검토에 다른 요청은 409 IDEMPOTENCY_CONFLICT,

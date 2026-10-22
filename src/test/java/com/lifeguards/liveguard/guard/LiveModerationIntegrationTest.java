@@ -831,15 +831,51 @@ class LiveModerationIntegrationTest {
     return db.queryForObject("SELECT id FROM guard.reviews WHERE case_id=? AND kind='KICK'",UUID.class,c);
   }
 
-  @Test void approvedKickWithoutJudgmentIsExecutedByTheBackend() {
-    UUID live=lives.start(channel,moderator).liveId();
-    UUID kick=kickAfterViolationWithoutJudgment(live);
-    decide(kick,"APPROVE",1);
-    // 기다리는 Agent thread가 없으므로 재개 작업을 넣지 않고 BE가 재검증·실행한다
-    assertEquals(0,db.queryForObject("SELECT count(*) FROM guard.agent_task_outbox WHERE payload->>'reviewId'=?",Integer.class,kick.toString()));
-    assertEquals(1,db.queryForObject("SELECT count(*) FROM guard.live_kicks WHERE live_id=? AND user_id=? AND review_id=?",Integer.class,live,user,kick));
-    assertEquals("SUCCEEDED",db.queryForObject("SELECT status FROM guard.live_actions WHERE kind='KICK' AND decision_id=(SELECT id FROM guard.decisions WHERE review_id=?)",String.class,kick));
-    assertEquals(ErrorCode.KICKED,assertThrows(ApiException.class,()->guard.checkEntry(live,user)).code());
+  /** 강퇴 실행은 결정이 커밋된 뒤에 돌므로(A-25) 이 시험들은 데이터를 커밋하고 끝에 지운다. */
+  void committed(Runnable test) {
+    try {
+      test.run();
+    } finally {
+      com.lifeguards.liveguard.support.CaseFixtures.deleteCases(db);
+      db.update("DELETE FROM platform.messages WHERE channel_id=?",channel);
+      db.update("DELETE FROM platform.lives WHERE channel_id=?",channel);
+      db.update("DELETE FROM platform.channel_members WHERE channel_id=?",channel);
+      db.update("DELETE FROM platform.channels WHERE id=?",channel);
+      for(UUID id:List.of(user,operator,other))db.update("DELETE FROM platform.users WHERE id=?",id);
+    }
+  }
+
+  @Test
+  @Transactional(propagation=org.springframework.transaction.annotation.Propagation.NOT_SUPPORTED)
+  void approvedKickWithoutJudgmentIsExecutedByTheBackendAfterTheDecisionCommits() {
+    committed(()->{
+      UUID live=lives.start(channel,moderator).liveId();
+      UUID kick=kickAfterViolationWithoutJudgment(live);
+      decide(kick,"APPROVE",1);
+      // 기다리는 Agent thread가 없으므로 재개 작업을 넣지 않고 BE가 결정 커밋 뒤 재검증·실행한다
+      assertEquals(0,db.queryForObject("SELECT count(*) FROM guard.agent_task_outbox WHERE payload->>'reviewId'=?",Integer.class,kick.toString()));
+      assertEquals(1,db.queryForObject("SELECT count(*) FROM guard.live_kicks WHERE live_id=? AND user_id=? AND review_id=?",Integer.class,live,user,kick));
+      assertEquals("SUCCEEDED",db.queryForObject("SELECT status FROM guard.live_actions WHERE kind='KICK' AND decision_id=(SELECT id FROM guard.decisions WHERE review_id=?)",String.class,kick));
+      assertEquals(ErrorCode.KICKED,assertThrows(ApiException.class,()->guard.checkEntry(live,user)).code());
+    });
+  }
+
+  @Test
+  @Transactional(propagation=org.springframework.transaction.annotation.Propagation.NOT_SUPPORTED)
+  void failedKickWithoutJudgmentKeepsTheDecisionAndRecordsTheFailure() {
+    committed(()->{
+      UUID live=lives.start(channel,moderator).liveId();
+      UUID kick=kickAfterViolationWithoutJudgment(live);
+      // 승인 전에 기준 사건 하나의 위반이 취소되면 재검증을 통과하지 못한다
+      db.update("UPDATE guard.findings SET revoked_at=current_timestamp WHERE case_id=(SELECT basis_case_ids[1] FROM guard.reviews WHERE id=?)",kick);
+      decide(kick,"APPROVE",1);
+      // 결정은 남고, 강퇴는 실행되지 않으며 실패가 기록된다
+      assertEquals("APPROVE",db.queryForObject("SELECT value FROM guard.decisions WHERE review_id=?",String.class,kick));
+      assertEquals("INVALIDATED",db.queryForObject("SELECT status FROM guard.reviews WHERE id=?",String.class,kick));
+      assertEquals(0,db.queryForObject("SELECT count(*) FROM guard.live_kicks WHERE live_id=?",Integer.class,live));
+      assertEquals("FAILED:REVIEW_NOT_APPROVED",db.queryForObject("SELECT status||':'||(result->>'errorCode') FROM guard.live_actions WHERE kind='KICK' AND decision_id=(SELECT id FROM guard.decisions WHERE review_id=?)",String.class,kick));
+      assertDoesNotThrow(()->guard.checkEntry(live,user));
+    });
   }
 
   @Test void rejectedKickWithoutJudgmentExecutesNothing() {
@@ -848,6 +884,16 @@ class LiveModerationIntegrationTest {
     decide(kick,"REJECT",1);
     assertEquals(0,db.queryForObject("SELECT count(*) FROM guard.agent_task_outbox WHERE payload->>'reviewId'=?",Integer.class,kick.toString()));
     assertEquals(0,db.queryForObject("SELECT count(*) FROM guard.live_kicks WHERE live_id=?",Integer.class,live));
+    assertEquals(0,db.queryForObject("SELECT count(*) FROM guard.live_actions WHERE kind='KICK'",Integer.class));
+  }
+
+  @Test void decisionOnCaseWithoutRouteDoesNotFail() {
+    UUID live=lives.start(channel,moderator).liveId();
+    UUID c=candidate(live,"너 꺼져 경로 없음");
+    assertTrue(guard.openReviewWithoutJudgment(c,java.time.Duration.ZERO));
+    // 처리 경로가 비어 있는 이전 데이터여도 결정이 NPE로 실패하지 않는다(Agent가 기다리는 것으로 본다)
+    db.update("UPDATE guard.cases SET handling_route=NULL WHERE id=?",c);
+    assertDoesNotThrow(()->decide(contextReview(c),"DEFER",1));
   }
 
   @Test void casesOfEndedLivesDoNotCrowdOutTheLiveInProgress() {
