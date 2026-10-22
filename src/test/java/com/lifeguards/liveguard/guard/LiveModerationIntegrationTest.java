@@ -819,6 +819,17 @@ class LiveModerationIntegrationTest {
     assertFalse(due.contains(ended));
   }
 
+  @Test void casesOfEndedLivesDoNotCrowdOutTheLiveInProgress() {
+    UUID ended=lives.start(channel,moderator).liveId();
+    UUID old=candidate(ended,"너 꺼져 지난 방송");
+    lives.end(ended,moderator);
+    UUID current=lives.start(channel,moderator).liveId();
+    UUID fresh=candidate(current,"너 꺼져 지금 방송");
+    // 끝난 방송의 사건이 더 오래됐어도 진행 중인 방송의 사건이 먼저 고른 자리를 차지하지 않는다
+    assertEquals(List.of(fresh),guard.casesAwaitingJudgment(java.time.Duration.ZERO,1));
+    assertFalse(guard.casesAwaitingJudgment(java.time.Duration.ZERO,50).contains(old));
+  }
+
   @Test void endedLiveGetsNoReviewWithoutJudgment() {
     UUID live=lives.start(channel,moderator).liveId();
     UUID c=candidate(live,"너 꺼져 끝난 방송");

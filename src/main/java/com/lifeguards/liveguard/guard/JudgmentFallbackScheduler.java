@@ -1,6 +1,7 @@
 package com.lifeguards.liveguard.guard;
 
 import java.time.Duration;
+import java.util.List;
 import java.util.UUID;
 
 import org.slf4j.Logger;
@@ -28,7 +29,7 @@ class JudgmentFallbackScheduler {
 	private final Duration deadline;
 
 	JudgmentFallbackScheduler(LiveModerationService moderation,
-			@Value("${liveguard.guard.judgment-fallback.deadline:3m}") Duration deadline) {
+			@Value("${liveguard.guard.judgment-fallback.deadline}") Duration deadline) {
 		if (deadline.isNegative() || deadline.isZero()) {
 			throw new IllegalArgumentException("liveguard.guard.judgment-fallback.deadline must be positive");
 		}
@@ -38,7 +39,14 @@ class JudgmentFallbackScheduler {
 
 	@Scheduled(fixedDelayString = "${liveguard.guard.judgment-fallback.poll-interval:10s}")
 	void openOverdueReviews() {
-		for (UUID caseId : moderation.casesAwaitingJudgment(deadline, BATCH)) {
+		List<UUID> due;
+		try {
+			due = moderation.casesAwaitingJudgment(deadline, BATCH);
+		} catch (RuntimeException ex) {
+			log.warn("Cases awaiting judgment not loaded: error={}", ex.getClass().getSimpleName());
+			return;
+		}
+		for (UUID caseId : due) {
 			try {
 				if (moderation.openReviewWithoutJudgment(caseId, deadline)) {
 					log.info("Context review opened without AI judgment: caseId={}", caseId);

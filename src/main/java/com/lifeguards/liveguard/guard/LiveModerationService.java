@@ -701,6 +701,8 @@ public class LiveModerationService implements LiveGuardPort {
       // AI 제안이 생겼으므로 검토 버전을 올린다. 제안을 보지 않고 낸 결정은 STALE_VERSION으로 다시 확인하게 한다
       db.sql("UPDATE guard.reviews SET version=version+1 WHERE case_id=? AND kind='CONTEXT'").param(c).update();
       platform.emit(id(current.get("live_id")), "CASE_UPDATED", caseEvent(c), null, true);
+      // 검토 카드가 바뀌었음을 검토 단위 이벤트로도 알린다(사건 version은 그대로라 CASE_UPDATED만으로는 걸러질 수 있다)
+      emitContextReviewRequired(id(receipt.get("reviewId")), row(c, false));
     }
     return parse(encode(receipt));
   }
@@ -725,11 +727,20 @@ public class LiveModerationService implements LiveGuardPort {
             now())
         .update();
     var current = row(c, false);
+    if(kind.equals("CONTEXT")) {
+      emitContextReviewRequired(r,current);
+      return r;
+    }
     Map<String,Object> event=new LinkedHashMap<>();event.put("reviewId",r);event.put("caseId",c);event.put("liveId",current.get("live_id"));
-    if(kind.equals("CONTEXT"))event.put("aiVerdict",aiVerdict(current,kind));
-    else {event.put("summary","서로 다른 확정 사건 3건에 대한 별도 강퇴 승인 요청");event.put("basisCaseIds",basis);}
+    event.put("summary","서로 다른 확정 사건 3건에 대한 별도 강퇴 승인 요청");event.put("basisCaseIds",basis);
     platform.emit(id(current.get("live_id")),kind+"_REVIEW_REQUIRED",event,null,true);
     return r;
+  }
+
+  private void emitContextReviewRequired(UUID r, Map<String,Object> current) {
+    Map<String,Object> event=new LinkedHashMap<>();event.put("reviewId",r);event.put("caseId",current.get("id"));event.put("liveId",current.get("live_id"));
+    event.put("aiVerdict",aiVerdict(current,"CONTEXT"));
+    platform.emit(id(current.get("live_id")),"CONTEXT_REVIEW_REQUIRED",event,null,true);
   }
 
   private Map<String, Object> review(UUID id, boolean lock) {
@@ -807,17 +818,27 @@ public class LiveModerationService implements LiveGuardPort {
 
   /**
    * AI 판정 없이 문맥 검토를 열 사건(A-25). 문맥·개인정보 경로이고 판정·문맥 검토가 없으며, 사건이 생긴 지 {@code after}가
-   * 지났거나 현재 분석 작업이 Agent 거절로 끝난 경우다. 진행 중인 방송의 사건만 고른다. 끝난 방송에 남은 사건을 매번 다시
-   * 확인하지 않도록 최근 하루 안의 사건만 본다(마감은 그보다 훨씬 짧다).
+   * 지났거나 현재 분석 작업이 Agent 거절로 끝난 경우다. 진행 중인 방송의 사건만 고른다: 방송을 먼저 골라 끝난 방송에 남은
+   * 사건이 진행 중인 방송의 사건을 밀어내지 않게 한다. 끝난 방송을 매번 다시 확인하지 않도록 마감보다 하루 더 이전까지만 본다.
    */
   @Transactional(readOnly=true)
   public List<UUID> casesAwaitingJudgment(Duration after, int limit) {
-    Map<UUID,Boolean> active=new HashMap<>();
-    return db.sql(WITHOUT_JUDGMENT + " AND c.created_at>? ORDER BY c.created_at LIMIT 500")
-      .params(Timestamp.from(clock.instant().minus(after)),Timestamp.from(clock.instant().minus(Duration.ofDays(1))))
-      .query((rs,n)->List.of(rs.getObject("id",UUID.class),rs.getObject("live_id",UUID.class))).list().stream()
-      .filter(row->active.computeIfAbsent(row.get(1),live->platform.live(live).endedAt()==null))
-      .map(List::getFirst).limit(limit).toList();
+    Timestamp due=Timestamp.from(clock.instant().minus(after));
+    Timestamp since=Timestamp.from(clock.instant().minus(after).minus(Duration.ofDays(1)));
+    var activeLives=db.sql("SELECT DISTINCT w.live_id FROM ("+WITHOUT_JUDGMENT+" AND c.created_at>?) w")
+      .params(due,since).query(UUID.class).list().stream().filter(this::liveInProgress).map(UUID::toString).toList();
+    if(activeLives.isEmpty())return List.of();
+    return db.sql(WITHOUT_JUDGMENT+" AND c.created_at>? AND c.live_id=ANY(string_to_array(?,',')::uuid[]) ORDER BY c.created_at LIMIT ?")
+      .params(due,since,String.join(",",activeLives),limit).query((rs,n)->rs.getObject("id",UUID.class)).list();
+  }
+
+  private boolean liveInProgress(UUID live) {
+    try {
+      return platform.live(live).endedAt()==null;
+    } catch(RuntimeException ex) {
+      // 한 방송을 확인하지 못해도 다른 방송의 검토는 연다. 다음 주기에 다시 확인한다
+      return false;
+    }
   }
 
   private static final String WITHOUT_JUDGMENT="SELECT c.id,c.live_id FROM guard.cases c JOIN guard.live_case_state s ON s.case_id=c.id"
