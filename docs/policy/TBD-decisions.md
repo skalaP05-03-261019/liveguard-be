@@ -93,7 +93,7 @@
 - 값: `v3.1` 고정 (환경변수 `LIVEGUARD_POLICY_VERSION`). 사건·판정·강퇴 실행에 이 값을 기록한다.
 - RAG: 색인 청크마다 policyVersion을 기록하고, search_policy는 같은 버전만 반환한다. v0.3 정책 문서는 색인하지 않는다.
 - 불일치 처리: Agent가 받은 버전과 RAG 버전이 다르면 작업을 FAILED로 끝낸다.
-- 필터 버전(`filterVersion`, 예: norm-v1+dict-v2)은 별도로 사건에 기록한다. v0.5 PR #16에서 이미 구현됐다.
+- 필터 버전(`filterVersion`, 예: norm-v1+dict-v2+rules-v2)은 별도로 사건에 기록한다. v0.5 PR #16에서 이미 구현됐다. 정규화(norm)·사전(dict)·판정 규칙(rules: 경로 우선순위, 링크·개인정보 후보 탐지, 도배 기준) 버전을 잇는다. rules-v2는 개인정보 후보(#48)부터이며, 그 이전 기록은 rules 구성요소 없이 norm-v1+dict-v2다.
 
 ### TBD-11 최초 도배 확정 주체
 

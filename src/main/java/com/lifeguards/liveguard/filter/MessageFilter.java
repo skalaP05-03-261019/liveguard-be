@@ -37,9 +37,19 @@ public class MessageFilter {
 
 	private final FilterDictionary dictionary;
 
-	/** 판정에 쓴 정규화·사전 버전 조합 (예: norm-v1+dict-v2). 후보와 함께 전달해 재현·감사에 쓴다. */
+	/**
+	 * 사전이 아닌 판정 규칙(경로 우선순위, 링크 탐지 {@link UrlHosts}, 개인정보 후보 {@link PiiMasker#candidates}, 도배 기준)의
+	 * 버전. 같은 정규화·사전이어도 판정이 바뀌면 올린다.
+	 * <ul>
+	 * <li>rules-v1: 개인정보 후보 없음 (#48 이전. 이 구성요소 없이 norm-v1+dict-v2로 기록됨)</li>
+	 * <li>rules-v2: 전화번호·계좌·이메일 형식을 PII_INVESTIGATION으로 (#48)</li>
+	 * </ul>
+	 */
+	public static final String RULES_VERSION = "rules-v2";
+
+	/** 판정에 쓴 정규화·사전·규칙 버전 조합 (예: norm-v1+dict-v2+rules-v2). 후보와 함께 전달해 재현·감사에 쓴다. */
 	public static String version() {
-		return TextNormalizer.VERSION + "+" + FilterDictionary.VERSION;
+		return TextNormalizer.VERSION + "+" + FilterDictionary.VERSION + "+" + RULES_VERSION;
 	}
 
 	public MessageFilter() {
