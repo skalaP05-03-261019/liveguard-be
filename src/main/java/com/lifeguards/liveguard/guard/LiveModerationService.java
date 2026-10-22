@@ -203,7 +203,7 @@ public class LiveModerationService implements LiveGuardPort {
       }
     }
     UUID c = UUID.randomUUID(), snapshot = UUID.randomUUID(), task = UUID.randomUUID();
-    String thread = "case:" + c + ":analysis:1";
+    String thread = analysisThread(c, 1);
     db.sql(
             "INSERT INTO"
                 + " guard.cases(id,channel_id,user_id,live_id,policy_version,handling_route,snapshot_id,occurred_at,created_at)"
@@ -320,29 +320,41 @@ public class LiveModerationService implements LiveGuardPort {
    * 바뀌지 않으므로 다시 분석하지 않는다(재개 작업은 결정 때의 snapshot으로 이미 묶여 있다).
    */
   private void reanalyzeAfterEvidence(UUID c) {
-    UUID previous=db.sql("SELECT task_id FROM guard.live_case_state WHERE case_id=?").param(c).query(UUID.class).single();
-    boolean dispatched=db.sql("SELECT EXISTS(SELECT 1 FROM guard.agent_task_outbox WHERE task_id=?)")
-      .param(previous).query(Boolean.class).single();
-    boolean decided=db.sql("SELECT EXISTS(SELECT 1 FROM guard.reviews WHERE case_id=? AND status<>'PENDING')")
-      .param(c).query(Boolean.class).single();
-    if(!dispatched||decided)return;
-    db.sql("UPDATE guard.agent_task_outbox SET status='FAILED',last_error_code='SUPERSEDED',updated_at=? WHERE task_id=? AND status IN ('PENDING','RETRY')")
-      .params(now(),previous).update();
     var current=row(c,false);
-    UUID task=UUID.randomUUID();
-    String thread="case:"+c+":analysis:"+current.get("evidence_version");
-    db.sql("UPDATE guard.live_case_state SET task_id=?,thread_id=? WHERE case_id=?").params(task,thread,c).update();
-    outbox.enqueue(new AgentTaskEnvelope(UUID.randomUUID(),task,c,AgentTaskEnvelope.Kind.REANALYZE,thread,
-        id(current.get("snapshot_id")),((Number)current.get("evidence_version")).intValue(),null,null,null,UUID.randomUUID()));
+    UUID previous=id(current.get("task_id"));
+    // 이 사건의 Agent 작업이 이미 큐에 들어갔고 강퇴 검토가 아직 결정 대기일 때만
+    boolean pendingAnalysis=db.sql("SELECT EXISTS(SELECT 1 FROM guard.agent_task_outbox WHERE task_id=?)"
+        + " AND EXISTS(SELECT 1 FROM guard.reviews WHERE case_id=? AND kind='KICK' AND status='PENDING')")
+      .params(previous,c).query(Boolean.class).single();
+    if(!pendingAnalysis)return;
+    // 아직 보내지 않은 이전 작업은 멈춘다. 전달이 불확실하면 Agent가 받았을 수 있으므로 FAILED가 아니라 UNKNOWN이다
+    db.sql("UPDATE guard.agent_task_outbox SET status=CASE WHEN delivery_uncertain THEN 'UNKNOWN' ELSE 'FAILED' END,"
+        + "last_error_code='SUPERSEDED',updated_at=?,publish_token=NULL,publish_lease_until=NULL"
+        + " WHERE task_id=? AND status IN ('PENDING','RETRY')")
+      .params(now(),previous).update();
+    db.sql("UPDATE guard.live_case_state SET task_id=?,thread_id=? WHERE case_id=?")
+      .params(UUID.randomUUID(),analysisThread(c,((Number)current.get("evidence_version")).intValue()),c).update();
+    enqueue(row(c,false),AgentTaskEnvelope.Kind.REANALYZE,null,null,null);
+  }
+
+  /** 분석 thread id. 증거 버전마다 새 thread다(같은 thread에 다른 snapshot을 묶지 않는다). */
+  private static String analysisThread(UUID c,int evidenceVersion) {
+    return "case:"+c+":analysis:"+evidenceVersion;
   }
 
   private void enqueue(Map<String, Object> c, UUID review, UUID decision, String kind) {
+    enqueue(c, review == null ? AgentTaskEnvelope.Kind.ANALYZE : AgentTaskEnvelope.Kind.RESUME_REVIEW, review, decision,
+        kind);
+  }
+
+  private void enqueue(
+      Map<String, Object> c, AgentTaskEnvelope.Kind taskKind, UUID review, UUID decision, String kind) {
     outbox.enqueue(
         new AgentTaskEnvelope(
             UUID.randomUUID(),
             id(c.get("task_id")),
             id(c.get("id")),
-            review == null ? AgentTaskEnvelope.Kind.ANALYZE : AgentTaskEnvelope.Kind.RESUME_REVIEW,
+            taskKind,
             c.get("thread_id").toString(),
             id(c.get("snapshot_id")),
             ((Number) c.get("evidence_version")).intValue(),

@@ -335,6 +335,43 @@ class LiveModerationIntegrationTest {
     assertEquals("2",payload.get("evidence"));
   }
 
+  /**
+   * 이전 분석이 이미 Agent에 전달된(ACCEPTED, 결정 대기일 수 있음) 뒤 증거가 추가되면 그 작업은 그대로 두고 새 작업으로
+   * 다시 분석한다. 이후 결정의 재개 작업은 새 task·thread와 현재 snapshot으로 나가 Agent의 thread 바인딩과 맞는다.
+   */
+  @Test void deliveredAnalysisIsReanalyzedAndTheLaterResumeTargetsTheNewThread() {
+    UUID live=lives.start(channel,moderator).liveId();
+    UUID flood=floodCaseAtKickThreshold(live);
+    UUID before=taskOf(flood);
+    db.update("UPDATE guard.agent_task_outbox SET status='ACCEPTED' WHERE task_id=?",before);
+
+    lives.send(live,viewer,new SendMessageRequest(UUID.randomUUID(),"같은 문장"));
+
+    UUID after=taskOf(flood);
+    assertNotEquals(before,after);
+    assertEquals("ACCEPTED",db.queryForObject("SELECT status FROM guard.agent_task_outbox WHERE task_id=?",String.class,before));
+    UUID review=db.queryForObject("SELECT id FROM guard.reviews WHERE case_id=? AND kind='KICK'",UUID.class,flood);
+    decide(review,"APPROVE",1);
+    var resume=db.queryForMap("SELECT task_id, payload->>'threadId' AS thread, payload->>'snapshotId' AS snapshot"
+      +" FROM guard.agent_task_outbox WHERE case_id=? AND payload->>'kind'='RESUME_REVIEW'",flood);
+    assertEquals(after,resume.get("task_id"));
+    assertEquals("case:"+flood+":analysis:2",resume.get("thread"));
+    assertEquals(db.queryForObject("SELECT snapshot_id::text FROM guard.cases WHERE id=?",String.class,flood),resume.get("snapshot"));
+  }
+
+  /** 전달이 불확실했던 이전 작업은 Agent가 받았을 수 있으므로 FAILED가 아니라 UNKNOWN으로 멈춘다. */
+  @Test void uncertainPreviousDeliveryIsMarkedUnknownWhenSuperseded() {
+    UUID live=lives.start(channel,moderator).liveId();
+    UUID flood=floodCaseAtKickThreshold(live);
+    UUID before=taskOf(flood);
+    db.update("UPDATE guard.agent_task_outbox SET status='RETRY',delivery_uncertain=true WHERE task_id=?",before);
+
+    lives.send(live,viewer,new SendMessageRequest(UUID.randomUUID(),"같은 문장"));
+
+    assertEquals(List.of("UNKNOWN","SUPERSEDED"),db.queryForObject("SELECT ARRAY[status,last_error_code] FROM guard.agent_task_outbox WHERE task_id=?",
+      (rs,n)->List.of((Object[])rs.getArray(1).getArray()),before));
+  }
+
   @Test void decidedKickReviewIsNotReanalyzedWhenFloodEvidenceIsAdded() {
     UUID live=lives.start(channel,moderator).liveId();
     UUID flood=floodCaseAtKickThreshold(live);
