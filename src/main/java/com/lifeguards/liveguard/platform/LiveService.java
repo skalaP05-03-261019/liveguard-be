@@ -249,8 +249,19 @@ public class LiveService implements LivePlatformPort {
     applicationEvents.publishEvent(new MessageCreatedEvent(live.channelId(),user.userId(),
       new com.lifeguards.liveguard.contracts.dto.event.ChatEvent(message,id,result.get("authorAlias").toString(),
         req.text(),Visibility.valueOf(result.get("visibility").toString()),((Number)result.get("version")).intValue(),at.toInstant())));
-    emit(id, "CHAT", result, user.userId(), !visibility.equals("PUBLIC"));
+    emit(id, "CHAT", chatEvent(result), user.userId(), !visibility.equals("PUBLIC"));
     return result;
+  }
+
+  /**
+   * SSE CHAT·MESSAGE_RESTORED payload(계약 ChatEvent). 받는 사람마다 다른 isMine과 작성자 전용 안내
+   * (moderationReasonCode 등)는 응답·이력에만 싣고, 여러 구독자에게 같이 가는 이벤트에는 넣지 않는다.
+   */
+  private static Map<String, Object> chatEvent(Map<String, Object> message) {
+    Map<String, Object> event = new LinkedHashMap<>();
+    for (String key : List.of("messageId", "liveId", "authorAlias", "text", "visibility", "version", "sentAt"))
+      event.put(key, message.get(key));
+    return event;
   }
 
   Map<String, Object> message(UUID id, UUID viewer) {
@@ -429,7 +440,7 @@ public class LiveService implements LivePlatformPort {
             Map.of("messageId", id, "visibility", visibility, "version", data.get("version")),
             null,
             false);
-        if (visibility.equals("PUBLIC")) emit(liveId, "MESSAGE_RESTORED", data, null, false);
+        if (visibility.equals("PUBLIC")) emit(liveId, "MESSAGE_RESTORED", chatEvent(data), null, false);
       }
     }
   }
