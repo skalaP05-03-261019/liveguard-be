@@ -1,6 +1,9 @@
 package com.lifeguards.liveguard.guard;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.lifeguards.liveguard.TestcontainersConfiguration;
 import com.lifeguards.liveguard.common.*;
@@ -586,30 +589,33 @@ class LiveModerationIntegrationTest {
     assertEquals(ErrorCode.TIMED_OUT,assertThrows(ApiException.class,()->lives.send(live,viewer,new SendMessageRequest(UUID.randomUUID(),"new"))).code());
   }
 
+  org.springframework.test.web.servlet.ResultActions listCases(org.springframework.mock.web.MockHttpSession session, UUID live, String query) throws Exception {
+    return mvc.perform(get("/api/cases?liveId="+live+query).session(session));
+  }
+
   @Test
   void caseListFiltersByConfirmationStatus() throws Exception {
     UUID live=lives.start(channel,moderator).liveId();
     UUID pending=candidate(live,"너 꺼져 확인 대기");
-    UUID confirmed=candidate(live,"씨발 확정");
+    UUID violation=candidate(live,"씨발 확정");
+    UUID normal=candidate(live,"너 꺼져 정상 확정");
+    UUID r=proposal(normal,"NO_VIOLATION");apply(normal,r,decide(r,"CONFIRM_NORMAL",1));
+    UUID cancelled=candidate(live,"씨발 취소될 확정");
+    recovery.revoke(confirmedFinding(cancelled),revokeRequest(cancelled),moderator);
     db.update("UPDATE platform.users SET password_hash=? WHERE id=?",passwordEncoder.encode("liveguard-local"),operator);
     var session=com.lifeguards.liveguard.support.LoginSupport.login(mvc,operator.toString());
-    var get=(java.util.function.Function<String,org.springframework.test.web.servlet.ResultActions>)query->{
-      try {
-        return mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/cases?liveId="+live+query).session(session));
-      } catch(Exception e) { throw new IllegalStateException(e); }
-    };
-    get.apply("").andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.length()").value(2));
-    get.apply("&confirmationStatus=PENDING")
-      .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.length()").value(1))
-      .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data[0].caseId").value(pending.toString()));
-    get.apply("&confirmationStatus=CONFIRMED_VIOLATION")
-      .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.length()").value(1))
-      .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data[0].caseId").value(confirmed.toString()));
-    get.apply("&confirmationStatus=CANCELLED").andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.length()").value(0));
+
+    listCases(session,live,"").andExpect(jsonPath("$.data.length()").value(4));
+    for(var expected:List.of(List.of("PENDING",pending),List.of("CONFIRMED_VIOLATION",violation),
+        List.of("CONFIRMED_NORMAL",normal),List.of("CANCELLED",cancelled)))
+      listCases(session,live,"&confirmationStatus="+expected.get(0))
+        .andExpect(jsonPath("$.data.length()").value(1))
+        .andExpect(jsonPath("$.data[0].caseId").value(expected.get(1).toString()))
+        .andExpect(jsonPath("$.data[0].confirmationStatus").value(expected.get(0)));
     // enum에 없는 값은 400 VALIDATION_FAILED
-    get.apply("&confirmationStatus=WHATEVER")
-      .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isBadRequest())
-      .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.error.code").value("VALIDATION_FAILED"));
+    listCases(session,live,"&confirmationStatus=WHATEVER")
+      .andExpect(status().isBadRequest())
+      .andExpect(jsonPath("$.error.code").value("VALIDATION_FAILED"));
   }
 
   @Test
