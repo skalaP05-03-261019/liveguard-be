@@ -71,15 +71,6 @@ public class BusinessToolController {
 		return new ApiResponse<>(queries.userHistory(caseId, days), TraceIdFilter.current());
 	}
 
-	@GetMapping("/cases/{caseId}/history")
-	@Operation(summary = "Legacy get_user_history alias", deprecated = true,
-			description = "Use /user-history. Whole-broadcast confirmed history; days is unsupported.")
-	public ApiResponse<UserHistory> legacyUserHistory(
-			@PathVariable UUID caseId,
-			@RequestParam(required = false) Integer days) {
-		return getUserHistory(caseId, days);
-	}
-
 	@GetMapping("/cases/{caseId}/kick-eligibility")
 	@Operation(summary = "get_kick_eligibility: get distinct confirmed cases for kick review",
 			description = """

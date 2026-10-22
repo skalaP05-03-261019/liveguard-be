@@ -47,7 +47,7 @@ class BusinessToolControllerTest {
 
 	@ParameterizedTest
 	@ValueSource(strings = {"/internal/cases/" + ID, "/internal/cases/" + ID + "/user-history",
-			"/internal/cases/" + ID + "/history", "/internal/cases/" + ID + "/kick-eligibility",
+			"/internal/cases/" + ID + "/kick-eligibility",
 			"/internal/kick-reviews/" + ID + "/basis"})
 	void implementedReadsRequireServiceTokenAndReturnNotFound(String path) throws Exception {
 		mockMvc.perform(get(path)).andExpect(status().isForbidden());
@@ -138,7 +138,7 @@ class BusinessToolControllerTest {
 				.andExpect(jsonPath("$.paths['/internal/cases/{caseId}/context'].get").exists())
 				.andExpect(jsonPath("$.paths['/internal/cases/{caseId}/role'].get").exists())
 				.andExpect(jsonPath("$.paths['/internal/cases/{caseId}/user-history'].get").exists())
-				.andExpect(jsonPath("$.paths['/internal/cases/{caseId}/history'].get.deprecated").value(true))
+				.andExpect(jsonPath("$.paths['/internal/cases/{caseId}/history']").doesNotExist())
 				.andExpect(jsonPath("$.paths['/internal/kick-reviews/{reviewId}/basis'].get").exists())
 				.andExpect(jsonPath("$.paths['/internal/actions/{actionId}/execute'].post.security[0].serviceToken").exists())
 				.andExpect(jsonPath("$.components.schemas.BusinessActionCommand.properties.basisCaseIds").exists())
