@@ -21,14 +21,11 @@ import jakarta.servlet.http.HttpServletRequest;
 class ChannelEventController {
 
 	private final JdbcChannelMembershipQuery memberships;
-	private final ChannelEventHub hub;
 	private final KickStatusQuery kickStatus;
 	private final LiveService lives;
 
-	ChannelEventController(JdbcChannelMembershipQuery memberships, ChannelEventHub hub, KickStatusQuery kickStatus,
-			LiveService lives) {
+	ChannelEventController(JdbcChannelMembershipQuery memberships, KickStatusQuery kickStatus, LiveService lives) {
 		this.memberships = memberships;
-		this.hub = hub;
 		this.kickStatus = kickStatus;
 		this.lives = lives;
 	}
@@ -41,9 +38,9 @@ class ChannelEventController {
 		kickStatus.activeKickUntil(channelId, user.userId()).ifPresent(until -> {
 			throw new ApiException(ErrorCode.KICKED, "Kicked from this channel", until, null);
 		});
-		// 진행 중 방송에서 강퇴됐으면 이 경로로도 다시 들어오지 못한다(방송 경로와 같은 기준)
-		lives.checkChannelEntry(channelId, user.userId());
-		SseEmitter emitter = hub.subscribe(channelId, user.userId(), role == AuthorRole.MODERATOR,
+		// 진행 중 방송에서 강퇴됐으면 이 경로로도 다시 들어오지 못한다(방송 경로와 같은 기준).
+		// 확인과 등록을 강퇴 실행과 같은 잠금 안에서 해야 강퇴 알림(USER_KICKED)을 놓친 연결이 남지 않는다
+		SseEmitter emitter = lives.subscribeChannel(channelId, user.userId(), role == AuthorRole.MODERATOR,
 				request.getSession().getId());
 		return ResponseEntity.ok()
 				.header("Cache-Control", "no-cache")

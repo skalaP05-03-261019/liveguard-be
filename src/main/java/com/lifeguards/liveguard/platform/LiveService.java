@@ -119,6 +119,20 @@ public class LiveService implements LivePlatformPort {
     liveQueries.currentLive(channel).ifPresent(current -> guard.checkEntry(current.liveId(), user));
   }
 
+  /**
+   * 기존 채널 SSE 구독(A-18). 강퇴 확인과 등록을 진행 중 방송 행 잠금 안에서 한다. 강퇴 실행도 같은 행을 잠그므로,
+   * 확인을 통과한 뒤 등록 전에 강퇴가 끝나 USER_KICKED를 받지 못한 연결이 남는 일이 없다({@link #subscribe}와 같은 방식).
+   */
+  @Transactional
+  public org.springframework.web.servlet.mvc.method.annotation.SseEmitter subscribeChannel(
+      UUID channel, UUID user, boolean operator, String session) {
+    liveQueries.currentLive(channel).ifPresent(current -> {
+      lockLive(current.liveId());
+      guard.checkEntry(current.liveId(), user);
+    });
+    return legacyEvents.subscribe(channel, user, operator, session);
+  }
+
   @Transactional
   public Live end(UUID id, AuthenticatedUser user) {
     requireHost(live(id).channelId(),user.userId());
