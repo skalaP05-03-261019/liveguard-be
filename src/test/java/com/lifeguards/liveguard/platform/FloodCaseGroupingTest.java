@@ -81,6 +81,8 @@ class FloodCaseGroupingTest {
 
 	@AfterEach
 	void cleanUp() {
+		// sink는 같은 컨텍스트를 쓰는 다른 테스트 클래스와 공유하므로 바꾼 동작을 되돌린다
+		recording.reset();
 		CaseFixtures.deleteCases(jdbc);
 		jdbc.update("DELETE FROM platform.messages");
 	}

@@ -76,6 +76,8 @@ class CandidateLinkingTest {
 
 	@AfterEach
 	void cleanUp() {
+		// sink는 같은 컨텍스트를 쓰는 다른 테스트 클래스와 공유한다. 실제 guard 동작을 남기면 그 클래스들이 판정·타임아웃을 받는다
+		recording.reset();
 		CaseFixtures.deleteCases(jdbc);
 		jdbc.update("DELETE FROM platform.messages");
 	}
