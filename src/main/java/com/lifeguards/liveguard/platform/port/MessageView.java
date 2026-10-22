@@ -4,6 +4,7 @@ import java.time.Instant;
 import java.util.UUID;
 
 import com.lifeguards.liveguard.contracts.dto.DtoValidation;
+import com.lifeguards.liveguard.contracts.enums.FilterResult;
 import com.lifeguards.liveguard.contracts.enums.Visibility;
 
 /**
@@ -13,9 +14,13 @@ import com.lifeguards.liveguard.contracts.enums.Visibility;
  * @param maskedText 개인정보를 마스킹한 본문(PiiMasker). 원문은 넘기지 않는다
  * @param visibility 지금의 공개 범위
  * @param version 지금의 메시지 버전. 가시성이 바뀔 때마다 올라간다
+ * @param channelId 메시지가 속한 채널. 후보의 채널·방송 범위 검증용
+ * @param filterResult 저장 시점의 1차 필터 결과. 후보 provenance 검증용
+ * @param normalizedTextHash norm-v1 정규화 문장의 SHA-256(UTF-8, 소문자 hex). 같은 문장 비교와 도배 표식
+ *        ({@code guard.flood_marks.text_hash})에 쓴다. 정규화 문장은 사실상 원문이라 넘기지 않는다
  */
 public record MessageView(UUID messageId, UUID authorId, String maskedText, Visibility visibility, int version,
-		Instant sentAt) {
+		Instant sentAt, UUID channelId, FilterResult filterResult, String normalizedTextHash) {
 
 	public MessageView {
 		DtoValidation.requireNonNull(messageId, "messageId");
@@ -23,6 +28,9 @@ public record MessageView(UUID messageId, UUID authorId, String maskedText, Visi
 		DtoValidation.requireNonNull(maskedText, "maskedText");
 		DtoValidation.requireNonNull(visibility, "visibility");
 		DtoValidation.requireNonNull(sentAt, "sentAt");
+		DtoValidation.requireNonNull(channelId, "channelId");
+		DtoValidation.requireNonNull(filterResult, "filterResult");
+		DtoValidation.requireNonNull(normalizedTextHash, "normalizedTextHash");
 	}
 
 }
