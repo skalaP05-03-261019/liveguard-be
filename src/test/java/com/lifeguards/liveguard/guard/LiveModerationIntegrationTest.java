@@ -28,7 +28,6 @@ class LiveModerationIntegrationTest {
   @Autowired LiveModerationService guard;
   @Autowired LiveFindingRecovery recovery;
   @Autowired CaseQueryService queries;
-  @Autowired com.lifeguards.liveguard.platform.port.MessageVisibilityPort visibility;
   @Autowired JdbcTemplate db;
   UUID channel, user, operator, other;
   AuthenticatedUser viewer, moderator, second;
@@ -135,13 +134,12 @@ class LiveModerationIntegrationTest {
   }
 
   @Test
-  void genericRestoreCannotReleaseRuleButRevocationReleasesOnlyItsOwnReason() {
+  void publicReleaseKeepsRuleHoldButRevocationReleasesOnlyItsOwnReason() {
     UUID live=lives.start(channel,moderator).liveId();
     UUID context=candidate(live,"너 꺼져 별도 문맥");
     UUID rule=candidate(live,"씨발");
     UUID message=db.queryForObject("SELECT id FROM platform.messages WHERE case_id=?",UUID.class,rule);
     int version=db.queryForObject("SELECT version FROM platform.messages WHERE id=?",Integer.class,message);
-    assertEquals(0,visibility.restoreCaseMessages(rule));
     lives.visibility(rule,"PUBLIC");
     assertEquals("HIDDEN",db.queryForObject("SELECT visibility FROM platform.messages WHERE id=?",String.class,message));
     assertEquals(version,db.queryForObject("SELECT version FROM platform.messages WHERE id=?",Integer.class,message));
@@ -153,7 +151,6 @@ class LiveModerationIntegrationTest {
     lives.visibility(context,"PUBLIC");
     assertEquals("PUBLIC",db.queryForObject("SELECT visibility FROM platform.messages WHERE id=?",String.class,message));
     assertEquals(version+1,db.queryForObject("SELECT version FROM platform.messages WHERE id=?",Integer.class,message));
-    assertEquals(0,visibility.restoreCaseMessages(rule));
   }
 
   @Test

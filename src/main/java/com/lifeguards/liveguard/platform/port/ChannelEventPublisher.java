@@ -5,7 +5,7 @@ import java.util.UUID;
 
 /**
  * 채팅 SSE(/api/channels/{id}/events)로 B2가 보내는 이벤트 포트. platform이 정의한다.
- * (메시지 공개 범위 변경 이벤트는 {@link MessageVisibilityPort}가 platform 안에서 처리하므로 여기에 없다.)
+ * (메시지 공개 범위 변경 이벤트는 방송 경로 {@link LivePlatformPort#visibility}가 platform 안에서 보내므로 여기에 없다.)
  */
 public interface ChannelEventPublisher {
 

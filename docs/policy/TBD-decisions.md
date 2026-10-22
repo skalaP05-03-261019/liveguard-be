@@ -118,7 +118,7 @@
 | 강퇴 | 운영자 승인 후 재검증하고 kick_user | 강퇴 interrupt |
 
 - 근거: 강의자료 표 6-3 Guardrails "변경 도구는 interrupt로 멈춘다". 문서의 동작(규칙 확정은 BE, 문맥은 운영자 결정)은 그대로 지키고, 실행 주체만 정한다.
-- v0.5에서 가져온 것: "Agent는 판정만 제출, 가림은 BE 규칙" 원칙과 MessageVisibilityPort (PR #14).
+- v0.5에서 가져온 것: "Agent는 판정만 제출, 가림은 BE 규칙" 원칙과 MessageVisibilityPort (PR #14). MessageVisibilityPort는 #47 이후 쓰이지 않아 제거했고, 가시성 변경은 `LivePlatformPort.visibility`(원인별 해제)가 맡는다.
 
 ## 설정값·보류 TBD
 
