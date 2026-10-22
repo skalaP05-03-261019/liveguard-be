@@ -59,7 +59,7 @@ public class CaseQueryService {
 
 	CaseDetails details(UUID caseId) {
 		CaseRow current = requireCase(caseId);
-		return new CaseDetails(current, repository.candidates(caseId), repository.messages(caseId),
+		return new CaseDetails(current, repository.candidates(caseId), repository.messages(current),
 				repository.findings(caseId), repository.audit(caseId));
 	}
 
