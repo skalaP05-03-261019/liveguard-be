@@ -73,7 +73,7 @@ public class CaseQueryService {
 				.filter(row -> row.snapshotId().equals(current.snapshotId())
 						&& row.evidenceVersion() == current.evidenceVersion())
 				.findFirst().orElseThrow(() -> notReady("Current case evidence is not available"));
-		if (repository.messages(caseId).stream().noneMatch(CaseQueryRepository.MessageRow::target)) {
+		if (!repository.hasTarget(caseId)) {
 			throw notReady("Case targets are not available");
 		}
 		if(!moderation.owns(caseId))throw notReady("Immutable evidence snapshot is not available");

@@ -31,7 +31,7 @@ POST /api/findings/{findingId}/revoke는 운영자·사건 버전·멱등 ID·�
 `LiveGuardPort.candidate`는 B2가 `CandidateRequest` 하나로 통합하며 규칙·필터 버전 저장까지 담당한다.
 B1의 메시지 조회 포트는 `platform.port.LiveMessageQuery.messages(liveId, messageIds)`(#44, TBD A-23)로 제공된다. 마스킹 본문·내부 authorId·가시성·현재 버전·수신 시각을 주고,
 누락 ID를 생략하거나 다른 방송 메시지를 반환하지 않는다. 다른 방송은 VALIDATION_FAILED, 없는 ID는 NOT_FOUND이고, 기대 버전 불일치(STALE_VERSION)는 `verifyTargets`가 맡는다.
-현재 B2의 메시지 직접 조회는 남아 있어 이 포트를 쓰는 곳은 없다. 전환 여부는 #25에서 정한다.
+guard는 이 포트와 방송 조회 포트(`LiveQuery`)로만 platform 메시지·방송을 읽는다(후보 검증, 관련 메시지 검증, 현재 대상, 사건 메시지, 강퇴 기준의 방송 진행 여부).
 AuthorRole.UNKNOWN과 현재 역할 조회 계약은 연결됐다(BE #45, TBD A-24, Agent liveguard-agent #57).
 
 ## 검증 기록
