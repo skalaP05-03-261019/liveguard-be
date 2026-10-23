@@ -53,7 +53,7 @@ class MessageFilterTest {
 		for (String text : List.of("수준낮아", "수준이낮다", "자격 없음", "자격이없다"))
 			assertEquals(HandlingRoute.CONTEXT_REVIEW, classify(text).handlingRoute(), text);
 		// 사전 단어를 포함하는 일상 표현은 예외 사전(attack-exceptions.txt)으로 비교 전에 지운다
-		for (String text : List.of("미개봉 굿즈 팝니다", "열등감 느껴짐", "김치남았다 ㅋㅋ", "짱개웃김", "개독감 걸림", "미개척지 탐험"))
+		for (String text : List.of("미개봉 굿즈 팝니다", "열등감 느껴짐", "저 학교 다닐 때 열등생이었어요", "김치남았다 ㅋㅋ", "짱개웃김", "개독감 걸림", "미개척지 탐험"))
 			assertEquals(HandlingRoute.PASS, classify(text).handlingRoute(), text);
 		// 예외 단어가 있어도 다른 자리의 사전 단어는 그대로 걸린다
 		assertEquals(HandlingRoute.CONTEXT_REVIEW, classify("미개봉이라더니 미개한 판매자").handlingRoute());
