@@ -351,6 +351,7 @@ class LiveModerationIntegrationTest {
     assertEquals("REANALYZE",payload.get("kind"));
     assertEquals(db.queryForObject("SELECT snapshot_id::text FROM guard.cases WHERE id=?",String.class,flood),payload.get("snapshot"));
     assertEquals("2",payload.get("evidence"));
+    assertEnvelopeLiveScope(flood, live, "ANALYZE", "REANALYZE");
   }
 
   /**
@@ -375,6 +376,7 @@ class LiveModerationIntegrationTest {
     assertEquals(after,resume.get("task_id"));
     assertEquals("case:"+flood+":analysis:2",resume.get("thread"));
     assertEquals(db.queryForObject("SELECT snapshot_id::text FROM guard.cases WHERE id=?",String.class,flood),resume.get("snapshot"));
+    assertEnvelopeLiveScope(flood, live, "ANALYZE", "REANALYZE", "RESUME_REVIEW");
   }
 
   /** 전달이 불확실했던 이전 작업은 Agent가 받았을 수 있으므로 FAILED가 아니라 UNKNOWN으로 멈춘다. */
@@ -466,6 +468,26 @@ class LiveModerationIntegrationTest {
   }
 
   @Test
+  void differentBroadcastsProduceDistinctSchedulingScopes() {
+    UUID first = lives.start(channel, moderator).liveId();
+    UUID firstCase = candidate(first, "너 어디 꺼져");
+    lives.end(first, moderator);
+    UUID next = lives.start(channel, moderator).liveId();
+    UUID nextCase = candidate(next, "너 어디 꺼져");
+    assertEnvelopeLiveScope(firstCase, first, "ANALYZE");
+    assertEnvelopeLiveScope(nextCase, next, "ANALYZE");
+    assertNotEquals(first, next);
+  }
+
+  void assertEnvelopeLiveScope(UUID caseId, UUID live, String... kinds) {
+    assertEquals(Set.of(kinds), new HashSet<>(db.queryForList(
+        "SELECT DISTINCT payload->>'kind' FROM guard.agent_task_outbox WHERE case_id=?", String.class, caseId)));
+    assertEquals(0, db.queryForObject(
+        "SELECT count(*) FROM guard.agent_task_outbox WHERE case_id=? AND (payload->>'liveId') IS DISTINCT FROM ?",
+        Integer.class, caseId, live.toString()));
+  }
+
+  @Test
   void contextNormalWaitsForHumanDeferAndDuplicateApply() {
     UUID live = lives.start(channel, moderator).liveId();
     UUID c = candidate(live, "너 어디 꺼져");
@@ -482,6 +504,7 @@ class LiveModerationIntegrationTest {
         ErrorCode.STALE_VERSION,
         assertThrows(ApiException.class, () -> decide(review, "CONFIRM_NORMAL", 1)).code());
     var d = decide(review, "CONFIRM_NORMAL", 2);
+    assertEnvelopeLiveScope(c, live, "ANALYZE", "RESUME_REVIEW");
     apply(c, review, d);
     assertEquals(
         "PUBLIC",

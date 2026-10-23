@@ -59,6 +59,7 @@ import com.sun.net.httpserver.HttpServer;
 class AgentRabbitIntegrationTest {
 	private static final Instant NOW = Instant.parse("2026-10-21T04:00:00Z");
 	private static final CopyOnWriteArrayList<String> METHODS = new CopyOnWriteArrayList<>();
+	private static final CopyOnWriteArrayList<String> PAYLOADS = new CopyOnWriteArrayList<>();
 	private static volatile AgentTaskEnvelope task;
 	private static volatile int responseCode = 202;
 	private static final HttpServer HTTP = startHttp();
@@ -93,6 +94,7 @@ class AgentRabbitIntegrationTest {
 	@Autowired MutableClock clock;
 	@Autowired ConnectionFactory connectionFactory;
 	@Autowired ApplicationContext context;
+	@Autowired tools.jackson.databind.json.JsonMapper mapper;
 	private RabbitAdmin admin;
 	private RabbitTemplate template;
 	private UUID id;
@@ -105,14 +107,19 @@ class AgentRabbitIntegrationTest {
 		admin.purgeQueue(properties.queue());
 		clock.setNow(NOW);
 		METHODS.clear();
+		PAYLOADS.clear();
 		responseCode = 202;
 		UUID caseId = UUID.randomUUID();
 		CaseFixtures.insertCase(jdbc, caseId,
 				UUID.fromString("20000000-0000-4000-8000-000000000001"),
 				UUID.fromString("10000000-0000-4000-8000-000000000001"));
+		UUID live = CaseFixtures.ensureLive(jdbc, UUID.fromString("20000000-0000-4000-8000-000000000001"));
 		task = new AgentTaskEnvelope(UUID.randomUUID(), UUID.randomUUID(), caseId,
 				AgentTaskEnvelope.Kind.ANALYZE, "thread-" + UUID.randomUUID(), UUID.randomUUID(),
-				1, null, null, null, UUID.randomUUID());
+				1, null, null, null, UUID.randomUUID(), live);
+		jdbc.update("UPDATE guard.cases SET live_id=?,snapshot_id=? WHERE id=?", live, task.snapshotId(), caseId);
+		jdbc.update("INSERT INTO guard.live_case_state(case_id,task_id,thread_id,snapshot) VALUES(?,?,?,'{}'::jsonb)",
+				caseId, task.taskId(), task.threadId());
 		id = transactions.execute(status -> outbox.enqueue(task));
 	}
 
@@ -149,6 +156,20 @@ class AgentRabbitIntegrationTest {
 		await(() -> queueEmpty());
 		assertEquals(1, attempts());
 		assertEquals(java.util.List.of("POST"), METHODS);
+		assertEquals(mapper.readTree(mapper.writeValueAsString(task)), mapper.readTree(PAYLOADS.getLast()));
+		assertEquals(task.liveId().toString(), mapper.readTree(PAYLOADS.getLast()).path("liveId").stringValue());
+	}
+
+	@Test
+	void legacyRabbitNotificationDoesNotEnrichStoredPayload() throws Exception {
+		jdbc.update("UPDATE guard.agent_task_outbox SET payload=payload-'liveId' WHERE id=?", id);
+		var stored = mapper.readTree(jdbc.queryForObject(
+				"SELECT payload::text FROM guard.agent_task_outbox WHERE id=?", String.class, id));
+		assertTrue(transport.publishOne());
+		listener.start();
+		await(() -> status().equals("ACCEPTED"));
+		assertEquals(stored, mapper.readTree(PAYLOADS.getLast()));
+		assertFalse(mapper.readTree(PAYLOADS.getLast()).has("liveId"));
 	}
 
 	@Test
@@ -267,7 +288,7 @@ class AgentRabbitIntegrationTest {
 			var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
 			server.createContext("/", exchange -> {
 				METHODS.add(exchange.getRequestMethod());
-				exchange.getRequestBody().readAllBytes();
+				PAYLOADS.add(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
 				String body = "{\"taskId\":\"" + task.taskId() + "\",\"threadId\":\"" + task.threadId()
 						+ "\",\"operationId\":\"" + task.operationId() + "\",\"status\":\"QUEUED\""
 						+ (exchange.getRequestMethod().equals("GET") ? "" : ",\"duplicate\":false") + "}";

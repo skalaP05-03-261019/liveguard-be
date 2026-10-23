@@ -34,8 +34,32 @@ public class AgentOutboxRepository {
 
 	@Transactional(propagation = Propagation.MANDATORY)
 	public UUID enqueue(AgentTaskEnvelope envelope, Instant now) {
-		UUID id = UUID.randomUUID();
 		String payload = mapper.writeValueAsString(envelope);
+		var replay = jdbc.sql("""
+				SELECT id FROM guard.agent_task_outbox WHERE operation_id = ? AND payload = ?::jsonb
+				""").params(envelope.operationId(), payload).query(UUID.class).optional();
+		if (replay.isPresent()) {
+			return replay.get();
+		}
+		if (jdbc.sql("SELECT EXISTS (SELECT 1 FROM guard.agent_task_outbox WHERE operation_id = ? OR event_id = ?)")
+				.params(envelope.operationId(), envelope.eventId()).query(Boolean.class).single()) {
+			throw new ApiException(ErrorCode.IDEMPOTENCY_CONFLICT,
+					"Agent task identifiers are already used with a different payload");
+		}
+		if (envelope.liveId() != null && !jdbc.sql("""
+				SELECT EXISTS (
+					SELECT 1 FROM guard.cases c
+					JOIN guard.live_case_state s ON s.case_id = c.id
+					JOIN platform.lives l ON l.id = c.live_id AND l.channel_id = c.channel_id
+					WHERE c.id = ? AND c.live_id = ? AND s.task_id = ? AND s.thread_id = ?
+						AND c.snapshot_id = ? AND c.evidence_version = ?
+				)
+				""").params(envelope.caseId(), envelope.liveId(), envelope.taskId(), envelope.threadId(),
+						envelope.snapshotId(), envelope.expectedEvidenceVersion()).query(Boolean.class).single()) {
+			throw new ApiException(ErrorCode.VALIDATION_FAILED,
+					"Agent task broadcast, case, thread or evidence binding does not match");
+		}
+		UUID id = UUID.randomUUID();
 		var inserted = jdbc.sql("""
 				INSERT INTO guard.agent_task_outbox
 					(id, operation_id, event_id, task_id, case_id, payload, next_attempt_at, created_at, updated_at)

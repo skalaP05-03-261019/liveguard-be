@@ -179,6 +179,70 @@ class AgentOutboxTest {
 	}
 
 	@Test
+	void scopedPayloadIsSentUnchangedAndReplaySurvivesTaskRotation() {
+		task = scoped(task);
+		UUID id = enqueue(task);
+		assertTrue(worker.deliverOne());
+		assertEquals(task.liveId().toString(), mapper.readTree(payloads.getLast()).path("liveId").stringValue());
+		assertEquals(mapper.readTree(storedPayload(id)), mapper.readTree(payloads.getLast()));
+		jdbc.update("UPDATE guard.live_case_state SET task_id=?,thread_id='rotated' WHERE case_id=?",
+				UUID.randomUUID(), task.caseId());
+		assertEquals(id, enqueue(task));
+		var changed = new AgentTaskEnvelope(task.eventId(), task.taskId(), task.caseId(), task.kind(),
+				task.threadId(), task.snapshotId(), 1, null, null, null, task.traceId(), UUID.randomUUID());
+		assertEquals(ErrorCode.IDEMPOTENCY_CONFLICT, assertThrows(ApiException.class, () -> enqueue(changed)).code());
+	}
+
+	@Test
+	void scopedEnqueueRejectsDifferentBroadcastAndThread() {
+		task = scoped(task);
+		for (var invalid : List.of(
+				new AgentTaskEnvelope(task.eventId(), task.taskId(), task.caseId(), task.kind(), task.threadId(),
+						task.snapshotId(), 1, null, null, null, task.traceId(), UUID.randomUUID()),
+				new AgentTaskEnvelope(task.eventId(), task.taskId(), task.caseId(), task.kind(), "wrong-thread",
+						task.snapshotId(), 1, null, null, null, task.traceId(), task.liveId()))) {
+			assertEquals(ErrorCode.VALIDATION_FAILED, assertThrows(ApiException.class, () -> enqueue(invalid)).code());
+		}
+		assertEquals(0, count());
+	}
+
+	@Test
+	void legacyPayloadClaimAndHttpRetryNeverAddLiveId() {
+		UUID id = enqueue(task);
+		String original = storedPayload(id);
+		assertFalse(mapper.readTree(original).has("liveId"));
+		behavior = exchange -> respond(exchange, 429, "{}");
+		assertTrue(worker.deliverOne());
+		time.advance(Duration.ofSeconds(2));
+		behavior = exchange -> respond(exchange, 202, receipt(task, "QUEUED", false));
+		assertTrue(worker.deliverOne());
+		assertEquals(List.of("POST", "POST"), methods);
+		for (String sent : payloads) {
+			assertEquals(mapper.readTree(original), mapper.readTree(sent));
+			assertFalse(mapper.readTree(sent).has("liveId"));
+		}
+		assertEquals(original, storedPayload(id));
+		assertEquals(id, enqueue(task));
+		var upgraded = new AgentTaskEnvelope(task.eventId(), task.taskId(), task.caseId(), task.kind(),
+				task.threadId(), task.snapshotId(), 1, null, null, null, task.traceId(), UUID.randomUUID());
+		assertEquals(ErrorCode.IDEMPOTENCY_CONFLICT, assertThrows(ApiException.class, () -> enqueue(upgraded)).code());
+	}
+
+	private String storedPayload(UUID id) {
+		return jdbc.queryForObject("SELECT payload::text FROM guard.agent_task_outbox WHERE id=?", String.class, id);
+	}
+
+	private AgentTaskEnvelope scoped(AgentTaskEnvelope legacy) {
+		UUID live = CaseFixtures.ensureLive(jdbc, CHANNEL);
+		jdbc.update("UPDATE guard.cases SET live_id=?,snapshot_id=? WHERE id=?", live, legacy.snapshotId(), legacy.caseId());
+		jdbc.update("INSERT INTO guard.live_case_state(case_id,task_id,thread_id,snapshot) VALUES(?,?,?,'{}'::jsonb)",
+				legacy.caseId(), legacy.taskId(), legacy.threadId());
+		return new AgentTaskEnvelope(legacy.eventId(), legacy.taskId(), legacy.caseId(), legacy.kind(),
+				legacy.threadId(), legacy.snapshotId(), legacy.expectedEvidenceVersion(), legacy.decisionId(),
+				legacy.reviewKind(), legacy.reviewId(), legacy.traceId(), live);
+	}
+
+	@Test
 	void enqueueIsImmutableAndIdempotent() {
 		UUID first = enqueue(task);
 		assertEquals(first, enqueue(task));
