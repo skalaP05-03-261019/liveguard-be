@@ -1001,7 +1001,7 @@ public class LiveModerationService implements LiveGuardPort {
             .containsAll(input.keySet())
         || !input
             .keySet()
-            .containsAll(Set.of("clientRequestId", "expectedReviewVersion", "decision", "reason")))
+            .containsAll(Set.of("clientRequestId", "expectedReviewVersion", "decision")))
       throw error(ErrorCode.VALIDATION_FAILED, "Invalid decision fields");
     var rev = review(r, true);
     var c = row(id(rev.get("case_id")), true);
@@ -1027,8 +1027,9 @@ public class LiveModerationService implements LiveGuardPort {
     if (!Objects.equals(input.get("expectedReviewVersion"), rev.get("version")))
       throw error(ErrorCode.STALE_VERSION, "Review version changed");
     String value = Objects.toString(input.get("decision"));
+    // 사유는 선택이다(A-26). 보내지 않으면 빈 문자열로 저장한다
     String reason = Objects.toString(input.get("reason"), "");
-    if (reason.isBlank()
+    if ((input.containsKey("reason") && reason.isBlank())
         || reason.length() > 500
         || !(kind.equals("CONTEXT")
                 ? Set.of("CONFIRM_NORMAL", "CONFIRM_VIOLATION", "DEFER")

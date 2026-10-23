@@ -109,7 +109,7 @@ class LiveModerationIntegrationTest {
     request.put("clientRequestId", UUID.randomUUID().toString());
     request.put("expectedReviewVersion", version);
     request.put("decision", value);
-    request.put("reason", "operator examined evidence");
+    // 운영자 화면에는 사유 입력란이 없다(A-26)
     if (value.equals("CONFIRM_VIOLATION")) {
       request.put("categories", categories);
       request.put("evidenceMessageIds", card.get("targetMessageIds"));
@@ -158,6 +158,32 @@ class LiveModerationIntegrationTest {
     lives.visibility(context,"PUBLIC");
     assertEquals("PUBLIC",db.queryForObject("SELECT visibility FROM platform.messages WHERE id=?",String.class,message));
     assertEquals(version+1,db.queryForObject("SELECT version FROM platform.messages WHERE id=?",Integer.class,message));
+  }
+
+  @Test
+  void decisionReasonIsOptionalButMustNotBeBlankWhenSent() {
+    UUID live = lives.start(channel, moderator).liveId();
+    UUID r = proposal(candidate(live, "너 꺼져"), "VIOLATION");
+    var blank = new LinkedHashMap<String, Object>();
+    blank.put("clientRequestId", UUID.randomUUID().toString());
+    blank.put("expectedReviewVersion", 1);
+    blank.put("decision", "DEFER");
+    blank.put("reason", "  ");
+    assertEquals(
+        ErrorCode.VALIDATION_FAILED,
+        assertThrows(ApiException.class, () -> guard.decide(r, blank, moderator, "CONTEXT")).code());
+    var memo = new LinkedHashMap<>(blank);
+    memo.put("reason", "다음 메시지까지 보고 결정");
+    var deferred = guard.decide(r, memo, moderator, "CONTEXT");
+    var normal = decide(r, "CONFIRM_NORMAL", 2);
+    assertEquals(
+        "다음 메시지까지 보고 결정",
+        db.queryForObject(
+            "SELECT reason FROM guard.decisions WHERE id=?::uuid", String.class, deferred.get("decisionId").toString()));
+    assertEquals(
+        "",
+        db.queryForObject(
+            "SELECT reason FROM guard.decisions WHERE id=?::uuid", String.class, normal.get("decisionId").toString()));
   }
 
   @Test

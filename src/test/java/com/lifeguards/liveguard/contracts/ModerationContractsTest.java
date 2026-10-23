@@ -29,6 +29,7 @@ import org.yaml.snakeyaml.Yaml;
 import com.lifeguards.liveguard.contracts.dto.event.ChatEvent;
 import com.lifeguards.liveguard.contracts.dto.event.UserKickedEvent;
 import com.lifeguards.liveguard.contracts.dto.request.AgentEventRequest;
+import com.lifeguards.liveguard.contracts.dto.request.ContextDecisionRequest;
 import com.lifeguards.liveguard.contracts.dto.request.JudgmentRequest;
 import com.lifeguards.liveguard.contracts.dto.request.JudgmentRequest.MessageFinding;
 import com.lifeguards.liveguard.contracts.dto.request.KickDecisionRequest;
@@ -147,9 +148,18 @@ class ModerationContractsTest {
 	}
 
 	@Test
-	void kickDecisionReasonMustHaveOneToFiveHundredCharacters() {
-		assertTextBounds(reason -> new KickDecisionRequest(
-				UUID.randomUUID(), 1, KickDecision.APPROVE, reason));
+	void decisionReasonIsOptionalButBoundedWhenSent() {
+		// A-26: 사유를 보내지 않아도 되지만, 보내면 기존대로 공백 아닌 1~500자
+		assertNull(new KickDecisionRequest(UUID.randomUUID(), 1, KickDecision.APPROVE, null).reason());
+		assertNull(new ContextDecisionRequest(UUID.randomUUID(), 1, ContextDecision.DEFER, null, null, null).reason());
+		for (Consumer<String> factory : List.<Consumer<String>>of(
+				reason -> new KickDecisionRequest(UUID.randomUUID(), 1, KickDecision.APPROVE, reason),
+				reason -> new ContextDecisionRequest(UUID.randomUUID(), 1, ContextDecision.DEFER, reason, null, null))) {
+			assertThrows(InvalidContractException.class, () -> factory.accept(""));
+			assertThrows(InvalidContractException.class, () -> factory.accept("   "));
+			assertDoesNotThrow(() -> factory.accept("a".repeat(500)));
+			assertThrows(InvalidContractException.class, () -> factory.accept("a".repeat(501)));
+		}
 	}
 
 	@Test
