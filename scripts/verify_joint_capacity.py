@@ -26,10 +26,11 @@ def outbox(environment, task):
 
 def verify(environment, report):
     report.update(mode="controlled-model-real-spring", realModelExecuted=False,
-                  inboxCapacity=2, provenance=provenance(environment), checks=[])
+                  inboxCapacity=2, checks=[])
     overlay = environment.setup / "joint-capacity.yaml"
     environment.compose("-f", str(overlay), "config", "--quiet")
     environment.compose("-f", str(overlay), "up", "-d", "--wait", "--wait-timeout", "240", timeout=300)
+    report["provenance"] = provenance(environment)
     environment.compose("stop", "worker-1", "worker-2", timeout=100)
     with httpx.Client(base_url=environment.url("backend", 8080), trust_env=False, timeout=15) as viewer:
         request(viewer, "GET", "/api/auth/me", expected=401)

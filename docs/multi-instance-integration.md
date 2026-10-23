@@ -9,7 +9,7 @@
 | 대상 | 고정 소스 | 로컬 이미지 |
 |---|---|---|
 | BE | `acd3e98f7d2b1a74505d9f89bfb56dffe1082673` (#74 포함) | `liveguard-be:integration-acd3e98f7d2b` |
-| Agent/API/Worker/Business MCP | `e720ce65f859a0312c4083e17b39974cf42c512d` | `liveguard-agent:integration-e720ce65f859` |
+| Agent/API/Worker/Business MCP | `9122b41bc8ffe5bb21e4fac7ad22a14fe98e5e79` (#96 / PR #104 병합) | `liveguard-agent:integration-9122b41bc8ff` |
 | DB / LB / 선택 broker | `pgvector/pgvector:pg16` / `haproxy:3.0-alpine` / `rabbitmq:4.1-alpine` | Compose에 명시 |
 
 [versions.env](../deploy/integration/versions.env)가 소스·이미지 연결의 정본이다.
