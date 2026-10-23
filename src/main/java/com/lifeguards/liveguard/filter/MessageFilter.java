@@ -9,7 +9,7 @@ import com.lifeguards.liveguard.contracts.enums.HandlingRoute;
 import com.lifeguards.liveguard.contracts.enums.MatchingTag;
 
 /**
- * 1차 필터 (정책 v3.1, TBD-02). 한 메시지는 처리 경로 하나를 갖고, 걸린 신호는 matchingTags에 전부 남긴다.
+ * 1차 필터 (정책 v3.1·v3.2 공통, TBD-02). 한 메시지는 처리 경로 하나를 갖고, 걸린 신호는 matchingTags에 전부 남긴다.
  * <ol>
  * <li>RULE_CONFIRMED(HIDDEN): 확실한 욕설 또는 링크. 공식 링크도 예외 없이 금지한다</li>
  * <li>FLOOD_REVIEW(HELD): 같은 사용자·방송에서 10초 안에 같은 정규화 문장 3회 이상 (세 번째부터)</li>

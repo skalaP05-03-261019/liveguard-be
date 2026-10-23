@@ -38,8 +38,8 @@ x-worker: &worker
     BUSINESS_MCP_CALL_TIMEOUT: "10"
     RAG_MCP_URL: ${RAG_MCP_URL:?Set container-reachable RAG_MCP_URL}
     RAG_MCP_AGENT_TOKEN: ${RAG_MCP_AGENT_TOKEN:?Set RAG_MCP_AGENT_TOKEN}
-    LIVEGUARD_POLICY_VERSION: v3.1
-    POLICY_VERSION: v3.1
+    LIVEGUARD_POLICY_VERSION: ${LIVEGUARD_POLICY_VERSION:-v3.1}
+    POLICY_VERSION: ${LIVEGUARD_POLICY_VERSION:-v3.1}
     MODEL_PROVIDER: ${MODEL_PROVIDER:?Choose model provider explicitly}
     MODEL_BASE_URL: ${MODEL_BASE_URL:?Set model endpoint}
     MODEL_NAME: ${MODEL_NAME:?Set model name}
@@ -139,7 +139,7 @@ services:
       # Isolated local test data only; never use these seed accounts in production.
       SPRING_FLYWAY_LOCATIONS: classpath:db/migration,classpath:db/seed
       INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:?Set INTERNAL_SERVICE_TOKEN}
-      LIVEGUARD_POLICY_VERSION: v3.1
+      LIVEGUARD_POLICY_VERSION: ${LIVEGUARD_POLICY_VERSION:-v3.1}
       AGENT_DELIVERY_ENABLED: "true"
       AGENT_DELIVERY_TRANSPORT: db
       AGENT_BASE_URL: http://agent-api:8001

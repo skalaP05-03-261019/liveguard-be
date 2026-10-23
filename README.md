@@ -317,7 +317,7 @@ REST 경로·필드는 이 저장소의 [OpenAPI](contracts/openapi.yaml)를 사
   `KickReviewBasis`는 원 승인 사건과 소진의 `reviewId/decisionId`를 제공하며 신규 후보 조회와 다릅니다.
   자기 승인에 따른 소진은 재검증 때 허용하지만 타 심사 소진·취소 등은 검증해야 합니다.
 - `InternalCase`는 `liveId`, `snapshotId`, `evidenceVersion`, `policyVersion`, `handlingRoute`,
-  대상 메시지의 현재 가시성·버전(`targets`)을 정의합니다. 활성 정책은 `v3.1`이며 필터 버전과 별개로 저장합니다.
+  대상 메시지의 현재 가시성·버전(`targets`)을 정의합니다. 활성 정책은 `v3.2`(전환 전 사건은 `v3.1`)이며 필터 버전과 별개로 저장합니다.
 - 방송 종료 B2 소비자는 KICK 검토를 INVALIDATED로 닫고 미집행 KICK·미발송 KICK resume만 중지합니다.
   CONTEXT 조사/검토, 확정·취소 이력과 소진, ACCEPTED/IN_FLIGHT/UNKNOWN 발송 결과는 지우지 않습니다.
   집행은 방송 상태를 다시 검사하며, 일반 복원은 RULE_CONFIRMED나 타 사건의 유효 hold를 풀지 않습니다.
@@ -394,7 +394,7 @@ Python Agent는 [liveguard-agent](https://github.com/skalaP05-03-261019/liveguar
 
 ## 공통 문서
 
-정책 원본은 [docs/policy/](docs/policy/README.md)(v3.1)입니다. [기획서·정책 v0.3](docs/live-guard/v0.3/README.md)은 이전 기획으로 구현 기준이 아니며, 평가 사례만 계속 사용합니다.
+정책 원본은 [docs/policy/](docs/policy/README.md)(v3.2)입니다. [기획서·정책 v0.3](docs/live-guard/v0.3/README.md)은 이전 기획으로 구현 기준이 아니며, 평가 사례만 계속 사용합니다.
 정책·API 계약 변경은 다른 저장소 담당과 함께 조율합니다.
 
 기존 skala-capstone-P05_03의 커밋 이력은 그대로 보존하며, 저장소 분리 커밋에서 서비스 파일만 재배치합니다.

@@ -9,7 +9,7 @@
 
 ## 기준 문서 (충돌 시 이 순서)
 
-1. `docs/policy/{PROJECT,POLICY,CONTRACTS,ARCHITECTURE}.md`: 정책 원본 v3.1. **충돌 시 최우선**
+1. `docs/policy/{PROJECT,POLICY,CONTRACTS,ARCHITECTURE}.md`: 정책 원본 v3.2. **충돌 시 최우선**
 2. `docs/policy/TBD-decisions.md`: 원본의 미정 항목 결정
 3. `contracts/openapi.yaml`: 브라우저·내부 API 계약 v1.0
 4. `docs/erd.md`: 테이블·제약·핵심 쿼리 v1.0

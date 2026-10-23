@@ -412,7 +412,7 @@ class InternalApiTest {
 					CHANNEL_A,(UUID)row.get("live_id"),(UUID)row.get("author_id"),target,
 					com.lifeguards.liveguard.contracts.enums.FilterResult.HOLD,
 					com.lifeguards.liveguard.contracts.enums.HandlingRoute.CONTEXT_REVIEW,null,
-					List.of("ATTACK_TERM"),"norm-test+dict-test","v3.1",
+					List.of("ATTACK_TERM"),"norm-test+dict-test","v3.2",
 					jdbc.queryForObject("SELECT sent_at FROM platform.messages WHERE id=?",Timestamp.class,target).toInstant(),List.of()));
 				return "/internal/cases/"+caseId+"/context";
 			}

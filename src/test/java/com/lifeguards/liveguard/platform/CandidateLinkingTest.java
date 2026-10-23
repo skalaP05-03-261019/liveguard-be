@@ -107,7 +107,7 @@ class CandidateLinkingTest {
 		assertEquals(FilterResult.HOLD, review.filterResult());
 		assertEquals(HandlingRoute.CONTEXT_REVIEW, review.handlingRoute());
 		assertNull(review.ruleId());
-		assertEquals("v3.1", review.policyVersion());
+		assertEquals("v3.2", review.policyVersion());
 		assertEquals(List.of(MessageFilter.ATTACK_TERM), review.matchingTags());
 		assertEquals(List.of(), review.relatedMessageIds());
 		assertEquals(MessageFilter.version(), review.filterVersion());
@@ -120,7 +120,7 @@ class CandidateLinkingTest {
 		assertEquals(FilterResult.HOLD, hold.filterResult());
 		assertEquals(HandlingRoute.RULE_CONFIRMED, hold.handlingRoute());
 		assertEquals(MessageFilter.RULE_LINK_BLOCKED, hold.ruleId());
-		assertEquals("v3.1", hold.policyVersion());
+		assertEquals("v3.2", hold.policyVersion());
 		assertEquals(List.of(MessageFilter.OFFICIAL_CLAIM, MessageFilter.CREDENTIAL_REQUEST,
 				MessageFilter.LINK), hold.matchingTags());
 		assertEquals(holdCase, caseIdOf(HOLD_TEXT));

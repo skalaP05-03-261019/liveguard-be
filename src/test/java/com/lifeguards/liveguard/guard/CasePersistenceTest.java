@@ -61,11 +61,11 @@ class CasePersistenceTest {
 	CandidateRequest request(UUID message,FilterResult result,List<UUID> related){
 		return new CandidateRequest(CHANNEL,live,USER,message,result,
 			result==FilterResult.FLOOD?HandlingRoute.FLOOD_REVIEW:HandlingRoute.CONTEXT_REVIEW,null,
-			List.of(result==FilterResult.FLOOD?"REPEATED_TEXT":"ATTACK_TERM"),"norm-test+dict-test","v3.1",NOW,related);
+			List.of(result==FilterResult.FLOOD?"REPEATED_TEXT":"ATTACK_TERM"),"norm-test+dict-test","v3.2",NOW,related);
 	}
 	UUID context(){return sink.open(request(message(FilterResult.HOLD),FilterResult.HOLD,List.of()));}
 	FindingInput input(UUID c,List<Category> categories,int version){
-		return new FindingInput(c,categories,Verdict.VIOLATION,"v3.1","evidence-fixture",version,"decision-fixture","Validated fixture authority");
+		return new FindingInput(c,categories,Verdict.VIOLATION,"v3.2","evidence-fixture",version,"decision-fixture","Validated fixture authority");
 	}
 	int count(String table){return jdbc.queryForObject("SELECT count(*) FROM "+table,Integer.class);}
 	@Test void bothHttpEntryPointsUseDurableProvenanceAndReplayOneIncident() throws Exception {
@@ -80,7 +80,7 @@ class CasePersistenceTest {
 		assertEquals(1,count("guard.candidates"));
 		assertEquals(1,count("guard.live_case_state"));
 		assertEquals(live,jdbc.queryForObject("SELECT live_id FROM guard.cases",UUID.class));
-		assertEquals("v3.1",jdbc.queryForObject("SELECT policy_version FROM guard.candidates",String.class));
+		assertEquals("v3.2",jdbc.queryForObject("SELECT policy_version FROM guard.candidates",String.class));
 		assertEquals("CONTEXT_REVIEW",jdbc.queryForObject("SELECT handling_route FROM guard.candidates",String.class));
 		assertEquals(0,count("guard.findings"));
 		assertEquals(1,count("guard.agent_task_outbox"));
@@ -139,11 +139,11 @@ class CasePersistenceTest {
 		var original=request(m,FilterResult.HOLD,List.of());
 		UUID c=sink.open(original);
 		for(var changed:List.of(
-			new CandidateRequest(CHANNEL,live,USER,m,FilterResult.HOLD,HandlingRoute.CONTEXT_REVIEW,null,List.of("LINK"),"norm-test+dict-test","v3.1",NOW,List.of()),
-			new CandidateRequest(CHANNEL,live,USER,m,FilterResult.HOLD,HandlingRoute.CONTEXT_REVIEW,null,List.of("ATTACK_TERM"),"other-filter","v3.1",NOW,List.of()),
+			new CandidateRequest(CHANNEL,live,USER,m,FilterResult.HOLD,HandlingRoute.CONTEXT_REVIEW,null,List.of("LINK"),"norm-test+dict-test","v3.2",NOW,List.of()),
+			new CandidateRequest(CHANNEL,live,USER,m,FilterResult.HOLD,HandlingRoute.CONTEXT_REVIEW,null,List.of("ATTACK_TERM"),"other-filter","v3.2",NOW,List.of()),
 			new CandidateRequest(CHANNEL,live,USER,m,FilterResult.HOLD,HandlingRoute.CONTEXT_REVIEW,null,List.of("ATTACK_TERM"),"norm-test+dict-test","other-policy",NOW,List.of()),
-			new CandidateRequest(CHANNEL,live,USER,m,FilterResult.HOLD,HandlingRoute.PII_INVESTIGATION,null,List.of("ATTACK_TERM"),"norm-test+dict-test","v3.1",NOW,List.of()),
-			new CandidateRequest(CHANNEL,live,USER,m,FilterResult.HOLD,HandlingRoute.CONTEXT_REVIEW,null,List.of("ATTACK_TERM"),"norm-test+dict-test","v3.1",NOW.plusSeconds(1),List.of()))){
+			new CandidateRequest(CHANNEL,live,USER,m,FilterResult.HOLD,HandlingRoute.PII_INVESTIGATION,null,List.of("ATTACK_TERM"),"norm-test+dict-test","v3.2",NOW,List.of()),
+			new CandidateRequest(CHANNEL,live,USER,m,FilterResult.HOLD,HandlingRoute.CONTEXT_REVIEW,null,List.of("ATTACK_TERM"),"norm-test+dict-test","v3.2",NOW.plusSeconds(1),List.of()))){
 			assertEquals(ErrorCode.IDEMPOTENCY_CONFLICT,assertThrows(ApiException.class,()->sink.open(changed)).code());
 		}
 		assertEquals(c,sink.open(original));

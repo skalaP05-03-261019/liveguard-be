@@ -11,7 +11,7 @@ import com.lifeguards.liveguard.contracts.exception.InvalidContractException;
 
 /**
  * Agent 출력(CONTRACTS §5). AI 조사 경로(CONTEXT_REVIEW, PII_INVESTIGATION)만 제출하며 TARGET 메시지마다 결과가 하나다.
- * 공개·제재 명령이 아니다. policyVersion이 활성 버전과 같은지는 서버가 검증한다.
+ * 공개·제재 명령이 아니다. policyVersion이 사건에 기록된 버전과 같은지, policyIds가 그 버전의 조항인지는 서버가 검증한다(A-27).
  */
 public record JudgmentRequest(
 		UUID caseId,

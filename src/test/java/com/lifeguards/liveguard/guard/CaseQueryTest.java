@@ -59,16 +59,16 @@ class CaseQueryTest {
 		jdbc.update("INSERT INTO platform.messages(id,channel_id,live_id,author_id,client_message_id,text,normalized_text,filter_result,visibility,sent_at) VALUES(?,?,?,?,?,'꺼져 010-1234-5678 person@example.com','test','HOLD','HELD',?)",
 			message,channel,live,user,UUID.randomUUID(),Timestamp.from(at));
 		return sink.open(new CandidateRequest(channel,live,user,message,FilterResult.HOLD,HandlingRoute.CONTEXT_REVIEW,null,
-			List.of("ATTACK_TERM"),"norm-test+dict-test","v3.1",at,List.of()));
+			List.of("ATTACK_TERM"),"norm-test+dict-test","v3.2",at,List.of()));
 	}
 	List<UUID> confirm(UUID c,Category... categories){
-		return findings.confirm(new FindingInput(c,List.of(categories),Verdict.VIOLATION,"v3.1","evidence-reference",1,"decision-reference","Validated fixture authority"));
+		return findings.confirm(new FindingInput(c,List.of(categories),Verdict.VIOLATION,"v3.2","evidence-reference",1,"decision-reference","Validated fixture authority"));
 	}
 	@Test void readsPersistedEvidenceTargetsFindingsAndAudit(){
 		confirm(current,Category.PROFANITY,Category.HARASSMENT);
 		var details=queries.details(current);
 		assertEquals(live,details.metadata().liveId());
-		assertEquals("v3.1",details.metadata().policyVersion());
+		assertEquals("v3.2",details.metadata().policyVersion());
 		assertEquals(HandlingRoute.CONTEXT_REVIEW,details.metadata().handlingRoute());
 		assertEquals("norm-test+dict-test",details.candidates().getFirst().filterVersion());
 		assertTrue(details.messages().getFirst().target());
@@ -131,7 +131,7 @@ class CaseQueryTest {
 		assertEquals(List.of(Category.HARASSMENT),queries.userHistory(current,null).recentCases().stream().map(r->r.category()).toList());
 		assertNotNull(jdbc.queryForObject("SELECT revoked_at FROM guard.findings WHERE id=?",Timestamp.class,ids.getFirst()));
 		findings.revoke(ids.getLast(),"revoke-last","Incorrect finding");
-		findings.propose(new FindingInput(current,List.of(Category.FLOOD),Verdict.VIOLATION,"v3.1","evidence",1,"proposal","AI proposal only"));
+		findings.propose(new FindingInput(current,List.of(Category.FLOOD),Verdict.VIOLATION,"v3.2","evidence",1,"proposal","AI proposal only"));
 		assertEquals(0,queries.userHistory(current,null).violationCount());
 	}
 	@Test void kickWindowUsesExclusiveConfirmedLowerBoundNotOccurrence(){

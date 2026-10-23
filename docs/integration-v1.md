@@ -4,7 +4,7 @@
 
 ## 실행 경계
 
-방송·채팅·후보는 `liveguard.policy.version=v3.1`을 공유하는 한 경로다. 이전 fixture 스위치로 업무 경로를 분기하지 않는다. 1차 경로는 `MessageFilter`의 `FilterDecision`만 사용한다. 전송 서비스의 별도 URL/PII 규칙은 제거했고, PII 후보(전화번호·하이픈 계좌·이메일 형식 → `PII_INVESTIGATION`, HELD)는 `MessageFilter`가 낸다(#48, TBD-02 우선순위 RULE_CONFIRMED > FLOOD_REVIEW > PII_INVESTIGATION > CONTEXT_REVIEW). 숫자 나열만으로는 후보가 아니다(AC-06). 기존 조사·사람 검토 처리는 유지한다. 검증 사실은 UNKNOWN이며 AI의 PII 위반 주장만으로 확정하지 않는다.
+방송·채팅·후보는 `liveguard.policy.version`(v3.2, 전환 전 사건은 v3.1, A-27)을 공유하는 한 경로다. 이전 fixture 스위치로 업무 경로를 분기하지 않는다. 1차 경로는 `MessageFilter`의 `FilterDecision`만 사용한다. 전송 서비스의 별도 URL/PII 규칙은 제거했고, PII 후보(전화번호·하이픈 계좌·이메일 형식 → `PII_INVESTIGATION`, HELD)는 `MessageFilter`가 낸다(#48, TBD-02 우선순위 RULE_CONFIRMED > FLOOD_REVIEW > PII_INVESTIGATION > CONTEXT_REVIEW). 숫자 나열만으로는 후보가 아니다(AC-06). 기존 조사·사람 검토 처리는 유지한다. 검증 사실은 UNKNOWN이며 AI의 PII 위반 주장만으로 확정하지 않는다.
 
 V102/V202는 현재 main #36에 병합된 파일을 바이트 그대로 보존한다. V203은 targetVersion·취소 영수증·FLOOD 묶음 저장 및 RELEASED 예약 상태, V204는 별도 review별 강퇴 소유권을 추가한다. #34/#35만 적용한 DB는 #36에서 이미 합쳐진 V102/V202와 체크섬이 다를 수 있다. 해당 DB를 자동 repair하거나 삭제하지 않는다. 백업·적용 버전 확인 후 별도 이관 검토가 필요하며, 실행 증거는 새 격리 DB에서 수집한다. 기존 시험 DB도 보존한다.
 

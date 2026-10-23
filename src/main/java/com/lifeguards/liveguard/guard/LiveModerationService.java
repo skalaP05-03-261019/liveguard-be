@@ -266,11 +266,13 @@ public class LiveModerationService implements LiveGuardPort {
     frozen.put("userId", r.userId());
     frozen.put("snapshotId", snapshot);
     frozen.put("evidenceVersion", evidence);
-    frozen.put("policyVersion", r.policyVersion());
+    var current = row(c, false);
+    // 사건에 기록된 버전이다. 정책 전환 뒤 도배 반복이 전환 전 사건에 합류해도 그 사건의 버전을 유지한다(A-27)
+    frozen.put("policyVersion", current.get("policy_version"));
     frozen.put("handlingRoute", r.handlingRoute().name());
     frozen.put("filterResult", r.filterResult().name());
     frozen.put("matchingTags", r.matchingTags());
-    frozen.put("version", row(c,false).get("version"));
+    frozen.put("version", current.get("version"));
     frozen.put("messages", messages);
     frozen.put("evidenceMessageIds", evidenceIds);
     var targets=currentTargets(c);
@@ -752,13 +754,11 @@ public class LiveModerationService implements LiveGuardPort {
           || verdict.equals("VIOLATION") && (cats.isEmpty() || policyIds.isEmpty()))
         throw error(ErrorCode.VALIDATION_FAILED, "Invalid verdict evidence");
       for (String category : cats) Category.valueOf(category);
-      for (String p : policyIds)
-        if (!Set.of(
-                "CP-1.1", "CP-1.2", "CP-2.1", "CP-2.2", "CP-3.1", "CP-3.2", "CP-4.1", "CP-4.2",
-                "CP-5.1", "CP-5.2", "SP-2.1", "SP-3.1", "CP-6.1", "MP-1.1", "MP-1.2", "MP-1.3",
-                "MP-1.4", "MP-2.1", "MP-2.2", "MP-2.3", "MP-3.1", "MP-3.2", "MP-4.1", "MP-4.2",
-                "MP-4.3", "SP-4.1", "MM-1.1", "MM-2.1", "CP-7.1")
-            .contains(p)) throw error(ErrorCode.VALIDATION_FAILED, "Unknown policy reference");
+      // 사건이 기록된 정책 버전의 조항만 받는다(v3.1 사건은 CP-3.3을 인용할 수 없다)
+      // 불변 목록·집합의 contains(null)은 NPE라 null은 따로 거른다
+      if (policyIds.stream().anyMatch(Objects::isNull)
+          || !PolicyProperties.clauseIds(Objects.toString(snapshot.get("policyVersion"))).containsAll(policyIds))
+        throw error(ErrorCode.VALIDATION_FAILED, "Unknown policy reference");
       uncertain |= verdict.equals("NEEDS_REVIEW");
       violation |= verdict.equals("VIOLATION");
       categories.addAll(cats);

@@ -20,7 +20,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.annotation.Transactional;
 
 @SpringBootTest(
-    properties = {"LIVEGUARD_POLICY_VERSION=v3.1", "LIVEGUARD_TBD_FIXTURE_ENABLED=true"})
+    properties = {"LIVEGUARD_TBD_FIXTURE_ENABLED=true"})
 @org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc
 @Import(TestcontainersConfiguration.class)
 @Transactional
@@ -158,6 +158,78 @@ class LiveModerationIntegrationTest {
     lives.visibility(context,"PUBLIC");
     assertEquals("PUBLIC",db.queryForObject("SELECT visibility FROM platform.messages WHERE id=?",String.class,message));
     assertEquals(version+1,db.queryForObject("SELECT version FROM platform.messages WHERE id=?",Integer.class,message));
+  }
+
+  /** 사건 snapshot 그대로의 판정 요청. policyVersion·policyIds만 바꿔 버전 검사를 본다. */
+  Map<String, Object> harassmentJudgment(UUID c, String policyVersion, List<String> policyIds) {
+    var snap = guard.snapshot(c);
+    Map<String, Object> input = new LinkedHashMap<>();
+    for (String k : List.of("caseId", "liveId", "snapshotId", "evidenceVersion", "handlingRoute"))
+      input.put(k, snap.get(k));
+    input.put("policyVersion", policyVersion);
+    input.put("messageFindings", List.of(Map.of(
+        "messageId", ((List<?>) snap.get("targetMessageIds")).getFirst().toString(),
+        "verdict", "VIOLATION", "categories", List.of("HARASSMENT"), "policyIds", policyIds,
+        "reason", "test evidence", "missingFacts", List.of())));
+    return input;
+  }
+
+  @Test
+  void v32CaseAcceptsGroupHarassmentClauseOnlyUnderItsOwnVersion() {
+    UUID live = lives.start(channel, moderator).liveId();
+    UUID c = candidate(live, "너 꺼져");
+    assertEquals("v3.2", guard.snapshot(c).get("policyVersion"));
+    // 사건 버전과 다른 버전으로 판정하면 오래된 요청이다
+    assertEquals(ErrorCode.STALE_VERSION, assertThrows(ApiException.class,
+        () -> guard.judgment(c, harassmentJudgment(c, "v3.1", List.of("CP-3.2")))).code());
+    // 정책에 없는 조항은 받지 않는다
+    assertEquals(ErrorCode.VALIDATION_FAILED, assertThrows(ApiException.class,
+        () -> guard.judgment(c, harassmentJudgment(c, "v3.2", List.of("CP-3.4")))).code());
+    assertNotNull(guard.judgment(c, harassmentJudgment(c, "v3.2", List.of("CP-3.3", "CP-2.2"))).get("reviewId"));
+  }
+
+  @Test
+  void caseOpenedBeforeV32CutoverIsJudgedUnderV31() {
+    UUID live = lives.start(channel, moderator).liveId();
+    UUID c = candidate(live, "너 꺼져");
+    // 전환 전에 v3.1로 기록된 사건을 흉내 낸다(사건·snapshot의 버전을 함께 바꿔 불변 증거 검사를 통과시킨다)
+    db.update("UPDATE guard.cases SET policy_version='v3.1' WHERE id=?", c);
+    db.update("UPDATE guard.live_case_state SET snapshot=jsonb_set(snapshot,'{policyVersion}','\"v3.1\"') WHERE case_id=?", c);
+    db.update("UPDATE guard.case_snapshots SET snapshot=jsonb_set(snapshot,'{policyVersion}','\"v3.1\"') WHERE case_id=?", c);
+    assertEquals("v3.1", guard.snapshot(c).get("policyVersion"));
+    assertEquals(ErrorCode.STALE_VERSION, assertThrows(ApiException.class,
+        () -> guard.judgment(c, harassmentJudgment(c, "v3.2", List.of("CP-3.2")))).code());
+    // v3.1 사건은 v3.2에서 생긴 CP-3.3을 인용할 수 없다
+    assertEquals(ErrorCode.VALIDATION_FAILED, assertThrows(ApiException.class,
+        () -> guard.judgment(c, harassmentJudgment(c, "v3.1", List.of("CP-3.3")))).code());
+    assertNotNull(guard.judgment(c, harassmentJudgment(c, "v3.1", List.of("CP-3.2"))).get("reviewId"));
+  }
+
+  @Test
+  void floodRepeatJoiningPreCutoverCaseKeepsThatCaseVersion() {
+    UUID live = lives.start(channel, moderator).liveId();
+    for (int i = 0; i < 3; i++) lives.send(live, viewer, new SendMessageRequest(UUID.randomUUID(), "같은 응원"));
+    UUID c = db.queryForObject("SELECT id FROM guard.cases WHERE live_id=?", UUID.class, live);
+    db.update("UPDATE guard.cases SET policy_version='v3.1' WHERE id=?", c);
+    db.update("UPDATE guard.live_case_state SET snapshot=jsonb_set(snapshot,'{policyVersion}','\"v3.1\"') WHERE case_id=?", c);
+    db.update("UPDATE guard.case_snapshots SET snapshot=jsonb_set(snapshot,'{policyVersion}','\"v3.1\"') WHERE case_id=?", c);
+    // 전환 뒤(활성 v3.2) 같은 문장이 10초 안에 반복되면 전환 전 사건에 합류한다. 사건은 v3.1로 계속 읽힌다
+    lives.send(live, viewer, new SendMessageRequest(UUID.randomUUID(), "같은 응원"));
+    assertEquals(1, db.queryForObject("SELECT count(*) FROM guard.cases WHERE live_id=?", Integer.class, live));
+    var snap = guard.snapshot(c);
+    assertEquals("v3.1", snap.get("policyVersion"));
+    assertEquals(2, ((Number) snap.get("evidenceVersion")).intValue());
+  }
+
+  @Test
+  void judgmentWithNullPolicyIdIsRejectedAsInvalid() {
+    UUID live = lives.start(channel, moderator).liveId();
+    UUID c = candidate(live, "너 꺼져");
+    var ids = new ArrayList<String>();
+    ids.add("CP-3.2");
+    ids.add(null);
+    assertEquals(ErrorCode.VALIDATION_FAILED, assertThrows(ApiException.class,
+        () -> guard.judgment(c, harassmentJudgment(c, "v3.2", ids))).code());
   }
 
   @Test

@@ -20,7 +20,7 @@ import com.lifeguards.liveguard.contracts.exception.InvalidContractException;
  *        BE2가 검증해 사건·finding을 확정할 때 쓴다. 후보 전달만으로 확정되지는 않는다
  * @param matchingTags 걸린 조건 전부 (InternalCase.matchingTags). 값은 계약의 {@link MatchingTag} 이름이다
  * @param filterVersion 이 판정에 쓴 정규화·사전·규칙 버전 조합 (예: {@code norm-v1+dict-v2+rules-v2}). 재현·감사용
- * @param policyVersion 이 후보에 적용한 정책 버전(LIVEGUARD_POLICY_VERSION, 기본 v3.1). filterVersion과 다르다
+ * @param policyVersion 이 후보에 적용한 정책 버전(LIVEGUARD_POLICY_VERSION, 기본 v3.2). filterVersion과 다르다
  * @param sentAt 서버가 요청을 받아 주입 Clock으로 정한 UTC 시각(마이크로초). 클라이언트 시각이 아니며
  *        사건 생성 시각(B2의 created_at)과도 다르다. 재전송 응답과 같은 값이다
  * @param relatedMessageIds filterResult가 FLOOD일 때만, 같은 사용자·방송에서 10초 창 안에 있던 이전의
