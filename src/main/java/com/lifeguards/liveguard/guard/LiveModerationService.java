@@ -266,11 +266,13 @@ public class LiveModerationService implements LiveGuardPort {
     frozen.put("userId", r.userId());
     frozen.put("snapshotId", snapshot);
     frozen.put("evidenceVersion", evidence);
-    frozen.put("policyVersion", r.policyVersion());
+    var current = row(c, false);
+    // 사건에 기록된 버전이다. 정책 전환 뒤 도배 반복이 전환 전 사건에 합류해도 그 사건의 버전을 유지한다(A-27)
+    frozen.put("policyVersion", current.get("policy_version"));
     frozen.put("handlingRoute", r.handlingRoute().name());
     frozen.put("filterResult", r.filterResult().name());
     frozen.put("matchingTags", r.matchingTags());
-    frozen.put("version", row(c,false).get("version"));
+    frozen.put("version", current.get("version"));
     frozen.put("messages", messages);
     frozen.put("evidenceMessageIds", evidenceIds);
     var targets=currentTargets(c);
@@ -753,7 +755,9 @@ public class LiveModerationService implements LiveGuardPort {
         throw error(ErrorCode.VALIDATION_FAILED, "Invalid verdict evidence");
       for (String category : cats) Category.valueOf(category);
       // 사건이 기록된 정책 버전의 조항만 받는다(v3.1 사건은 CP-3.3을 인용할 수 없다)
-      if (!PolicyProperties.clauseIds(Objects.toString(snapshot.get("policyVersion"))).containsAll(policyIds))
+      // 불변 목록·집합의 contains(null)은 NPE라 null은 따로 거른다
+      if (policyIds.stream().anyMatch(Objects::isNull)
+          || !PolicyProperties.clauseIds(Objects.toString(snapshot.get("policyVersion"))).containsAll(policyIds))
         throw error(ErrorCode.VALIDATION_FAILED, "Unknown policy reference");
       uncertain |= verdict.equals("NEEDS_REVIEW");
       violation |= verdict.equals("VIOLATION");

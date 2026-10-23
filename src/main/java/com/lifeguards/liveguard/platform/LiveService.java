@@ -40,7 +40,7 @@ public class LiveService implements LivePlatformPort {
       ChannelEventHub legacyEvents,
       JdbcLiveQuery liveQueries,
       org.springframework.context.ApplicationEventPublisher applicationEvents,
-      com.lifeguards.liveguard.common.PolicyProperties policy) {
+      PolicyProperties policy) {
     this.db = db;
     this.clock = clock;
     this.guard = guard;

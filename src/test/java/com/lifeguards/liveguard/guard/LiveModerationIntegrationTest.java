@@ -206,6 +206,33 @@ class LiveModerationIntegrationTest {
   }
 
   @Test
+  void floodRepeatJoiningPreCutoverCaseKeepsThatCaseVersion() {
+    UUID live = lives.start(channel, moderator).liveId();
+    for (int i = 0; i < 3; i++) lives.send(live, viewer, new SendMessageRequest(UUID.randomUUID(), "같은 응원"));
+    UUID c = db.queryForObject("SELECT id FROM guard.cases WHERE live_id=?", UUID.class, live);
+    db.update("UPDATE guard.cases SET policy_version='v3.1' WHERE id=?", c);
+    db.update("UPDATE guard.live_case_state SET snapshot=jsonb_set(snapshot,'{policyVersion}','\"v3.1\"') WHERE case_id=?", c);
+    db.update("UPDATE guard.case_snapshots SET snapshot=jsonb_set(snapshot,'{policyVersion}','\"v3.1\"') WHERE case_id=?", c);
+    // 전환 뒤(활성 v3.2) 같은 문장이 10초 안에 반복되면 전환 전 사건에 합류한다. 사건은 v3.1로 계속 읽힌다
+    lives.send(live, viewer, new SendMessageRequest(UUID.randomUUID(), "같은 응원"));
+    assertEquals(1, db.queryForObject("SELECT count(*) FROM guard.cases WHERE live_id=?", Integer.class, live));
+    var snap = guard.snapshot(c);
+    assertEquals("v3.1", snap.get("policyVersion"));
+    assertEquals(2, ((Number) snap.get("evidenceVersion")).intValue());
+  }
+
+  @Test
+  void judgmentWithNullPolicyIdIsRejectedAsInvalid() {
+    UUID live = lives.start(channel, moderator).liveId();
+    UUID c = candidate(live, "너 꺼져");
+    var ids = new ArrayList<String>();
+    ids.add("CP-3.2");
+    ids.add(null);
+    assertEquals(ErrorCode.VALIDATION_FAILED, assertThrows(ApiException.class,
+        () -> guard.judgment(c, harassmentJudgment(c, "v3.2", ids))).code());
+  }
+
+  @Test
   void decisionReasonIsOptionalButMustNotBeBlankWhenSent() throws Exception {
     UUID live = lives.start(channel, moderator).liveId();
     UUID c = candidate(live, "너 꺼져");

@@ -2,6 +2,8 @@ package com.lifeguards.liveguard.common;
 
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
@@ -40,9 +42,7 @@ public record PolicyProperties(String version) {
 	}
 
 	private static Set<String> union(Set<String> base, String... added) {
-		var all = new java.util.HashSet<>(base);
-		all.addAll(Set.of(added));
-		return Set.copyOf(all);
+		return Stream.concat(base.stream(), Stream.of(added)).collect(Collectors.toUnmodifiableSet());
 	}
 
 }
