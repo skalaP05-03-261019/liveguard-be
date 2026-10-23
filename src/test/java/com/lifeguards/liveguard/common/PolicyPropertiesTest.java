@@ -46,4 +46,10 @@ class PolicyPropertiesTest {
 		assertTrue(PolicyProperties.clauseIds("v9").isEmpty());
 	}
 
+	@Test
+	void onlyV31RequiresVerifiedPiiFactsForConfirmation() {
+		assertTrue(PolicyProperties.requiresVerifiedPii("v3.1"));
+		assertFalse(PolicyProperties.requiresVerifiedPii("v3.2"));
+	}
+
 }

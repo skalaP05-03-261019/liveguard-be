@@ -767,9 +767,10 @@ public class LiveModerationService implements LiveGuardPort {
     }
     if (!found.equals(targets))
       throw error(ErrorCode.VALIDATION_FAILED, "Exactly one finding per target required");
-    // The current server has no verified personal-data source. A pattern and an
-    // AI claim alone cannot authorize PII confirmation. A-16 handles uncertainty.
-    if (input.get("handlingRoute").equals("PII_INVESTIGATION") && violation && !uncertain)
+    // v3.1 사건은 검증된 개인정보 출처가 없으면 개인정보 위반 확정을 받지 않는다(서버에 출처가 없다).
+    // v3.2부터는 실재·유효성과 관계없이 형태와 노출 문맥을 근거로 한 판정을 받는다(A-28). 불확실하면 A-16
+    if (input.get("handlingRoute").equals("PII_INVESTIGATION") && violation && !uncertain
+        && PolicyProperties.requiresVerifiedPii(Objects.toString(snapshot.get("policyVersion"))))
       throw error(
           ErrorCode.REVIEW_NOT_APPROVED, "Verified PII facts unavailable; NEEDS_REVIEW required");
     // 열린 검토에는 Agent가 결정을 기다리게 되는 판정(문맥 경로, NEEDS_REVIEW)만 붙인다. 개인정보 경로의 확정 판정은

@@ -205,6 +205,45 @@ class LiveModerationIntegrationTest {
     assertNotNull(guard.judgment(c, harassmentJudgment(c, "v3.1", List.of("CP-3.2"))).get("reviewId"));
   }
 
+  /** 개인정보 경로의 확정 위반 판정. 형태와 노출 문맥만 근거다(실재·유효성은 확인하지 않음). */
+  Map<String, Object> piiViolation(UUID c) {
+    var input = harassmentJudgment(c, guard.snapshot(c).get("policyVersion").toString(), List.of("SP-3.1"));
+    var finding = new LinkedHashMap<>((Map<String, Object>) ((List<?>) input.get("messageFindings")).getFirst());
+    finding.put("categories", List.of("PII_EXPOSURE"));
+    input.put("messageFindings", List.of(finding));
+    return input;
+  }
+
+  @Test
+  void v32PiiViolationIsConfirmedFromFormAndContextWithoutVerifiedFacts() {
+    UUID live = lives.start(channel, moderator).liveId();
+    // 합성 입력이다. 실제 개인의 유효한 연락처인지는 확인하지 않는다
+    UUID first = candidate(live, "제 번호 010-0000-1111 로 연락주세요");
+    assertEquals("PII_INVESTIGATION", guard.snapshot(first).get("handlingRoute"));
+    var receipt = guard.judgment(first, piiViolation(first));
+    assertEquals("CONFIRMED_VIOLATION", receipt.get("confirmationStatus"));
+    assertNull(receipt.get("reviewId"));
+    assertEquals("HIDDEN", visibilityOf(first));
+    // 첫 개인정보 위반은 HIDE만, 두 번째는 TIMEOUT 600초(제재표 그대로)
+    assertEquals(List.of(), timeoutSeconds(first));
+    assertEquals(receipt, guard.judgment(first, piiViolation(first)));
+    UUID second = candidate(live, "메일은 someone@example.com 입니다");
+    guard.judgment(second, piiViolation(second));
+    assertEquals(List.of(600L), timeoutSeconds(second));
+  }
+
+  @Test
+  void v31PiiViolationStillNeedsVerifiedFacts() {
+    UUID live = lives.start(channel, moderator).liveId();
+    UUID c = candidate(live, "제 번호 010-0000-2222 로 연락주세요");
+    db.update("UPDATE guard.cases SET policy_version='v3.1' WHERE id=?", c);
+    db.update("UPDATE guard.live_case_state SET snapshot=jsonb_set(snapshot,'{policyVersion}','\"v3.1\"') WHERE case_id=?", c);
+    db.update("UPDATE guard.case_snapshots SET snapshot=jsonb_set(snapshot,'{policyVersion}','\"v3.1\"') WHERE case_id=?", c);
+    assertEquals(ErrorCode.REVIEW_NOT_APPROVED,
+        assertThrows(ApiException.class, () -> guard.judgment(c, piiViolation(c))).code());
+    assertEquals("HELD", visibilityOf(c));
+  }
+
   @Test
   void floodRepeatJoiningPreCutoverCaseKeepsThatCaseVersion() {
     UUID live = lives.start(channel, moderator).liveId();
@@ -992,6 +1031,8 @@ class LiveModerationIntegrationTest {
     // 평소에는 개인정보 경로의 NO_VIOLATION이 바로 공개하지만, 사람 검토가 열려 있으면 받지 않는다(Agent는 이 판정에
     // 문맥 검토 응답을 받지 않아 결정을 기다리지 않으므로 붙여도 재개할 수 없다). 운영자 결정은 BE가 바로 적용한다
     assertEquals(ErrorCode.STALE_VERSION,assertThrows(ApiException.class,()->proposal(c,"NO_VIOLATION")).code());
+    // 확정 위반 판정도 같다(v3.2는 검증 출처 없이도 받지만 열린 사람 검토를 덮지 않는다)
+    assertEquals(ErrorCode.STALE_VERSION,assertThrows(ApiException.class,()->guard.judgment(c,piiViolation(c))).code());
     assertEquals("HELD",visibilityOf(c));
     assertNull(db.queryForObject("SELECT judgment::text FROM guard.live_case_state WHERE case_id=?",String.class,c));
     // NEEDS_REVIEW는 Agent가 결정을 기다리므로 붙는다
