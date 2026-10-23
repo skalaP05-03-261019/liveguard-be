@@ -27,7 +27,11 @@ public class AgentHttpGateway implements AutoCloseable {
 	 * @param notSent 요청이 Agent에 확실히 닿지 않았다(연결 실패, 또는 연결이 끊긴 동안 보내지 않음). 이런 시도는 전달
 	 *        예산을 쓰지 않는다
 	 */
-	public record Result(boolean accepted, boolean retryable, boolean uncertain, String code, boolean notSent) {
+	public record Result(boolean accepted, boolean retryable, boolean uncertain, String code, boolean notSent,
+			Instant retryAfter) {
+		public Result(boolean accepted, boolean retryable, boolean uncertain, String code, boolean notSent) {
+			this(accepted, retryable, uncertain, code, notSent, null);
+		}
 		public Result(boolean accepted, boolean retryable, boolean uncertain, String code) {
 			this(accepted, retryable, uncertain, code, false);
 		}
@@ -113,6 +117,10 @@ public class AgentHttpGateway implements AutoCloseable {
 	}
 
 	private Result failure(Reply reply, boolean reconciliation) {
+		if (reply.status() == 503 && reply.body() != null
+				&& "INBOX_CAPACITY_EXCEEDED".equals(reply.body().path("detail").path("code").stringValue(""))) {
+			return new Result(false, true, reconciliation, "INBOX_CAPACITY_EXCEEDED", false, reply.retryAfter());
+		}
 		// The human may decide after the review commits but before the Graph has
 		// checkpointed its interrupt. This 409 proves the resume was not accepted.
 		if (reply.status() == 409 && reply.body() != null
@@ -125,7 +133,7 @@ public class AgentHttpGateway implements AutoCloseable {
 		}
 		if (reply.status() == 0 || Set.of(408, 429, 500, 502, 503, 504).contains(reply.status())) {
 			return new Result(false, true, reconciliation || reply.status() != 429,
-					reply.status() == 0 ? reply.code() : "AGENT_HTTP_" + reply.status());
+					reply.status() == 0 ? reply.code() : "AGENT_HTTP_" + reply.status(), false, reply.retryAfter());
 		}
 		if (reply.status() >= 200 && reply.status() < 300) {
 			return new Result(false, true, true, "INVALID_AGENT_RECEIPT");
@@ -133,7 +141,10 @@ public class AgentHttpGateway implements AutoCloseable {
 		return new Result(false, false, reconciliation, "AGENT_HTTP_" + reply.status());
 	}
 
-	private record Reply(int status, JsonNode body, String code) {
+	private record Reply(int status, JsonNode body, String code, Instant retryAfter) {
+		Reply(int status, JsonNode body, String code) {
+			this(status, body, code, null);
+		}
 	}
 
 	private Reply exchange(AgentTaskEnvelope task, String path, boolean post) {
@@ -163,10 +174,11 @@ public class AgentHttpGateway implements AutoCloseable {
 		var future = client.sendAsync(builder.build(), info -> new LimitedBodySubscriber());
 		try {
 			HttpResponse<String> response = future.get(properties.requestTimeout().toMillis(), TimeUnit.MILLISECONDS);
+			Instant retryAfter = parseRetryAfter(response.headers().firstValue("Retry-After").orElse(null));
 			try {
-				return new Reply(response.statusCode(), mapper.readTree(response.body()), null);
+				return new Reply(response.statusCode(), mapper.readTree(response.body()), null, retryAfter);
 			} catch (JacksonException ex) {
-				return new Reply(response.statusCode(), null, "INVALID_AGENT_RECEIPT");
+				return new Reply(response.statusCode(), null, "INVALID_AGENT_RECEIPT", retryAfter);
 			}
 		} catch (ExecutionException ex) {
 			// 연결 자체가 안 됐으면(거부·연결 시간 초과) 요청은 Agent에 닿지 않았다. 전달 여부가 확실하다
@@ -184,6 +196,26 @@ public class AgentHttpGateway implements AutoCloseable {
 			future.cancel(true);
 			Thread.currentThread().interrupt();
 			return new Reply(0, null, "DELIVERY_INTERRUPTED");
+		}
+	}
+
+	private Instant parseRetryAfter(String value) {
+		if (value == null) {
+			return null;
+		}
+		try {
+			String text = value.strip();
+			Instant result = text.matches("[0-9]+")
+					? clock.instant().plusSeconds(Long.parseLong(text))
+					: java.time.ZonedDateTime.parse(text, java.time.format.DateTimeFormatter.RFC_1123_DATE_TIME).toInstant();
+			// Keep persisted timestamps within the representable application/DB calendar range.
+			if (result.isAfter(Instant.parse("9999-12-31T23:59:59Z"))) {
+				return null;
+			}
+			return result;
+		} catch (java.time.DateTimeException | ArithmeticException | NumberFormatException ex) {
+			log.warn("Invalid Agent Retry-After; using delivery backoff");
+			return null;
 		}
 	}
 
