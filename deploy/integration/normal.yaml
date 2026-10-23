@@ -1,0 +1,8 @@
+services:
+  backend:
+    environment:
+      # Test-only budget: 5m queue + 5m execution/recovery + 5m margin.
+      LIVEGUARD_JUDGMENT_DEADLINE: 15m
+      LIVEGUARD_KICK_HANDOFF_DEADLINE: 15m
+    labels:
+      liveguard.test-scenario: normal-agent

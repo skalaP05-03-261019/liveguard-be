@@ -10,7 +10,9 @@ build/
 .env
 .env.*
 !.env.example
+!deploy/integration/.env.example
 *.log
+/integration-results/
 
 ### STS ###
 .apt_generated

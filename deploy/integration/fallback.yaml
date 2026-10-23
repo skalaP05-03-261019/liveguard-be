@@ -1,0 +1,7 @@
+services:
+  backend:
+    environment:
+      LIVEGUARD_JUDGMENT_DEADLINE: 3m
+      LIVEGUARD_KICK_HANDOFF_DEADLINE: 3m
+    labels:
+      liveguard.test-scenario: default-policy-fallback
