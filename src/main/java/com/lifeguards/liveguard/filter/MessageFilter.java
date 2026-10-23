@@ -47,7 +47,7 @@ public class MessageFilter {
 	 */
 	public static final String RULES_VERSION = "rules-v2";
 
-	/** 판정에 쓴 정규화·사전·규칙 버전 조합 (예: norm-v1+dict-v2+rules-v2). 후보와 함께 전달해 재현·감사에 쓴다. */
+	/** 판정에 쓴 정규화·사전·규칙 버전 조합 (예: norm-v1+dict-v3+rules-v2). 후보와 함께 전달해 재현·감사에 쓴다. */
 	public static String version() {
 		return TextNormalizer.VERSION + "+" + FilterDictionary.VERSION + "+" + RULES_VERSION;
 	}

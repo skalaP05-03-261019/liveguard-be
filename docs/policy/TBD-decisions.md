@@ -19,7 +19,7 @@
 
 | TBD | 분류 | 결정 | v0.5 근거 | 확인 |
 | --- | --- | --- | --- | --- |
-| 01 사전·URL | 설정 | 사전 3종(확실한 욕설·공격·예외), 정규화 후 부분 일치, 모든 링크 탐지 | dict-v2, UrlHosts | B1 |
+| 01 사전·URL | 설정 | 사전 3종(확실한 욕설·공격·예외), 정규화 후 부분 일치, 모든 링크 탐지 | dict-v3, UrlHosts | B1 |
 | 02 문맥 의심 규칙 | 구조 | 경로 우선순위 RULE_CONFIRMED > FLOOD_REVIEW > PII_INVESTIGATION > CONTEXT_REVIEW > PASS | 필터 우선순위 | B1 |
 | 03 TIMEOUT 이력 | 설정 | 같은 liveId 전체, 기준은 확정 시각, 취소는 유형(finding) 단위 | 없음 | B2 |
 | 04 사건 묶기 | 구조 | 일반은 메시지 1개 = 사건 1개, 도배는 반복 묶음 1개 = 사건 1개(10초 무반복이면 종료). 강퇴 집계는 유형과 관계없이 사건 3건 | relatedMessageIds, #16 | B2 |
@@ -93,7 +93,7 @@
 - 값: `v3.1` 또는 `v3.2`, 기본 `v3.2` (환경변수 `LIVEGUARD_POLICY_VERSION`). 새 사건에 이 값을 기록하고, 판정·강퇴 실행은 그 사건에 기록된 버전을 쓴다.
 - RAG: 색인 청크마다 policyVersion을 기록하고, search_policy는 같은 버전만 반환한다. v0.3 정책 문서는 색인하지 않는다.
 - 불일치 처리: Agent가 받은 버전과 RAG 버전이 다르면 작업을 FAILED로 끝낸다.
-- 필터 버전(`filterVersion`, 예: norm-v1+dict-v2+rules-v2)은 별도로 사건에 기록한다. v0.5 PR #16에서 이미 구현됐다. 정규화(norm)·사전(dict)·판정 규칙(rules: 경로 우선순위, 링크·개인정보 후보 탐지, 도배 기준) 버전을 잇는다. rules-v2는 개인정보 후보(#48)부터이며, 그 이전 기록은 rules 구성요소 없이 norm-v1+dict-v2다.
+- 필터 버전(`filterVersion`, 예: norm-v1+dict-v3+rules-v2)은 별도로 사건에 기록한다. v0.5 PR #16에서 이미 구현됐다. 정규화(norm)·사전(dict)·판정 규칙(rules: 경로 우선순위, 링크·개인정보 후보 탐지, 도배 기준) 버전을 잇는다. rules-v2는 개인정보 후보(#48)부터이며, 그 이전 기록은 rules 구성요소 없이 norm-v1+dict-v2다. dict-v3(A-30) 이전 기록은 norm-v1+dict-v2+rules-v2다.
 
 ### TBD-11 최초 도배 확정 주체
 
@@ -206,3 +206,4 @@
 | A-26 | 운영자 결정 사유 | 문맥·강퇴 검토 결정(`ContextDecisionRequest`·`KickDecisionRequest`)의 `reason`은 **선택**이다. 2026-10-23 팀 결정(FE 제안 2안)으로 운영자 화면에서 사유 입력란을 없앴다. 사유는 작성자 안내(`moderationNotice`는 경로별 고정 문구)·Agent 재개·API 응답 어디에도 쓰이지 않는 감사 메모였고, 결정자·시각·결정 값과 위반 확정의 유형·근거 메시지는 따로 필수로 남는다. 보내지 않으면 `guard.decisions.reason`에 빈 문자열로 저장한다(V202 NOT NULL 유지, 마이그레이션 없음). 이전 FE 호환을 위해 필드는 계약에 남기며, 보내면 기존대로 공백 아닌 1~500자다. 오판 취소(`RevokeFindingRequest.reason`)는 그대로 필수 | CONTRACTS §8(예시의 reason은 필수 규정 아님) | B1·B2 |
 | A-27 | 정책 v3.2 전환 | 활성 정책을 `v3.2`로 올린다(2026-10-23 팀 결정, Agent #105·#106·#108). v3.2는 정체성 속성으로 구분되는 집단에 대한 열등 단정·배제·차별 요구를 CP-3.3(HARASSMENT)으로 더했고, 새 위반 유형·제재표·강퇴 기준은 바꾸지 않았다(POLICY §2). 계약 `PolicyVersion`은 `const`에서 `enum [v3.1, v3.2]`로 바꾼다. DB에 v3.1 사건이 남고, 되돌릴 때 설정값으로도 쓰기 때문이다. 새 후보는 활성 버전으로 기록하고, 판정(`policyVersion`·`policyIds`)과 강퇴 실행 명령은 **사건에 기록된 버전**을 따른다: 판정의 policyVersion이 사건 버전과 다르면 409 `STALE_VERSION`, policyIds는 그 버전의 조항만 받는다(v3.1 사건에 CP-3.3이면 400 `VALIDATION_FAILED`). 그래서 전환 전에 열린 사건은 Agent가 v3.1 원문·색인으로 판정해야 한다. 버전별 조항 ID는 `PolicyProperties`에 둔다. 배포는 BE·Agent·RAG(v3.2 색인)를 같은 시점에 `LIVEGUARD_POLICY_VERSION=v3.2`로 맞춘다. BE만 먼저 올릴 때는 이 값을 `v3.1`로 두면 이전과 같다. 필터 후보 사전(집단 대상 표현)은 별도로 정한다 | TBD-08, POLICY §2 | B1·B2 |
 | A-28 | 개인정보 형태 기반 금지 | 정책 v3.2에 포함한다(2026-10-23 팀 결정, BE #83). 개인정보 노출 금지는 실제 개인의 유효한 정보인지와 관계없이 개인정보 형태로 판단되면 적용한다. Agent 정책 원문 SP-3.1(Agent #115)에 따라 작성자 본인 정보도 포함하고, 전화번호 형태는 경고·인용·제지 목적이어도 위반이며 CP-2.2 예외를 적용하지 않는다(번호 없는 경고는 정상). 계좌·주소 등은 형태와 노출 문맥으로 판단한다. v3.2 사건의 PII_INVESTIGATION 판정은 검증된 개인정보 출처가 없어도(get_security_facts UNKNOWN) 확정 `VIOLATION`을 받아, 기존대로 BE가 확정하고 HIDE·유형별 TIMEOUT·필요 시 KICK 검토를 처리한다. v3.1 사건은 이전대로 검증 출처가 없으면 422 `REVIEW_NOT_APPROVED`다(소급 없음, 버전 판단은 `PolicyProperties.requiresVerifiedPii`, 모르는 버전은 v3.1처럼 막는다). 개인정보 경로의 확정은 운영자를 거치지 않으므로 categories가 `PII_EXPOSURE`뿐일 때만 받는다. 괴롭힘 등 다른 유형이 섞이면 422이며, Agent는 운영자 결정이 필요한 유형을 NEEDS_REVIEW로 낸다(POLICY §2의 운영자 확정 유형 보호). 유지하는 것: BE 패턴 후보만으로 즉시 확정하지 않고 Agent 조사 경로를 거친다, 근거가 불충분하면 NEEDS_REVIEW(A-16), 숫자 나열만으로는 후보가 아니다(AC-06), 판정의 사건·버전·증거·TARGET·조항 검증, AI 판정 없는 검토가 열린 사건의 늦은 확정 판정은 409 `STALE_VERSION`(A-25). 필드·경로·오류 코드·제재표는 바꾸지 않는다. Agent의 SP-3.1 v3.2 원문과 조사 프롬프트(UNKNOWN이면 NEEDS_REVIEW)는 Agent 저장소에서 같이 고쳐야 판정 결과가 바뀐다. 배포는 A-27 전환과 같은 시점이다(BE가 v3.1이면 Agent의 형태 기반 확정 판정은 422) | POLICY §2, SP-3.1, A-16 | B1·B2 |
+| A-30 | 욕설 변형 '씨바' | 공격 사전(`attack-terms.txt`, 태그 ATTACK_TERM)에 '씨바'를 더하고 사전 버전을 `dict-v3`으로 올린다(2026-10-23 팀 요청). 확실한 욕설(자동 HIDDEN 확정)에 넣지 않는 이유: 부분 일치라 '씨'로 끝나는 말 뒤에 '바'를 붙여 쓴 일상 표현(날씨바뀜, 글씨바꿔, 지수씨바빠요, 아저씨바쁘세요)이 운영자 확인 없이 숨김·위반 이력으로 이어진다. 공격 사전이면 HELD 뒤 AI 조사와 운영자 결정을 거치므로 오탐은 정상으로 풀린다(CP-2.1 '사전에 없는 변형 표현은 문맥 경로'와 같다). '시바'(시바견 등)는 넣지 않는다 | TBD-01, POLICY §2, CP-2.1 | B1 |
