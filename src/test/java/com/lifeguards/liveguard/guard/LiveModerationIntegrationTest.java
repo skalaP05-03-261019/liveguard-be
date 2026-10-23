@@ -970,6 +970,21 @@ class LiveModerationIntegrationTest {
     assertFalse(due.contains(ended));
   }
 
+  @Test void acceptedOrUncertainDeliveryDoesNotOpenFallbackBeforeTheJudgmentDeadline() {
+    UUID live=lives.start(channel,moderator).liveId();
+    for(String status:List.of("ACCEPTED","UNKNOWN")) {
+      UUID c=candidate(live,"너 꺼져 접수와 실행 구분 "+status);
+      db.update("UPDATE guard.agent_task_outbox SET status=?,delivery_uncertain=? WHERE case_id=?",
+          status,status.equals("UNKNOWN"),c);
+      assertFalse(guard.casesAwaitingJudgment(java.time.Duration.ofHours(1),50).contains(c));
+      assertFalse(guard.openReviewWithoutJudgment(c,java.time.Duration.ofHours(1)));
+      assertEquals(0,db.queryForObject("SELECT count(*) FROM guard.reviews WHERE case_id=?",Integer.class,c));
+      assertTrue(guard.openReviewWithoutJudgment(c,java.time.Duration.ZERO));
+      assertEquals("NEEDS_REVIEW",guard.reviewCard(contextReview(c)).get("aiVerdict"));
+      assertEquals("HELD",visibilityOf(c));
+    }
+  }
+
   /** 확정 위반 2건 뒤 AI 판정 없이 세 번째 위반을 확정한다. 세 번째 사건에 강퇴 검토가 생긴다. */
   UUID kickAfterViolationWithoutJudgment(UUID live) {
     for(int i=0;i<2;i++) {

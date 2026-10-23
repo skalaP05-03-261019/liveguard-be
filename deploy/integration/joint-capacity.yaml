@@ -1,0 +1,17 @@
+# Test-only shared Inbox ceiling. Use only before first database initialization.
+services:
+  agent-init:
+    environment:
+      AGENT_INBOX_CAPACITY: "2"
+  api-1:
+    environment:
+      AGENT_INBOX_CAPACITY: "2"
+  api-2:
+    environment:
+      AGENT_INBOX_CAPACITY: "2"
+  worker-1:
+    environment:
+      AGENT_INBOX_CAPACITY: "2"
+  worker-2:
+    environment:
+      AGENT_INBOX_CAPACITY: "2"

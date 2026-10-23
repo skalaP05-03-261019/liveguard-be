@@ -9,7 +9,7 @@
 | 대상 | 고정 소스 | 로컬 이미지 |
 |---|---|---|
 | BE | `acd3e98f7d2b1a74505d9f89bfb56dffe1082673` (#74 포함) | `liveguard-be:integration-acd3e98f7d2b` |
-| Agent/API/Worker/Business MCP | `764eab26a8272d72fc79bcad5b6e7aa82ef8d8b0` | `liveguard-agent:integration-764eab26a827` |
+| Agent/API/Worker/Business MCP | `e720ce65f859a0312c4083e17b39974cf42c512d` | `liveguard-agent:integration-e720ce65f859` |
 | DB / LB / 선택 broker | `pgvector/pgvector:pg16` / `haproxy:3.0-alpine` / `rabbitmq:4.1-alpine` | Compose에 명시 |
 
 [versions.env](../deploy/integration/versions.env)가 소스·이미지 연결의 정본이다.
@@ -262,6 +262,9 @@ bash scripts/integration.sh normal db down
 볼륨에는 적용하지 않는다. 개인 환경파일과 결과는 공유/커밋하지 않는다.
 
 ## 9. 이번 검증의 경계
+
+#78의 실제 Spring·통제 모델 공동 검증은 [BE 공동 E2E 보고서](be78-joint-verification.md)를
+따른다. 아래는 #76 당시의 모델 미연결 검증 이력이며 #78 결과와 혼합하지 않는다.
 
 요청자와 합의한 검증 범위는 외부 모델·RAG 없는 로컬 연결 시험이다.
 일반 조사·통제 모델·실제 모델, 운영자 승인 뒤 실제 Spring action 집행,
