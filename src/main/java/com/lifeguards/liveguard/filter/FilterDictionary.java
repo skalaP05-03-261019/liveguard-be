@@ -7,13 +7,14 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 
 /**
- * 1차 필터 사전 (dict-v2). 항목은 로드할 때 {@link TextNormalizer}로 정규화한다.
+ * 1차 필터 사전 (dict-v3). 항목은 로드할 때 {@link TextNormalizer}로 정규화한다.
+ * dict-v3은 공격 사전에 정책 v3.2 CP-3.3(집단 대상 비하·배제) 후보 표현을 더했다(A-29). 이전 기록은 dict-v2다.
  * NFKC가 호환 자모(ㅅ, ㅂ…)를 초성 자모로 바꾸므로, 정규화된 메시지와 같은 형태로 맞춰야 비교가 된다.
  */
 public record FilterDictionary(List<String> attackTerms, List<String> officialClaimTerms,
 		List<String> credentialTerms, List<String> certainProfanityTerms, List<String> profanityExceptions) {
 
-	public static final String VERSION = "dict-v2";
+	public static final String VERSION = "dict-v3";
 
 	public FilterDictionary {
 		attackTerms = normalizeAll(attackTerms);

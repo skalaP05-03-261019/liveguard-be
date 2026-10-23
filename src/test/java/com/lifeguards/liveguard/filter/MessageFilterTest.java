@@ -38,6 +38,23 @@ class MessageFilterTest {
 	}
 
 	@Test
+	void groupSlursAndExclusionPhrasesAreContextCandidates() {
+		// dict-v3(A-29): 정책 v3.2 CP-3.3 후보. 가릴 뿐 확정하지 않는다
+		for (String text : List.of("틀딱들은 채팅 치지 마라", "급식충 또 왔네", "개독 아웃", "외국인은 여기서 쫓아내야 함",
+				"그 지역 사람들은 수준 낮아", "여자는 자격없음", "걔네는 원래 열등하잖아")) {
+			FilterDecision decision = classify(text);
+			assertEquals(HandlingRoute.CONTEXT_REVIEW, decision.handlingRoute(), text);
+			assertEquals(Visibility.HELD, decision.visibility(), text);
+			assertEquals(List.of(MessageFilter.ATTACK_TERM), decision.matchingTags(), text);
+		}
+		// 같은 글자 반복을 줄여도 걸린다(norm-v1)
+		assertEquals(HandlingRoute.CONTEXT_REVIEW, classify("틀딱딱딱").handlingRoute());
+		// 부분 일치라 집단 언급 없는 말도 걸린다. 알려진 오탐이며 운영자 정상 결정 전까지 HELD다
+		assertEquals(HandlingRoute.CONTEXT_REVIEW, classify("미개봉 굿즈 팝니다").handlingRoute());
+		assertEquals(HandlingRoute.PASS, classify("오늘 무대 진짜 좋았어요").handlingRoute());
+	}
+
+	@Test
 	void d03OfficialLinkIsBlockedLikeAnyOtherLink() {
 		FilterDecision decision = classify("[공식] 신규 가입 이벤트는 https://live-a.example.com/event 에서 로그인 후 참여하세요");
 
@@ -294,7 +311,7 @@ class MessageFilterTest {
 		assertEquals(TextNormalizer.VERSION + "+" + FilterDictionary.VERSION + "+" + MessageFilter.RULES_VERSION,
 				MessageFilter.version());
 		// #48(개인정보 후보) 이후 판정이라 이전 기록(norm-v1+dict-v2)과 구분된다
-		assertEquals("norm-v1+dict-v2+rules-v2", MessageFilter.version());
+		assertEquals("norm-v1+dict-v3+rules-v2", MessageFilter.version());
 	}
 
 	@ParameterizedTest
