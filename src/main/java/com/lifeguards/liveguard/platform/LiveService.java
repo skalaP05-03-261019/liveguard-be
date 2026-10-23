@@ -11,7 +11,6 @@ import java.sql.Timestamp;
 import java.time.*;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -41,7 +40,7 @@ public class LiveService implements LivePlatformPort {
       ChannelEventHub legacyEvents,
       JdbcLiveQuery liveQueries,
       org.springframework.context.ApplicationEventPublisher applicationEvents,
-      @Value("${liveguard.policy.version:v3.1}") String policy) {
+      com.lifeguards.liveguard.common.PolicyProperties policy) {
     this.db = db;
     this.clock = clock;
     this.guard = guard;
@@ -51,7 +50,8 @@ public class LiveService implements LivePlatformPort {
     this.legacyEvents=legacyEvents;
     this.liveQueries = liveQueries;
     this.applicationEvents = applicationEvents;
-    this.policy = policy;
+    // 후보는 guard와 같은 활성 버전으로 기록한다(설정 검증·기본값은 PolicyProperties 한 곳)
+    this.policy = policy.version();
   }
 
   private Timestamp now() {

@@ -1,6 +1,6 @@
 # LIVE:GUARD ERD v1.0
 
-작성: Backend 1 · 기준: [정책 원본 v3.1](policy/README.md)(PROJECT·POLICY·CONTRACTS·ARCHITECTURE)과 [TBD-decisions](policy/TBD-decisions.md)(ERD v1.0 구현 결정 E-1~E-8 포함)
+작성: Backend 1 · 기준: [정책 원본 v3.2](policy/README.md)(PROJECT·POLICY·CONTRACTS·ARCHITECTURE)과 [TBD-decisions](policy/TBD-decisions.md)(ERD v1.0 구현 결정 E-1~E-8 포함)
 
 - 출발점은 B2가 만든 `V200__guard_cases_and_findings.sql`이다. CONTRACTS §3의 저장 객체에 맞춰 컬럼을 보완하고 테이블을 추가했다.
 - 문서에 이름이 있는 필드만 snake_case로 옮겼다. 상세 DDL(타입 세부, 인덱스 이름)은 마이그레이션에서 정한다.

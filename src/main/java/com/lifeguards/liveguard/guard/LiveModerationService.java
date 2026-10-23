@@ -752,13 +752,9 @@ public class LiveModerationService implements LiveGuardPort {
           || verdict.equals("VIOLATION") && (cats.isEmpty() || policyIds.isEmpty()))
         throw error(ErrorCode.VALIDATION_FAILED, "Invalid verdict evidence");
       for (String category : cats) Category.valueOf(category);
-      for (String p : policyIds)
-        if (!Set.of(
-                "CP-1.1", "CP-1.2", "CP-2.1", "CP-2.2", "CP-3.1", "CP-3.2", "CP-4.1", "CP-4.2",
-                "CP-5.1", "CP-5.2", "SP-2.1", "SP-3.1", "CP-6.1", "MP-1.1", "MP-1.2", "MP-1.3",
-                "MP-1.4", "MP-2.1", "MP-2.2", "MP-2.3", "MP-3.1", "MP-3.2", "MP-4.1", "MP-4.2",
-                "MP-4.3", "SP-4.1", "MM-1.1", "MM-2.1", "CP-7.1")
-            .contains(p)) throw error(ErrorCode.VALIDATION_FAILED, "Unknown policy reference");
+      // 사건이 기록된 정책 버전의 조항만 받는다(v3.1 사건은 CP-3.3을 인용할 수 없다)
+      if (!PolicyProperties.clauseIds(Objects.toString(snapshot.get("policyVersion"))).containsAll(policyIds))
+        throw error(ErrorCode.VALIDATION_FAILED, "Unknown policy reference");
       uncertain |= verdict.equals("NEEDS_REVIEW");
       violation |= verdict.equals("VIOLATION");
       categories.addAll(cats);

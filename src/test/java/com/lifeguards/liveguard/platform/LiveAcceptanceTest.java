@@ -27,7 +27,7 @@ import com.lifeguards.liveguard.contracts.enums.Role;
  * 정책 원본 PROJECT.md 수용 기준 중 채팅 전송 경로(B1)에 걸린 항목을 실제 guard까지 이어서 확인한다.
  * AC-01 PASS, AC-02 인용 속 욕설, AC-03 링크 금지, AC-06 숫자 나열, AC-10 TIMEOUT 중 전송.
  */
-@SpringBootTest(properties = { "LIVEGUARD_POLICY_VERSION=v3.1", "LIVEGUARD_TBD_FIXTURE_ENABLED=true" })
+@SpringBootTest(properties = { "LIVEGUARD_TBD_FIXTURE_ENABLED=true" })
 @Import(TestcontainersConfiguration.class)
 @Transactional
 class LiveAcceptanceTest {
