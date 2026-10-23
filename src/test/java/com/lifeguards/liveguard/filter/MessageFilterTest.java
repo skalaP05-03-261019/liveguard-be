@@ -228,7 +228,7 @@ class MessageFilterTest {
 
 	@ParameterizedTest
 	@ValueSource(strings = { "시발", "너 진짜 씨발 ㅋㅋ", "ㅅㅂ", "ㅅㅂㅅㅂ", "진짜  ㅂㅅ  같네", "ㅆㅂ", "개새끼야", "시발발발발", "ㅅㅂㅂㅂㅂ",
-			"느금마", "좆같네" })
+			"느금마", "좆같네", "씨바 뭐하냐", "아 씨바" })
 	void certainProfanityIsRuleConfirmedAndHidden(String text) {
 		FilterDecision decision = classify(text);
 
@@ -240,7 +240,8 @@ class MessageFilterTest {
 	}
 
 	@ParameterizedTest
-	@ValueSource(strings = { "시발점에서 출발합니다", "다음 역은 시발역입니다", "병신년 새해", "이시 발표 시작", "시바견 귀엽다", "존나 좋다" })
+	@ValueSource(strings = { "시발점에서 출발합니다", "다음 역은 시발역입니다", "병신년 새해", "이시 발표 시작", "시바견 귀엽다", "존나 좋다",
+			"아저씨바쁘세요?", "아가씨바지 예쁘네" })
 	void benignWordsOrAmbiguousSlangAreNotCertainProfanity(String text) {
 		assertEquals(FilterResult.PASS, classify(text).result(), text);
 	}
@@ -294,7 +295,7 @@ class MessageFilterTest {
 		assertEquals(TextNormalizer.VERSION + "+" + FilterDictionary.VERSION + "+" + MessageFilter.RULES_VERSION,
 				MessageFilter.version());
 		// #48(개인정보 후보) 이후 판정이라 이전 기록(norm-v1+dict-v2)과 구분된다
-		assertEquals("norm-v1+dict-v2+rules-v2", MessageFilter.version());
+		assertEquals("norm-v1+dict-v3+rules-v2", MessageFilter.version());
 	}
 
 	@ParameterizedTest

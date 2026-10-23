@@ -1,7 +1,8 @@
-# dict-v2 확실한 욕설 (HOLD, 태그 CERTAIN_PROFANITY). 로드 시 TextNormalizer(norm-v1)로 정규화해 부분 일치로 비교한다.
+# dict-v3 확실한 욕설 (HOLD, 태그 CERTAIN_PROFANITY). 로드 시 TextNormalizer(norm-v1)로 정규화해 부분 일치로 비교한다.
 # 애매한 표현(존나, 지랄, 개- 접두어, 시바 등)은 넣지 않는다. 정상 단어는 profanity-exceptions.txt에 둔다. 팀 확정 전 초기 목록.
 시발
 씨발
+씨바
 ㅅㅂ
 ㅆㅂ
 병신
