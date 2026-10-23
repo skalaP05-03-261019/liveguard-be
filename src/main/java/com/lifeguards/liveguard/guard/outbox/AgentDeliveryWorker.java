@@ -55,6 +55,9 @@ public class AgentDeliveryWorker {
 				: uncertain ? "UNKNOWN" : "FAILED";
 		var next = !retry ? now
 				: now.plus(result.notSent() ? gateway.unreachableBackoff() : properties.backoff(delivery.attemptCount()));
+		if (retry && result.retryAfter() != null && result.retryAfter().isAfter(next)) {
+			next = result.retryAfter();
+		}
 		boolean saved = repository.finish(delivery, status, result.code(), next, now, uncertain, refund);
 		if (!saved) {
 			log.warn("Agent delivery lease lost: outboxId={}", delivery.id());

@@ -225,6 +225,27 @@ class AgentRabbitIntegrationTest {
 	}
 
 	@Test
+	void capacityBackpressureDefersPublicationUntilThePersistedDeadline() throws Exception {
+		responseCode = 503;
+		assertTrue(transport.publishOne());
+		listener.start();
+		await(() -> status().equals("RETRY"));
+		listener.stop();
+		assertFalse(uncertain());
+		assertEquals(1, attempts());
+		clock.advance(Duration.ofSeconds(9));
+		assertFalse(transport.publishOne());
+		assertEquals(java.util.List.of("POST"), METHODS);
+		responseCode = 202;
+		clock.advance(Duration.ofSeconds(1));
+		assertTrue(transport.publishOne());
+		listener.start();
+		await(() -> status().equals("ACCEPTED"));
+		assertEquals(java.util.List.of("POST", "POST"), METHODS);
+		assertEquals(PAYLOADS.getFirst(), PAYLOADS.getLast());
+	}
+
+	@Test
 	void known429UsesDirectPostAndPoisonDoesNotLoop() throws Exception {
 		responseCode = 429;
 		template.convertAndSend(properties.exchange(), properties.routingKey(), "poison");
@@ -292,9 +313,13 @@ class AgentRabbitIntegrationTest {
 				String body = "{\"taskId\":\"" + task.taskId() + "\",\"threadId\":\"" + task.threadId()
 						+ "\",\"operationId\":\"" + task.operationId() + "\",\"status\":\"QUEUED\""
 						+ (exchange.getRequestMethod().equals("GET") ? "" : ",\"duplicate\":false") + "}";
+				if (responseCode == 503) {
+					body = "{\"detail\":{\"code\":\"INBOX_CAPACITY_EXCEEDED\"}}";
+					exchange.getResponseHeaders().set("Retry-After", "10");
+				}
 				byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
 				try (exchange) {
-					exchange.sendResponseHeaders(responseCode == 429 ? 429
+					exchange.sendResponseHeaders(responseCode == 429 || responseCode == 503 ? responseCode
 							: exchange.getRequestMethod().equals("GET") ? 200 : 202, bytes.length);
 					exchange.getResponseBody().write(bytes);
 				}

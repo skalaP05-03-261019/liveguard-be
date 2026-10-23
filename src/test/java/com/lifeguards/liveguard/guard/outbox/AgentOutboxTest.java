@@ -346,6 +346,106 @@ class AgentOutboxTest {
 	}
 
 	@Test
+	void capacityRejectionWaitsAcrossWorkerRestartThenRetriesTheSamePost() {
+		enqueue(task);
+		behavior = exchange -> {
+			exchange.getResponseHeaders().set("Retry-After", "10");
+			respond(exchange, 503, "{\"detail\":{\"code\":\"INBOX_CAPACITY_EXCEEDED\"}}");
+		};
+		assertTrue(worker.deliverOne());
+		assertFalse(uncertain(task));
+		assertEquals(1, attempts(task));
+		assertEquals("INBOX_CAPACITY_EXCEEDED", errorCode(task));
+		assertEquals(NOW.plusSeconds(10), nextAttempt());
+		time.advance(Duration.ofSeconds(9));
+		try (var restartedGateway = new AgentHttpGateway(properties, mapper, clock)) {
+			var restarted = new AgentDeliveryWorker(repository, restartedGateway, properties, clock);
+			assertFalse(restarted.deliverOne());
+			time.advance(Duration.ofSeconds(1));
+			behavior = exchange -> respond(exchange, 202, receipt(task, "QUEUED", false));
+			assertTrue(restarted.deliverOne());
+		}
+		assertEquals("ACCEPTED", status(task));
+		assertEquals(2, attempts(task));
+		assertEquals(List.of("POST", "POST"), methods);
+		assertEquals(payloads.getFirst(), payloads.getLast());
+	}
+
+	@org.junit.jupiter.params.ParameterizedTest
+	@org.junit.jupiter.params.provider.CsvSource({
+			"'Wed, 21 Oct 2026 04:00:12 GMT',12",
+			"'Wed, 21 Oct 2026 03:59:00 GMT',2",
+			"0,2", "1,2", "invalid,2", "-1,2", "9999999999999999999999999,2",
+			"9223372036854775807,2", "'',2", "20,20"
+	})
+	void retryAfterUsesTheLaterOfServerDeadlineAndBackoff(String header, int seconds) {
+		enqueue(task);
+		behavior = exchange -> {
+			if (!header.isEmpty()) exchange.getResponseHeaders().set("Retry-After", header);
+			respond(exchange, 503, "{\"detail\":{\"code\":\"INBOX_CAPACITY_EXCEEDED\"}}");
+		};
+		assertTrue(worker.deliverOne());
+		assertEquals(NOW.plusSeconds(seconds), nextAttempt());
+		assertFalse(uncertain(task));
+	}
+
+	@org.junit.jupiter.params.ParameterizedTest
+	@org.junit.jupiter.params.provider.ValueSource(strings = {
+			"{}", "not-json", "{\"code\":\"INBOX_CAPACITY_EXCEEDED\"}",
+			"{\"detail\":{\"code\":\"OTHER\"}}", "{\"detail\":{\"code\":[\"INBOX_CAPACITY_EXCEEDED\"]}}"
+	})
+	void genericOrMalformed503RemainsUncertain(String body) {
+		enqueue(task);
+		behavior = exchange -> {
+			exchange.getResponseHeaders().set("Retry-After", "10");
+			respond(exchange, 503, body);
+		};
+		assertTrue(worker.deliverOne());
+		assertTrue(uncertain(task));
+		assertEquals("AGENT_HTTP_503", errorCode(task));
+		assertEquals(NOW.plusSeconds(10), nextAttempt());
+	}
+
+	@Test
+	void capacityRejectionExhaustsFiniteBudgetAndPreservesEarlierUncertainty() {
+		enqueue(task);
+		jdbc.update("UPDATE guard.agent_task_outbox SET delivery_uncertain=true WHERE operation_id=?", task.operationId());
+		behavior = exchange -> {
+			if (exchange.getRequestMethod().equals("GET")) respond(exchange, 404, "{}");
+			else respond(exchange, 503, "{\"detail\":{\"code\":\"INBOX_CAPACITY_EXCEEDED\"}}");
+		};
+		for (int i = 0; i < 3; i++) {
+			assertTrue(worker.deliverOne());
+			assertTrue(uncertain(task));
+			time.advance(Duration.ofMinutes(1));
+		}
+		assertEquals("UNKNOWN", status(task));
+		assertEquals(3, attempts(task));
+		assertEquals(List.of("GET", "POST", "GET", "POST", "GET", "POST"), methods);
+		assertFalse(worker.deliverOne());
+	}
+
+	@Test
+	void repeatedConfirmedCapacityRejectionsEndFailedWithoutStatusLookups() {
+		enqueue(task);
+		behavior = exchange -> respond(exchange, 503, "{\"detail\":{\"code\":\"INBOX_CAPACITY_EXCEEDED\"}}");
+		for (int i = 0; i < 3; i++) {
+			assertTrue(worker.deliverOne());
+			time.advance(Duration.ofMinutes(1));
+		}
+		assertEquals("FAILED", status(task));
+		assertFalse(uncertain(task));
+		assertEquals(3, attempts(task));
+		assertEquals(List.of("POST", "POST", "POST"), methods);
+		assertFalse(worker.deliverOne());
+	}
+
+	private Instant nextAttempt() {
+		return jdbc.queryForObject("SELECT next_attempt_at FROM guard.agent_task_outbox WHERE operation_id=?",
+				java.sql.Timestamp.class, task.operationId()).toInstant();
+	}
+
+	@Test
 	void unreachableAttemptsDoNotSpendTheBudgetAndRecoveryKeepsTheFullBudget() throws Exception {
 		enqueue(task);
 		var unreachable = unreachableProperties(closedPort());
