@@ -8,7 +8,10 @@ import com.lifeguards.liveguard.contracts.enums.Category;
 import com.lifeguards.liveguard.contracts.enums.ContextDecision;
 import com.lifeguards.liveguard.contracts.exception.InvalidContractException;
 
-/** 문맥 검토 결정(A-7). CONFIRM_VIOLATION이면 categories·evidenceMessageIds가 필수이고, 다른 결정에서는 보내지 않는다. */
+/**
+ * 문맥 검토 결정(A-7). CONFIRM_VIOLATION이면 categories·evidenceMessageIds가 필수이고, 다른 결정에서는 보내지 않는다.
+ * reason은 선택이다(A-26).
+ */
 public record ContextDecisionRequest(
 		UUID clientRequestId,
 		int expectedReviewVersion,
@@ -22,7 +25,7 @@ public record ContextDecisionRequest(
 	public ContextDecisionRequest {
 		DtoValidation.requireNonNull(clientRequestId, "clientRequestId");
 		DtoValidation.requireNonNull(decision, "decision");
-		reason = DtoValidation.requireBoundedText(reason, "reason", MAX_REASON_LENGTH);
+		reason = DtoValidation.optionalBoundedText(reason, "reason", MAX_REASON_LENGTH);
 		if (decision == ContextDecision.CONFIRM_VIOLATION) {
 			categories = DtoValidation.immutableList(categories, "categories");
 			evidenceMessageIds = DtoValidation.immutableList(evidenceMessageIds, "evidenceMessageIds");

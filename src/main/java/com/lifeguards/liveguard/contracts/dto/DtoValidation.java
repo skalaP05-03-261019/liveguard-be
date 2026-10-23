@@ -35,6 +35,11 @@ public final class DtoValidation {
 		return value;
 	}
 
+	/** 선택 필드: 없으면 null, 있으면 {@link #requireBoundedText}와 같이 검증한다. */
+	public static String optionalBoundedText(String value, String name, int maxLength) {
+		return value == null ? null : requireBoundedText(value, name, maxLength);
+	}
+
 	public static <T> List<T> immutableList(List<T> values, String name) {
 		requireNonNull(values, name);
 		return List.copyOf(values);

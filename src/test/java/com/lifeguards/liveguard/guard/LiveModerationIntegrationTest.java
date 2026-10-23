@@ -109,7 +109,7 @@ class LiveModerationIntegrationTest {
     request.put("clientRequestId", UUID.randomUUID().toString());
     request.put("expectedReviewVersion", version);
     request.put("decision", value);
-    request.put("reason", "operator examined evidence");
+    // 운영자 화면에는 사유 입력란이 없다(A-26)
     if (value.equals("CONFIRM_VIOLATION")) {
       request.put("categories", categories);
       request.put("evidenceMessageIds", card.get("targetMessageIds"));
@@ -158,6 +158,41 @@ class LiveModerationIntegrationTest {
     lives.visibility(context,"PUBLIC");
     assertEquals("PUBLIC",db.queryForObject("SELECT visibility FROM platform.messages WHERE id=?",String.class,message));
     assertEquals(version+1,db.queryForObject("SELECT version FROM platform.messages WHERE id=?",Integer.class,message));
+  }
+
+  @Test
+  void decisionReasonIsOptionalButMustNotBeBlankWhenSent() throws Exception {
+    UUID live = lives.start(channel, moderator).liveId();
+    UUID c = candidate(live, "너 꺼져");
+    UUID r = proposal(c, "VIOLATION");
+    db.update("UPDATE platform.users SET password_hash=? WHERE id=?", passwordEncoder.encode("liveguard-local"), operator);
+    var session = com.lifeguards.liveguard.support.LoginSupport.login(mvc, operator.toString());
+    String path = "/api/context-reviews/" + r + "/decision";
+    java.util.function.Function<String, org.springframework.test.web.servlet.ResultActions> post = body -> {
+      try {
+        return mvc.perform(com.lifeguards.liveguard.support.LoginSupport.withXsrf(mvc,
+            org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post(path).session(session))
+            .contentType("application/json").content(body));
+      } catch (Exception e) {
+        throw new IllegalStateException(e);
+      }
+    };
+    // 보내면 공백 아닌 1~500자
+    post.apply("{\"clientRequestId\":\"" + UUID.randomUUID() + "\",\"expectedReviewVersion\":1,\"decision\":\"DEFER\",\"reason\":\"  \"}")
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.error.code").value("VALIDATION_FAILED"));
+    // 운영자 화면(A-26)은 사유를 보내지 않는다
+    post.apply("{\"clientRequestId\":\"" + UUID.randomUUID() + "\",\"expectedReviewVersion\":1,\"decision\":\"DEFER\"}")
+        .andExpect(status().isAccepted());
+    // 이전 FE는 위반 확정에 사유를 함께 보낸다
+    UUID target = db.queryForObject("SELECT id FROM platform.messages WHERE case_id=?", UUID.class, c);
+    post.apply("{\"clientRequestId\":\"" + UUID.randomUUID() + "\",\"expectedReviewVersion\":2,\"decision\":\"CONFIRM_VIOLATION\","
+            + "\"reason\":\"스트리머 인신공격\",\"categories\":[\"HARASSMENT\"],\"evidenceMessageIds\":[\"" + target + "\"]}")
+        .andExpect(status().isAccepted());
+    assertEquals(
+        List.of("DEFER:", "CONFIRM_VIOLATION:스트리머 인신공격"),
+        db.queryForList(
+            "SELECT value||':'||reason FROM guard.decisions WHERE review_id=? ORDER BY decided_at,value DESC", String.class, r));
   }
 
   @Test
