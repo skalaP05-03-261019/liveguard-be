@@ -1,0 +1,208 @@
+name: liveguard-integration
+
+x-agent-environment: &agent-environment
+  AGENT_INBOX_DB_URL: postgresql://agent:${AGENT_DB_PASSWORD:?Set AGENT_DB_PASSWORD}@agent-db:5432/agent
+  AGENT_SERVICE_TOKEN: ${AGENT_SERVICE_TOKEN:?Set AGENT_SERVICE_TOKEN}
+  AGENT_GRAPH_CONCURRENCY: "4"
+  AGENT_WORKER_GRAPH_CONCURRENCY: "2"
+  AGENT_MODEL_CONCURRENCY: "4"
+  AGENT_INBOX_CAPACITY: "10000"
+  LANGSMITH_TRACING: "false"
+
+x-api: &api
+  image: ${AGENT_IMAGE:?Use versions.env}
+  command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001", "--no-access-log"]
+  environment: *agent-environment
+  depends_on:
+    agent-db:
+      condition: service_healthy
+  healthcheck:
+    test: ["CMD", "python", "-c", "import json, urllib.request; r=json.load(urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=2)); assert r['readyForTasks'] is True"]
+    interval: 5s
+    timeout: 3s
+    retries: 20
+  stop_grace_period: 30s
+
+x-worker: &worker
+  image: ${AGENT_IMAGE:?Use versions.env}
+  command: ["python", "-m", "app.worker"]
+  environment: &worker-environment
+    <<: *agent-environment
+    AGENT_CHECKPOINT_DB_URL: postgresql://agent:${AGENT_DB_PASSWORD:?Set AGENT_DB_PASSWORD}@agent-db:5432/agent
+    AGENT_GATEWAY_FACTORY: app.integration.http_gateway:configured_gateway
+    BACKEND_BASE_URL: http://backend:8080
+    BACKEND_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:?Set INTERNAL_SERVICE_TOKEN}
+    BUSINESS_MCP_URL: http://business-mcp:8002/mcp
+    BUSINESS_MCP_AGENT_TOKEN: ${BUSINESS_MCP_AGENT_TOKEN:?Set BUSINESS_MCP_AGENT_TOKEN}
+    BUSINESS_MCP_CLIENT_CONCURRENCY: "8"
+    BUSINESS_MCP_CALL_TIMEOUT: "10"
+    RAG_MCP_URL: ${RAG_MCP_URL:?Set container-reachable RAG_MCP_URL}
+    RAG_MCP_AGENT_TOKEN: ${RAG_MCP_AGENT_TOKEN:?Set RAG_MCP_AGENT_TOKEN}
+    LIVEGUARD_POLICY_VERSION: v3.1
+    POLICY_VERSION: v3.1
+    MODEL_PROVIDER: ${MODEL_PROVIDER:?Choose model provider explicitly}
+    MODEL_BASE_URL: ${MODEL_BASE_URL:?Set model endpoint}
+    MODEL_NAME: ${MODEL_NAME:?Set model name}
+    MODEL_API_KEY: ${MODEL_API_KEY:?Set model credential}
+    MODEL_QUOTA_GROUP: ${MODEL_QUOTA_GROUP:?Set shared quota group}
+    MODEL_RPM: ${MODEL_RPM:-30}
+    MODEL_TPM: ${MODEL_TPM:-60000}
+    MODEL_CONCURRENCY: ${MODEL_CONCURRENCY:-4}
+    MODEL_MAX_INPUT_TOKENS: ${MODEL_MAX_INPUT_TOKENS:-12000}
+    MODEL_MAX_OUTPUT_TOKENS: ${MODEL_MAX_OUTPUT_TOKENS:-2000}
+    MODEL_TIMEOUT_SECONDS: ${MODEL_TIMEOUT_SECONDS:-30}
+    AGENT_WORKER_LEASE_SECONDS: "30"
+    AGENT_WORKER_HEARTBEAT_SECONDS: "5"
+    AGENT_WORKER_POLL_SECONDS: "0.5"
+    AGENT_WORKER_SHUTDOWN_SECONDS: "30"
+    AGENT_WORKER_MAX_ATTEMPTS: "3"
+    AGENT_WORKER_BACKOFF_SECONDS: "1"
+  depends_on:
+    agent-api:
+      condition: service_healthy
+    agent-init:
+      condition: service_completed_successfully
+  # Worker close can wait twice the shutdown timeout before process exit.
+  stop_grace_period: 75s
+
+x-mcp: &mcp
+  image: ${AGENT_IMAGE:?Use versions.env}
+  command: ["python", "-m", "app.business_mcp"]
+  environment:
+    BUSINESS_MCP_HOST: 0.0.0.0
+    BUSINESS_MCP_PORT: "8002"
+    BUSINESS_BACKEND_BASE_URL: http://backend:8080
+    BUSINESS_MCP_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:?Set INTERNAL_SERVICE_TOKEN}
+    BUSINESS_MCP_AGENT_TOKEN: ${BUSINESS_MCP_AGENT_TOKEN:?Set BUSINESS_MCP_AGENT_TOKEN}
+    BUSINESS_MCP_ALLOWED_HOSTS: business-mcp:*,mcp-1:*,mcp-2:*,localhost:*,127.0.0.1:*
+    BUSINESS_MCP_MAX_REQUESTS: "16"
+    BUSINESS_MCP_BACKEND_CONNECTIONS: "16"
+    BUSINESS_MCP_BACKEND_TIMEOUT: "10"
+    BUSINESS_MCP_SHUTDOWN_TIMEOUT: "20"
+  depends_on:
+    backend:
+      condition: service_healthy
+  healthcheck:
+    test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8002/ready', timeout=2)"]
+    interval: 5s
+    timeout: 3s
+    retries: 20
+  stop_grace_period: 30s
+
+services:
+  agent-init:
+    image: ${AGENT_IMAGE:?Use versions.env}
+    command: ["python", "/integration/initialize_agent.py"]
+    environment:
+      AGENT_INBOX_DB_URL: postgresql://agent:${AGENT_DB_PASSWORD:?Set AGENT_DB_PASSWORD}@agent-db:5432/agent
+      PYTHONPATH: /app
+    volumes:
+      - ./initialize_agent.py:/integration/initialize_agent.py:ro
+    depends_on:
+      agent-db:
+        condition: service_healthy
+
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: liveguard
+      POSTGRES_USER: liveguard
+      POSTGRES_PASSWORD: ${BE_DB_PASSWORD:?Set BE_DB_PASSWORD}
+    volumes:
+      - be-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "liveguard", "-d", "liveguard"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  agent-db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: agent
+      POSTGRES_USER: agent
+      POSTGRES_PASSWORD: ${AGENT_DB_PASSWORD:?Set AGENT_DB_PASSWORD}
+    volumes:
+      - agent-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "agent", "-d", "agent"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  backend:
+    image: ${BE_IMAGE:?Use versions.env}
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/liveguard
+      SPRING_DATASOURCE_USERNAME: liveguard
+      SPRING_DATASOURCE_PASSWORD: ${BE_DB_PASSWORD:?Set BE_DB_PASSWORD}
+      # Isolated local test data only; never use these seed accounts in production.
+      SPRING_FLYWAY_LOCATIONS: classpath:db/migration,classpath:db/seed
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:?Set INTERNAL_SERVICE_TOKEN}
+      LIVEGUARD_POLICY_VERSION: v3.1
+      AGENT_DELIVERY_ENABLED: "true"
+      AGENT_DELIVERY_TRANSPORT: db
+      AGENT_BASE_URL: http://agent-api:8001
+      AGENT_SERVICE_TOKEN: ${AGENT_SERVICE_TOKEN:?Set AGENT_SERVICE_TOKEN}
+      LIVEGUARD_AGENT_DELIVERY_MAX_ATTEMPTS: "5"
+    ports:
+      - "127.0.0.1:${BE_PORT:-18080}:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "bash", "-ec", "exec 3<>/dev/tcp/127.0.0.1/8080; printf 'GET /v3/api-docs HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3; read -r status <&3; [[ \"$$status\" == *' 200 '* ]]"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    stop_grace_period: 45s
+
+  api-1:
+    <<: *api
+  api-2:
+    <<: *api
+  mcp-1:
+    <<: *mcp
+  mcp-2:
+    <<: *mcp
+
+  agent-api:
+    image: haproxy:3.0-alpine
+    volumes:
+      - ./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    networks:
+      default:
+        aliases: [business-mcp]
+    ports:
+      - "127.0.0.1:${AGENT_PORT:-18001}:8001"
+      - "127.0.0.1:${BUSINESS_MCP_PORT:-18002}:8002"
+    depends_on:
+      api-1:
+        condition: service_healthy
+      api-2:
+        condition: service_healthy
+      mcp-1:
+        condition: service_healthy
+      mcp-2:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8001/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    stop_grace_period: 30s
+
+  worker-1:
+    <<: *worker
+    environment:
+      <<: *worker-environment
+      AGENT_WORKER_ID: integration-worker-1
+  worker-2:
+    <<: *worker
+    environment:
+      <<: *worker-environment
+      AGENT_WORKER_ID: integration-worker-2
+
+volumes:
+  be-db:
+  agent-db:

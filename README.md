@@ -43,6 +43,9 @@ compose 없이 Docker만 실행 중이면 됩니다.
 
 ## Agent 작업 발송 Outbox
 
+다중 Agent API·Worker·Business MCP 공동 시험은 [격리 통합 환경 실행 절차](docs/multi-instance-integration.md)를 따른다.
+운영 기본값을 바꾸지 않고 일반 Agent 경로와 기본 3분 대체 처리 경로, DB·Rabbit 전달 모드를 분리한다.
+
 기본 경로는 **DB Outbox → HTTP Gateway → Agent 영속 Inbox**입니다.
 선택적으로 **DB Outbox → RabbitMQ 알림 → BE HTTP Worker → Agent 영속 Inbox**로 분산합니다.
 채팅 후보의 조사와 저장된 사람 결정의 재개는 같은 업무 트랜잭션에서 자동 enqueue합니다.
