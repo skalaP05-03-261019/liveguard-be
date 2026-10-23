@@ -1030,7 +1030,7 @@ public class LiveModerationService implements LiveGuardPort {
     // 사유는 선택이다(A-26). 보내지 않으면 빈 문자열로 저장한다
     String reason = Objects.toString(input.get("reason"), "");
     if ((input.containsKey("reason") && reason.isBlank())
-        || reason.length() > 500
+        || reason.codePointCount(0, reason.length()) > 500
         || !(kind.equals("CONTEXT")
                 ? Set.of("CONFIRM_NORMAL", "CONFIRM_VIOLATION", "DEFER")
                 : Set.of("APPROVE", "REJECT"))
