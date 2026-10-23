@@ -8,7 +8,7 @@ import java.util.List;
 
 /**
  * 1차 필터 사전 (dict-v3). 항목은 로드할 때 {@link TextNormalizer}로 정규화한다.
- * dict-v3은 확실한 욕설에 '씨바'를, 예외에 호칭을 붙여 쓴 경우(아저씨바·아가씨바)를 더했다. 이전 기록은 dict-v2다.
+ * dict-v3은 공격 사전(문맥 후보)에 욕설 변형 '씨바'를 더했다(A-30). 이전 기록은 dict-v2다.
  * NFKC가 호환 자모(ㅅ, ㅂ…)를 초성 자모로 바꾸므로, 정규화된 메시지와 같은 형태로 맞춰야 비교가 된다.
  */
 public record FilterDictionary(List<String> attackTerms, List<String> officialClaimTerms,

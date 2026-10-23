@@ -228,7 +228,7 @@ class MessageFilterTest {
 
 	@ParameterizedTest
 	@ValueSource(strings = { "시발", "너 진짜 씨발 ㅋㅋ", "ㅅㅂ", "ㅅㅂㅅㅂ", "진짜  ㅂㅅ  같네", "ㅆㅂ", "개새끼야", "시발발발발", "ㅅㅂㅂㅂㅂ",
-			"느금마", "좆같네", "씨바 뭐하냐", "아 씨바" })
+			"느금마", "좆같네" })
 	void certainProfanityIsRuleConfirmedAndHidden(String text) {
 		FilterDecision decision = classify(text);
 
@@ -240,10 +240,21 @@ class MessageFilterTest {
 	}
 
 	@ParameterizedTest
-	@ValueSource(strings = { "시발점에서 출발합니다", "다음 역은 시발역입니다", "병신년 새해", "이시 발표 시작", "시바견 귀엽다", "존나 좋다",
-			"아저씨바쁘세요?", "아가씨바지 예쁘네" })
+	@ValueSource(strings = { "시발점에서 출발합니다", "다음 역은 시발역입니다", "병신년 새해", "이시 발표 시작", "시바견 귀엽다", "존나 좋다" })
 	void benignWordsOrAmbiguousSlangAreNotCertainProfanity(String text) {
 		assertEquals(FilterResult.PASS, classify(text).result(), text);
+	}
+
+	@Test
+	void ssibaIsAContextCandidateNotCertainProfanity() {
+		// A-30: 욕설 변형 '씨바'는 확정하지 않고 HELD 뒤 AI 조사와 운영자 결정에 맡긴다.
+		// 부분 일치라 붙여 쓴 일상 표현도 걸리지만 숨김 확정·제재 없이 운영자가 정상으로 풀 수 있다
+		for (String text : List.of("씨바 뭐하냐", "아 씨바", "날씨바뀌었네", "아저씨바쁘세요?")) {
+			FilterDecision decision = classify(text);
+			assertEquals(HandlingRoute.CONTEXT_REVIEW, decision.handlingRoute(), text);
+			assertEquals(Visibility.HELD, decision.visibility(), text);
+			assertNull(decision.ruleId(), text);
+		}
 	}
 
 	@Test
@@ -294,7 +305,7 @@ class MessageFilterTest {
 	void versionCombinesNormalizationDictionaryAndRulesVersions() {
 		assertEquals(TextNormalizer.VERSION + "+" + FilterDictionary.VERSION + "+" + MessageFilter.RULES_VERSION,
 				MessageFilter.version());
-		// #48(개인정보 후보) 이후 판정이라 이전 기록(norm-v1+dict-v2)과 구분된다
+		// 사전 버전을 올리면(dict-v3, A-30) 이전 기록(norm-v1+dict-v2+rules-v2, #48 이전은 norm-v1+dict-v2)과 구분된다
 		assertEquals("norm-v1+dict-v3+rules-v2", MessageFilter.version());
 	}
 
