@@ -50,6 +50,8 @@ class PolicyPropertiesTest {
 	void onlyV31RequiresVerifiedPiiFactsForConfirmation() {
 		assertTrue(PolicyProperties.requiresVerifiedPii("v3.1"));
 		assertFalse(PolicyProperties.requiresVerifiedPii("v3.2"));
+		// 모르는 버전은 닫힌 기본값이다
+		assertTrue(PolicyProperties.requiresVerifiedPii("null"));
 	}
 
 }

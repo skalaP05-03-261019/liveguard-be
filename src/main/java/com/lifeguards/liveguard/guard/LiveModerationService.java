@@ -767,17 +767,19 @@ public class LiveModerationService implements LiveGuardPort {
     }
     if (!found.equals(targets))
       throw error(ErrorCode.VALIDATION_FAILED, "Exactly one finding per target required");
-    // v3.1 사건은 검증된 개인정보 출처가 없으면 개인정보 위반 확정을 받지 않는다(서버에 출처가 없다).
-    // v3.2부터는 실재·유효성과 관계없이 형태와 노출 문맥을 근거로 한 판정을 받는다(A-28). 불확실하면 A-16
-    if (input.get("handlingRoute").equals("PII_INVESTIGATION") && violation && !uncertain
-        && PolicyProperties.requiresVerifiedPii(Objects.toString(snapshot.get("policyVersion"))))
-      throw error(
-          ErrorCode.REVIEW_NOT_APPROVED, "Verified PII facts unavailable; NEEDS_REVIEW required");
     // 열린 검토에는 Agent가 결정을 기다리게 되는 판정(문맥 경로, NEEDS_REVIEW)만 붙인다. 개인정보 경로의 확정 판정은
     // Agent가 문맥 검토 응답을 받지 않으므로(재개할 대기 지점이 생기지 않음) 받지 않고 운영자 결정에 맡긴다
     boolean waitsForDecision = input.get("handlingRoute").equals("CONTEXT_REVIEW") || uncertain;
     if (openReview.isPresent() && !waitsForDecision)
       throw error(ErrorCode.STALE_VERSION, "Context review is already open without AI judgment");
+    // 개인정보 경로의 확정 위반은 운영자 없이 확정되므로 PII_EXPOSURE만 받는다. 다른 유형(괴롭힘 등)은 운영자 결정이
+    // 필요하니 NEEDS_REVIEW로 내야 한다. v3.1 사건은 검증된 개인정보 출처가 없으면 받지 않는다(서버에 출처가 없다).
+    // v3.2부터는 실재·유효성과 관계없이 형태와 노출 문맥을 근거로 한 판정을 받는다(A-28). 불확실하면 A-16
+    if (input.get("handlingRoute").equals("PII_INVESTIGATION") && violation && !uncertain
+        && (PolicyProperties.requiresVerifiedPii(Objects.toString(snapshot.get("policyVersion")))
+            || !Set.of("PII_EXPOSURE").containsAll(categories)))
+      throw error(
+          ErrorCode.REVIEW_NOT_APPROVED, "PII confirmation not allowed; NEEDS_REVIEW required");
     db.sql("UPDATE guard.live_case_state SET judgment=?::jsonb WHERE case_id=?").params(encode(input),c).update();
     Map<String, Object> receipt = new LinkedHashMap<>();
     // 이미 사람 검토가 열려 있으면 개인정보 자동 확정·자동 공개를 하지 않고 그 검토에 맡긴다

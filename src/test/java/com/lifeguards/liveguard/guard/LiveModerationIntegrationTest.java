@@ -242,6 +242,29 @@ class LiveModerationIntegrationTest {
     assertEquals(ErrorCode.REVIEW_NOT_APPROVED,
         assertThrows(ApiException.class, () -> guard.judgment(c, piiViolation(c))).code());
     assertEquals("HELD", visibilityOf(c));
+    // AI 판정 없는 검토가 열린 뒤 늦게 온 확정 판정은 버전과 관계없이 409다(A-25)
+    assertTrue(guard.openReviewWithoutJudgment(c, java.time.Duration.ZERO));
+    assertEquals(ErrorCode.STALE_VERSION,
+        assertThrows(ApiException.class, () -> guard.judgment(c, piiViolation(c))).code());
+  }
+
+  @Test
+  void piiRouteConfirmsOnlyPiiExposureWithoutAnOperator() {
+    UUID live = lives.start(channel, moderator).liveId();
+    UUID c = candidate(live, "꺼져 연락 010-0000-3333");
+    assertEquals("PII_INVESTIGATION", guard.snapshot(c).get("handlingRoute"));
+    // 개인정보 경로의 확정은 운영자를 거치지 않으므로 괴롭힘 등 다른 유형은 받지 않는다(운영자 결정이 필요하면 NEEDS_REVIEW)
+    assertEquals(ErrorCode.REVIEW_NOT_APPROVED, assertThrows(ApiException.class,
+        () -> guard.judgment(c, harassmentJudgment(c, "v3.2", List.of("CP-3.2")))).code());
+    var both = piiViolation(c);
+    var finding = new LinkedHashMap<>((Map<String, Object>) ((List<?>) both.get("messageFindings")).getFirst());
+    finding.put("categories", List.of("PII_EXPOSURE", "HARASSMENT"));
+    both.put("messageFindings", List.of(finding));
+    assertEquals(ErrorCode.REVIEW_NOT_APPROVED,
+        assertThrows(ApiException.class, () -> guard.judgment(c, both)).code());
+    assertEquals("HELD", visibilityOf(c));
+    assertEquals(0, db.queryForObject(
+        "SELECT count(*) FROM guard.findings WHERE case_id=? AND status='CONFIRMED'", Integer.class, c));
   }
 
   @Test
