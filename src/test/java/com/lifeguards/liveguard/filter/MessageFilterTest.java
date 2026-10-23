@@ -49,8 +49,14 @@ class MessageFilterTest {
 		}
 		// 같은 글자 반복을 줄여도 걸린다(norm-v1)
 		assertEquals(HandlingRoute.CONTEXT_REVIEW, classify("틀딱딱딱").handlingRoute());
-		// 부분 일치라 집단 언급 없는 말도 걸린다. 알려진 오탐이며 운영자 정상 결정 전까지 HELD다
-		assertEquals(HandlingRoute.CONTEXT_REVIEW, classify("미개봉 굿즈 팝니다").handlingRoute());
+		// 흔한 띄어쓰기 변형도 걸린다(norm-v1은 공백을 지우지 않는다)
+		for (String text : List.of("수준낮아", "수준이낮다", "자격 없음", "자격이없다"))
+			assertEquals(HandlingRoute.CONTEXT_REVIEW, classify(text).handlingRoute(), text);
+		// 사전 단어를 포함하는 일상 표현은 예외 사전(attack-exceptions.txt)으로 비교 전에 지운다
+		for (String text : List.of("미개봉 굿즈 팝니다", "열등감 느껴짐", "김치남았다 ㅋㅋ", "짱개웃김", "개독감 걸림", "미개척지 탐험"))
+			assertEquals(HandlingRoute.PASS, classify(text).handlingRoute(), text);
+		// 예외 단어가 있어도 다른 자리의 사전 단어는 그대로 걸린다
+		assertEquals(HandlingRoute.CONTEXT_REVIEW, classify("미개봉이라더니 미개한 판매자").handlingRoute());
 		assertEquals(HandlingRoute.PASS, classify("오늘 무대 진짜 좋았어요").handlingRoute());
 	}
 
@@ -232,13 +238,14 @@ class MessageFilterTest {
 	@Test
 	void dictionaryEntriesAreNormalizedOnLoad() {
 		FilterDictionary dictionary = new FilterDictionary(List.of("꺼져", "  "), List.of("OFFICIAL"), List.of(),
-				List.of("ㅅㅂ"), List.of("ＳＩＢＡＬ점"));
+				List.of("ㅅㅂ"), List.of("ＳＩＢＡＬ점"), List.of("미개봉"));
 
 		assertEquals(List.of("꺼져"), dictionary.attackTerms());
 		assertEquals(List.of("official"), dictionary.officialClaimTerms());
 		assertEquals(List.of(TextNormalizer.normalize("ㅅㅂ")), dictionary.certainProfanityTerms());
 		assertEquals("ᄉᄇ", dictionary.certainProfanityTerms().get(0), "호환 자모가 초성 자모로 바뀐 형태로 저장된다");
 		assertEquals(List.of("sibal점"), dictionary.profanityExceptions());
+		assertEquals(List.of("미개봉"), dictionary.attackExceptions());
 	}
 
 	// ----- 확실한 욕설: HOLD (피싱과 구분은 matchingTags) -----
