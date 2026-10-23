@@ -434,7 +434,8 @@ public class LiveModerationService implements LiveGuardPort {
             decision,
             kind == null ? null : AgentTaskEnvelope.ReviewKind.valueOf(kind),
             review,
-            UUID.randomUUID()));
+            UUID.randomUUID(),
+            id(c.get("live_id"))));
   }
 
   @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ)

@@ -2,12 +2,21 @@ package com.lifeguards.liveguard.guard.outbox;
 
 import java.util.UUID;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.lifeguards.liveguard.contracts.dto.DtoValidation;
 import com.lifeguards.liveguard.contracts.exception.InvalidContractException;
 
 public record AgentTaskEnvelope(UUID eventId, UUID taskId, UUID caseId, Kind kind, String threadId,
 		UUID snapshotId, int expectedEvidenceVersion, UUID decisionId, ReviewKind reviewKind,
-		UUID reviewId, UUID traceId) {
+		UUID reviewId, UUID traceId, @JsonInclude(JsonInclude.Include.NON_NULL) UUID liveId) {
+
+	/** Retains the wire shape of envelopes persisted before liveId was introduced. */
+	public AgentTaskEnvelope(UUID eventId, UUID taskId, UUID caseId, Kind kind, String threadId,
+			UUID snapshotId, int expectedEvidenceVersion, UUID decisionId, ReviewKind reviewKind,
+			UUID reviewId, UUID traceId) {
+		this(eventId, taskId, caseId, kind, threadId, snapshotId, expectedEvidenceVersion,
+				decisionId, reviewKind, reviewId, traceId, null);
+	}
 
 	public enum Kind {
 		ANALYZE, REANALYZE, RESUME_REVIEW

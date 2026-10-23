@@ -62,6 +62,10 @@ V201은 발송 메타데이터와 불변 envelope만 저장하고 채팅 원문�
 - `RECONCILE`: 지원하지 않으며 enqueue 계약에서 거부
 - Agent와 동일하게 run의 논리 키는 `run:{taskId}`, resume은 `resume:{decisionId}`입니다.
   resume은 기존 task/thread/snapshot 바인딩을 유지합니다. 독립 재조사는 Agent 계약에 맞는 새 task/thread를 사용합니다.
+- 신규 ANALYZE·REANALYZE·RESUME_REVIEW는 사건에 저장된 실제 `liveId`를 전달합니다.
+  enqueue 시 방송·채널·사건·task/thread·증거 바인딩을 검증하며, Agent는 이를 방송별 공정 배분에 사용합니다.
+  `liveId`가 없던 기존 Outbox는 해당 필드를 추가하거나 null로 직렬화하지 않고 원래 JSON 필드 구성을 유지합니다.
+  기존 작업의 방송을 추정·backfill하지 않으며, 같은 operation에 `liveId`를 덧붙여 enqueue하면 충돌입니다.
 - 동일 논리 키와 **동일 전체 payload**는 기존 Outbox ID를 반환합니다.
   eventId·traceId를 포함해 payload를 바꾸거나 eventId를 다른 작업에 재사용하면 `IDEMPOTENCY_CONFLICT`입니다.
   발송 재시도에서는 taskId·eventId·traceId·payload 모두 유지합니다.
