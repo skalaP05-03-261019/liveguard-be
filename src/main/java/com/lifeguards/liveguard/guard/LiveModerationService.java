@@ -599,7 +599,7 @@ public class LiveModerationService implements LiveGuardPort {
 
   @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ)
   public List<Map<String, Object>> cases(UUID live, ConfirmationStatus confirmation, AuthenticatedUser user) {
-    platform.authorize(live, user.userId(), true);
+    platform.authorize(live, user.userId(), LiveAccess.MONITOR);
     // confirmationStatus가 없으면 전체, 있으면 그 확정 상태의 사건만(openapi listCases)
     List<Object> params = new ArrayList<>(List.of(live));
     if (confirmation != null) params.add(confirmation.name());
@@ -613,7 +613,7 @@ public class LiveModerationService implements LiveGuardPort {
   @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ)
   public Map<String, Object> detail(UUID c, AuthenticatedUser user) {
     var current = row(c, false);
-    platform.authorize(id(current.get("live_id")), user.userId(), true);
+    platform.authorize(id(current.get("live_id")), user.userId(), LiveAccess.MONITOR);
     return caseDetails(id(current.get("live_id")), List.of(current), user).getFirst();
   }
 
@@ -870,7 +870,7 @@ public class LiveModerationService implements LiveGuardPort {
 
   @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ)
   public List<Map<String, Object>> reviews(UUID live, AuthenticatedUser user) {
-    platform.authorize(live, user.userId(), true);
+    platform.authorize(live, user.userId(), LiveAccess.MONITOR);
     return db
         .sql(
             "SELECT r.id FROM guard.reviews r JOIN guard.cases c ON c.id=r.case_id WHERE"
@@ -1008,7 +1008,7 @@ public class LiveModerationService implements LiveGuardPort {
       throw error(ErrorCode.VALIDATION_FAILED, "Invalid decision fields");
     var rev = review(r, true);
     var c = row(id(rev.get("case_id")), true);
-    platform.authorize(id(c.get("live_id")), user.userId(), true);
+    platform.authorize(id(c.get("live_id")), user.userId(), LiveAccess.DECIDE);
     active(c);
     if (!rev.get("kind").equals(kind))
       throw error(ErrorCode.VALIDATION_FAILED, "Review kind mismatch");
@@ -1278,7 +1278,7 @@ public class LiveModerationService implements LiveGuardPort {
       throw error(ErrorCode.REVIEW_NOT_APPROVED, "Final context decision required");
     if (c.get("applied_result") != null) return parse(c.get("applied_result").toString());
     active(c);
-    platform.authorize(id(c.get("live_id")), id(d.get("operatorId")), true);
+    platform.authorize(id(c.get("live_id")), id(d.get("operatorId")), LiveAccess.DECIDE);
     platform.verifyTargets(
         id(c.get("live_id")),
         (List<Map<String, Object>>) parse(c.get("snapshot").toString()).get("targets"));
@@ -1438,7 +1438,7 @@ public class LiveModerationService implements LiveGuardPort {
     }
     if (old.isPresent() && "SUCCEEDED".equals(old.get().get("status")))
       return approved(result, rev, parse(old.get().get("command").toString()));
-    platform.authorize(id(c.get("live_id")), id(d.get("operatorId")), true);
+    platform.authorize(id(c.get("live_id")), id(d.get("operatorId")), LiveAccess.DECIDE);
     if (!validBasis(r, c)) {
       result.put("status", "INVALID");
       db.sql("UPDATE guard.reviews SET status='INVALIDATED',version=version+1 WHERE id=?").param(r).update();
@@ -1583,7 +1583,7 @@ public class LiveModerationService implements LiveGuardPort {
     active(c);
     UUID r = id(command.get("reviewId")), d = id(command.get("decisionId"));
     var approvedDecision=decision(r,d,true);
-    platform.authorize(id(c.get("live_id")),id(approvedDecision.get("operatorId")),true);
+    platform.authorize(id(c.get("live_id")),id(approvedDecision.get("operatorId")),LiveAccess.DECIDE);
     if (!approvedDecision.get("decision").equals("APPROVE") || !validBasis(r, c))
       throw error(ErrorCode.REVIEW_NOT_APPROVED, "Kick no longer approved");
     scopeLock(id(c.get("live_id")), id(c.get("user_id")));

@@ -12,6 +12,7 @@ import com.lifeguards.liveguard.common.security.AuthenticatedUser;
 import com.lifeguards.liveguard.contracts.dto.request.RevokeFindingRequest;
 import com.lifeguards.liveguard.contracts.enums.ErrorCode;
 import com.lifeguards.liveguard.platform.port.LivePlatformPort;
+import com.lifeguards.liveguard.platform.port.LiveAccess;
 
 /** A human objection revokes one finding; it never deletes audit or consumed kick history. */
 @Service
@@ -29,7 +30,7 @@ public class LiveFindingRecovery {
   UUID owner=db.sql("SELECT case_id FROM guard.findings WHERE id=?").param(finding).query(UUID.class).optional()
    .orElseThrow(()->error(ErrorCode.NOT_FOUND,"Finding not found"));
   var c=cases.row(owner,true); UUID live=uuid(c.get("live_id")),user=uuid(c.get("user_id"));
-  platform.authorize(live,operator.userId(),true);
+  platform.authorize(live,operator.userId(),LiveAccess.REVOKE);
   var prior=db.sql("SELECT finding_id,operator_id,request::text,result::text FROM guard.finding_revocations WHERE client_request_id=?")
    .param(input.clientRequestId()).query(new org.springframework.jdbc.core.ColumnMapRowMapper()).optional();
   String request=json.writeValueAsString(input);

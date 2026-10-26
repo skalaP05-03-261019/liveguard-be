@@ -97,7 +97,7 @@ erDiagram
 | 테이블 | 컬럼 | 비고 |
 | --- | --- | --- |
 | `cases` | `id` PK, `channel_id` FK, `user_id` FK, **`live_id` FK NOT NULL**, **`policy_version` NOT NULL**, `handling_route`, `status`, **`confirmation_status`**, `snapshot_id`, `evidence_version`, `version`, `judged_at`, `occurred_at`, `created_at` | V200 기준. `live_id`·`policy_version`은 NOT NULL로, `confirmation_status`(PENDING, CONFIRMED_VIOLATION, CONFIRMED_NORMAL, CANCELLED, E-3) 추가. `status`는 처리 진행 상태로 유지. DEFER는 `decisions`에만 기록하고 PENDING 유지 |
-| `candidates` | `message_id` PK·FK, `case_id` FK, `filter_result`, `matching_tags`, `filter_version`, `related_message_ids`, `sent_at`, `snapshot_id` UK, `evidence_version` | V200 유지. 1차 필터 입력 스냅샷(`filter_version` 예: `norm-v1+dict-v3+rules-v2`, TBD-08) |
+| `candidates` | `message_id` PK·FK, `case_id` FK, `filter_result`, `matching_tags`, `filter_version`, `related_message_ids`, `sent_at`, `snapshot_id` UK, `evidence_version` | V200 유지. 1차 필터 입력 스냅샷(`filter_version` 예: `norm-v1+dict-v4+rules-v2`, TBD-08) |
 | `case_messages` | `case_id`·`message_id` PK, `owned`, `is_target` | V200 유지. `is_target` = 제재 대상(TARGET), 아니면 증거. 메시지는 한 사건만 소유(`owned`) |
 | `findings` | `id` PK, `case_id` FK, `category`(5종), `source`(AI_PROPOSAL, BACKEND), `verdict`, `status`(PROPOSED, CONFIRMED, REVOKED), `policy_version`, `evidence_reference`, `evidence_version`, `created_at`, **`confirmed_at`**, **`revoked_at`** | V200 기준. `confirmed_at`·`revoked_at` 추가. 부분 유형 취소는 finding 단위. 유효 finding이 0개면 사건 취소(TBD-04) |
 | `finding_events` | `id` PK, `finding_id` FK, `event_type`, `decision_reference`, `reason`, `created_at` | V200 유지. 감사 이력 |

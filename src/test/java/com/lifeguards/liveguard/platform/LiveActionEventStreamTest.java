@@ -88,6 +88,49 @@ class LiveActionEventStreamTest {
 		}
 	}
 
+	@Test
+	void adminReceivesMaskedPrivateChatAndAgentProgressOnGuardStream() throws Exception {
+		Client admin = Client.login(port, "admin");
+		Lines adminChat = subscribe(admin, "/api/lives/" + liveId + "/events");
+		Lines adminGuard = subscribe(admin, "/api/guard/events?liveId=" + liveId);
+		Lines moderator = subscribe(Client.login(port, "moderator"), "/api/guard/events?liveId=" + liveId);
+		for(Lines lines:List.of(adminChat,adminGuard,moderator)) lines.await(":connected"::equals);
+		for(String visibility:List.of("HELD","HIDDEN")) {
+			lives.emit(liveId,"CHAT",Map.of("messageId",UUID.randomUUID(),"text","전화 010-1234-5678",
+					"visibility",visibility,"version",1),VIEWER,true);
+			for(Lines lines:List.of(adminChat,adminGuard)) {
+				String data = lines.await(line->line.startsWith("data:"));
+				assertTrue(data.contains("[PHONE]"));
+				assertTrue(!data.contains("010-1234-5678"));
+			}
+			assertTrue(moderator.await(line->line.startsWith("data:")).contains("010-1234-5678"));
+		}
+		lives.emit(liveId,"CHAT",Map.of("messageId",UUID.randomUUID(),"text","public unchanged",
+				"visibility","PUBLIC","version",1),VIEWER,false);
+		for(Lines lines:List.of(adminChat,adminGuard))
+			assertTrue(lines.await(line->line.startsWith("data:")).contains("public unchanged"));
+		lives.emit(liveId,"TOOL_START",Map.of("caseId",UUID.randomUUID(),"tool","investigate","callId","test"),
+				null,true);
+		assertEquals("event:TOOL_START",adminGuard.await(line->line.startsWith("event:")));
+		assertTrue(adminChat.drainFor(Duration.ofMillis(300)).stream().noneMatch(line->line.contains("TOOL_START")));
+	}
+
+	@Test
+	void logoutAndReauthenticationCloseBothAdministratorStreams() throws Exception {
+		for(boolean logout:List.of(false,true)) {
+			Client admin = Client.login(port,"admin");
+			Lines chat = subscribe(admin,"/api/lives/"+liveId+"/events");
+			Lines events = subscribe(admin,"/api/guard/events?liveId="+liveId);
+			chat.await(":connected"::equals);
+			events.await(":connected"::equals);
+			var response = logout ? admin.post("/api/auth/logout","{}")
+					: admin.post("/api/auth/login","{\"username\":\"viewer\",\"password\":\"liveguard-local\"}");
+			assertEquals(logout ? 204 : 200,response.statusCode(),response.body());
+			chat.awaitEnd();
+			events.awaitEnd();
+		}
+	}
+
 	private Lines subscribe(Client client, String path) throws Exception {
 		HttpResponse<Stream<String>> response = client.http.send(
 				client.request(path).header("Accept", "text/event-stream").GET().build(),
