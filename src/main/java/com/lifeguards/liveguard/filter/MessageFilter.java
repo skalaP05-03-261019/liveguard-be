@@ -47,7 +47,7 @@ public class MessageFilter {
 	 */
 	public static final String RULES_VERSION = "rules-v2";
 
-	/** 판정에 쓴 정규화·사전·규칙 버전 조합 (예: norm-v1+dict-v2+rules-v2). 후보와 함께 전달해 재현·감사에 쓴다. */
+	/** 판정에 쓴 정규화·사전·규칙 버전 조합 (예: norm-v1+dict-v3+rules-v2). 후보와 함께 전달해 재현·감사에 쓴다. */
 	public static String version() {
 		return TextNormalizer.VERSION + "+" + FilterDictionary.VERSION + "+" + RULES_VERSION;
 	}
@@ -62,8 +62,8 @@ public class MessageFilter {
 
 	public FilterDecision classify(FilterInput input) {
 		String normalized = input.normalizedText();
-		boolean attack = containsAny(normalized, dictionary.attackTerms());
-		boolean certainProfanity = containsAny(withoutExceptions(normalized), dictionary.certainProfanityTerms());
+		boolean attack = containsAny(without(normalized, dictionary.attackExceptions()), dictionary.attackTerms());
+		boolean certainProfanity = containsAny(without(normalized, dictionary.profanityExceptions()), dictionary.certainProfanityTerms());
 		boolean officialClaim = containsAny(normalized, dictionary.officialClaimTerms());
 		boolean credential = containsAny(normalized, dictionary.credentialTerms());
 		boolean link = !UrlHosts.extract(input.text()).isEmpty();
@@ -109,10 +109,10 @@ public class MessageFilter {
 		return new FilterDecision(HandlingRoute.PASS, null, tags);
 	}
 
-	/** 욕설 글자를 포함하는 정상 단어(시발점 등)를 비교 전에 지운다. */
-	private String withoutExceptions(String normalized) {
+	/** 사전 단어를 포함하는 정상 단어(시발점, 미개봉 등)를 비교 전에 지운다. */
+	private static String without(String normalized, List<String> exceptions) {
 		String text = normalized;
-		for (String exception : dictionary.profanityExceptions()) {
+		for (String exception : exceptions) {
 			text = text.replace(exception, " ");
 		}
 		return text;
