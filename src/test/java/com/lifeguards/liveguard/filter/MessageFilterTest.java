@@ -270,6 +270,18 @@ class MessageFilterTest {
 	}
 
 	@Test
+	void ssibaIsAContextCandidateNotCertainProfanity() {
+		// A-30: 욕설 변형 '씨바'는 확정하지 않고 HELD 뒤 AI 조사와 운영자 결정에 맡긴다.
+		// 부분 일치라 붙여 쓴 일상 표현도 걸리지만 숨김 확정·제재 없이 운영자가 정상으로 풀 수 있다
+		for (String text : List.of("씨바 뭐하냐", "아 씨바", "날씨바뀌었네", "아저씨바쁘세요?")) {
+			FilterDecision decision = classify(text);
+			assertEquals(HandlingRoute.CONTEXT_REVIEW, decision.handlingRoute(), text);
+			assertEquals(Visibility.HELD, decision.visibility(), text);
+			assertNull(decision.ruleId(), text);
+		}
+	}
+
+	@Test
 	void exceptionWordDoesNotShieldRealProfanityInTheSameMessage() {
 		FilterDecision decision = classify("시발점 가는 버스 씨발");
 
@@ -317,8 +329,8 @@ class MessageFilterTest {
 	void versionCombinesNormalizationDictionaryAndRulesVersions() {
 		assertEquals(TextNormalizer.VERSION + "+" + FilterDictionary.VERSION + "+" + MessageFilter.RULES_VERSION,
 				MessageFilter.version());
-		// #48(개인정보 후보) 이후 판정이라 이전 기록(norm-v1+dict-v2)과 구분된다
-		assertEquals("norm-v1+dict-v3+rules-v2", MessageFilter.version());
+		// 사전 버전을 올리면(dict-v4, A-30) 이전 기록(norm-v1+dict-v3+rules-v2, #48 이전은 norm-v1+dict-v2)과 구분된다
+		assertEquals("norm-v1+dict-v4+rules-v2", MessageFilter.version());
 	}
 
 	@ParameterizedTest
