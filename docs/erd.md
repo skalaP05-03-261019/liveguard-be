@@ -24,6 +24,28 @@ V206이 결정별 강퇴 실행 기록 조회용 인덱스(`live_actions(decisio
 
 ## 1. 처리 흐름
 
+### Phase 2 저장 설계 (#90, 후속 마이그레이션 기준)
+
+아래는 논리 저장 설계이며 이번 변경에서 테이블·컬럼·Flyway 파일을 만들지 않는다.
+
+| 소유 | 추가/확장 | 키·제약 |
+|---|---|---|
+| platform.lives | 정책 버전·evidence_schema_version(신규 opt-in=2, 기존=1)·현재 설정 revision 참조 | 방송 생성 시 고정, 기존 방송 자동 전환 금지 |
+| platform.live_harassment_settings | live_id, revision, level, policy_version, profile_version, changed_at, changed_by | PK(live_id,revision), revision>=1, level CHECK, 실제 변경 이력 불변 |
+| platform.live_harassment_setting_requests | live_id, client_request_id, actor_id, request_body, response_data, created_at | UNIQUE(live_id,client_request_id), no-op 포함 완료 영수증 불변 |
+| platform.messages | 접수 evidence_schema_version·policy_version·harassment_settings_revision | PASS 포함 저장, 신규 메시지의 revision은 해당 live 설정 이력 FK, legacy는 NULL |
+| guard.candidates | 기존 요청에 접수 증거 스키마·정책·프로필 참조 추가 | 비동기 생성에서 현재 설정 재조회 금지 |
+| guard.cases/case_snapshots | snapshot JSON에 evidenceSchemaVersion·harassmentProfile 추가 | 같은 사건의 TARGET revision 일치, schema 2의 필드 누락 거절 |
+| guard의 판정 JSON | 기존 messageFindings에 harassmentAssessment 추가 | 멱등 비교에 새 참조·근거 포함 |
+
+설정 변경·접수 모두 기존 live 행 잠금을 먼저 획득한다. 현재 revision 갱신, 이력,
+요청 영수증은 한 트랜잭션이며 no-op은 revision 이력을 만들지 않고 영수증만 저장한다.
+초기 revision 1의 changed_by는 방송 생성자 감사 정보이며 관리자 설정 변경 권한 부여가 아니다.
+기존 platform.lives·messages에는 legacy 표식만 추가하고 신규 프로필 값을 backfill하지 않는다.
+guard는 platform 테이블을 직접 JOIN하지 않고 포트/CandidateRequest로 참조를 받는다.
+revision별 TARGET 분리는 도배 창·누적 제재 상태 초기화나 강퇴 기준 사건의 revision 일치 제약이 아니다.
+상세 동작·API는 [확정 계약](phase2-harassment-contracts.md)을 따른다.
+
 ```
 채팅 POST (liveId) → 활성 live ban·TIMEOUT 검사(차단이면 거부, 메시지·사건 생성 없음)
                    → 1차 필터 → handlingRoute 1개 + matchingTags 전부

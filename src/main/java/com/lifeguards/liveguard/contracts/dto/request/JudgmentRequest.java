@@ -4,8 +4,12 @@ import java.util.List;
 import java.util.UUID;
 
 import com.lifeguards.liveguard.contracts.dto.DtoValidation;
+import com.lifeguards.liveguard.contracts.dto.HarassmentAssessment;
+import com.lifeguards.liveguard.contracts.dto.HarassmentProfile;
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.lifeguards.liveguard.contracts.enums.Category;
 import com.lifeguards.liveguard.contracts.enums.HandlingRoute;
+import com.lifeguards.liveguard.contracts.enums.HarassmentLevel;
 import com.lifeguards.liveguard.contracts.enums.Verdict;
 import com.lifeguards.liveguard.contracts.exception.InvalidContractException;
 
@@ -20,7 +24,14 @@ public record JudgmentRequest(
 		UUID snapshotId,
 		int evidenceVersion,
 		String policyVersion,
-		List<MessageFinding> messageFindings) {
+		List<MessageFinding> messageFindings,
+		@JsonInclude(JsonInclude.Include.NON_NULL) Integer evidenceSchemaVersion,
+		@JsonInclude(JsonInclude.Include.NON_NULL) HarassmentProfile harassmentProfile) {
+	public JudgmentRequest(UUID caseId, UUID liveId, HandlingRoute handlingRoute, UUID snapshotId,
+			int evidenceVersion, String policyVersion, List<MessageFinding> messageFindings) {
+		this(caseId, liveId, handlingRoute, snapshotId, evidenceVersion, policyVersion, messageFindings, null, null);
+	}
+
 	public JudgmentRequest {
 		DtoValidation.requireNonNull(caseId, "caseId");
 		DtoValidation.requireNonNull(liveId, "liveId");
@@ -33,10 +44,46 @@ public record JudgmentRequest(
 			throw new InvalidContractException("evidenceVersion must be positive");
 		}
 		policyVersion = DtoValidation.requireText(policyVersion, "policyVersion");
+		HarassmentProfile.validateEvidence(evidenceSchemaVersion, policyVersion, harassmentProfile);
 		messageFindings = DtoValidation.immutableList(messageFindings, "messageFindings");
 		DtoValidation.requireNotEmpty(messageFindings, "messageFindings");
 		if (messageFindings.stream().map(MessageFinding::messageId).distinct().count() != messageFindings.size()) {
 			throw new InvalidContractException("Each target message has exactly one finding");
+		}
+		for (MessageFinding finding : messageFindings) {
+			boolean evaluated = finding.categories().contains(Category.HARASSMENT)
+					|| finding.policyIds().stream().anyMatch(id -> List.of("CP-3.1", "CP-3.2", "CP-3.3").contains(id));
+			if (harassmentProfile == null && finding.harassmentAssessment() != null) {
+				throw new InvalidContractException("Legacy findings must not carry harassmentAssessment");
+			}
+			if (harassmentProfile != null) {
+				if (evaluated && finding.harassmentAssessment() == null) {
+					throw new InvalidContractException("HARASSMENT evaluation requires harassmentAssessment");
+				}
+				if (finding.harassmentAssessment() != null) {
+					finding.harassmentAssessment().validateProfile(harassmentProfile);
+					if (finding.harassmentAssessment().clauses().stream()
+							.anyMatch(clause -> clause.verdict() == Verdict.NEEDS_REVIEW)
+							&& finding.verdict() != Verdict.NEEDS_REVIEW) {
+						throw new InvalidContractException("Unresolved harassment clauses require NEEDS_REVIEW");
+					}
+					boolean violation = finding.harassmentAssessment().clauses().stream()
+							.anyMatch(clause -> clause.verdict() == Verdict.VIOLATION);
+					if (violation != finding.categories().contains(Category.HARASSMENT)
+							|| (violation && finding.verdict() == Verdict.NO_VIOLATION)) {
+						throw new InvalidContractException("HARASSMENT category must match structured violation clauses");
+					}
+					for (var clause : finding.harassmentAssessment().clauses()) {
+						if ((clause.verdict() == Verdict.VIOLATION) != finding.policyIds().contains(clause.policyId())) {
+							throw new InvalidContractException("policyIds must match structured violation clauses");
+						}
+					}
+				}
+				if (harassmentProfile.level() == HarassmentLevel.RELAXED
+						&& finding.policyIds().contains("CP-3.3")) {
+					throw new InvalidContractException("RELAXED forbids CP-3.3");
+				}
+			}
 		}
 	}
 
@@ -46,7 +93,12 @@ public record JudgmentRequest(
 			List<Category> categories,
 			List<String> policyIds,
 			String reason,
-			List<String> missingFacts) {
+			List<String> missingFacts,
+			@JsonInclude(JsonInclude.Include.NON_NULL) HarassmentAssessment harassmentAssessment) {
+		public MessageFinding(UUID messageId, Verdict verdict, List<Category> categories, List<String> policyIds,
+				String reason, List<String> missingFacts) {
+			this(messageId, verdict, categories, policyIds, reason, missingFacts, null);
+		}
 		public MessageFinding {
 			DtoValidation.requireNonNull(messageId, "messageId");
 			DtoValidation.requireNonNull(verdict, "verdict");

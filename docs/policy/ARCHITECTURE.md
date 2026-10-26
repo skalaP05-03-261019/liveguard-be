@@ -8,6 +8,14 @@
 
 ## 1. 구성
 
+Phase 2 계약(#90, 미활성)은 [전용 명세](../phase2-harassment-contracts.md)를 따른다.
+설정 PUT과 모든 메시지 접수는 같은 방송 행 잠금으로 직렬화하고 접수 revision을 보존한다.
+platform은 설정과 접수 참조를 소유하고 CandidateRequest/기존 포트로 guard에 전달한다.
+guard는 schema 2 snapshot·판정 참조·구조화 근거 검증을 소유하며 platform 테이블을 직접 읽지 않는다.
+Business MCP·Agent는 현재 설정 대신 snapshot을 사용하고 checkpoint·승인 재개에도 보존한다.
+TaskEnvelope·Outbox에 프로필 사본을 추가하지 않는다. 관리자 관제(#88) 권한과 별개인
+설정 읽기/쓰기를 공통 인가 구조에 연결하고, 통계(#89)는 각 소유 패키지의 집계 포트로 조합한다.
+
 ```mermaid
 flowchart LR
     V[시청자 UI] --> B[BE / 필터와 확정 및 집행]

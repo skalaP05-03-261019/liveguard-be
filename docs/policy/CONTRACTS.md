@@ -8,6 +8,18 @@
 
 ## 1. 공통 식별자
 
+Phase 2 확정 계약(#90)은 [프로필 API·snapshot·판정 명세](../phase2-harassment-contracts.md)와
+[OpenAPI](../../contracts/openapi.yaml)를 따른다. 이 문서의 기존 예시는 legacy 계약이며
+신규 v3.3/schema 2 사건에는 아래 증거 참조가 추가된다. 명세·DTO만 추가했고 업무 로직은 미구현이다.
+
+- HarassmentProfile: level, profileVersion, settingsRevision.
+- 증거: 기존 policyVersion + evidenceSchemaVersion + harassmentProfile.
+- JudgmentRequest: 위 참조를 같은 값으로 제출. MessageFinding에는 필요한 경우만
+  harassmentAssessment(clauses와 조항별 요건·예외 상태/근거 UUID)를 추가.
+- InternalCase·ContextData·브라우저 사건/검토: 동결 증거 참조를 전달.
+  KickReview는 evidenceCaseId로 표시 증거 사건을 구분하며 심사 전체의 프로필로 해석하지 않음.
+- 설정 API는 관리자만 변경. 기존 Me·ErrorCode·TaskEnvelope를 중복 확장하지 않음.
+
 외부 JSON은 camelCase, Graph State는 snake_case다. threadId와 thread_id는 같은 값이다. 각 승인 대기에서 저장된 값으로 재개한다. 시각 전달은 UTC ISO8601, 표시 시간대는 UI에서 변환한다. 집계 시각 컬럼은 TBD-05다.
 
 | 값 | 계약 |

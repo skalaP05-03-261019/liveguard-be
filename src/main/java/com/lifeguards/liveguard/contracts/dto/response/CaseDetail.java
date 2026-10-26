@@ -5,6 +5,8 @@ import java.util.List;
 import java.util.UUID;
 
 import com.lifeguards.liveguard.contracts.dto.DtoValidation;
+import com.lifeguards.liveguard.contracts.dto.HarassmentProfile;
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.lifeguards.liveguard.contracts.dto.request.JudgmentRequest;
 import com.lifeguards.liveguard.contracts.enums.CaseStatus;
 import com.lifeguards.liveguard.contracts.enums.Category;
@@ -36,8 +38,23 @@ public record CaseDetail(
 		List<ConfirmedFinding> confirmedFindings,
 		int violationCount,
 		KickReviewState kickReview,
-		String traceUrl) {
+		String traceUrl,
+		@JsonInclude(JsonInclude.Include.NON_NULL) String policyVersion,
+		@JsonInclude(JsonInclude.Include.NON_NULL) Integer evidenceSchemaVersion,
+		@JsonInclude(JsonInclude.Include.NON_NULL) HarassmentProfile harassmentProfile) {
+	public CaseDetail(UUID caseId, UUID liveId, UUID channelId, String userAlias, FilterResult filterResult,
+			HandlingRoute handlingRoute, CaseStatus status, ConfirmationStatus confirmationStatus, Verdict verdict,
+			Category category, int version, Instant createdAt, List<Message> messages, String reason,
+			List<UUID> evidenceMessageIds, List<UUID> targetMessageIds, List<JudgmentRequest.MessageFinding> findings,
+			List<PolicySnapshot> policySnapshots, List<ConfirmedFinding> confirmedFindings, int violationCount,
+			KickReviewState kickReview, String traceUrl) {
+		this(caseId, liveId, channelId, userAlias, filterResult, handlingRoute, status, confirmationStatus, verdict,
+				category, version, createdAt, messages, reason, evidenceMessageIds, targetMessageIds, findings,
+				policySnapshots, confirmedFindings, violationCount, kickReview, traceUrl, null, null, null);
+	}
+
 	public CaseDetail {
+		HarassmentProfile.validateEvidence(evidenceSchemaVersion, policyVersion, harassmentProfile);
 		DtoValidation.requireNonNull(caseId, "caseId");
 		DtoValidation.requireNonNull(liveId, "liveId");
 		DtoValidation.requireNonNull(channelId, "channelId");
