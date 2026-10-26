@@ -3,7 +3,11 @@ info:
   title: LIVE:GUARD API
   version: 1.0.0
   description: |
-    1.0.0 계약. 기준은 정책 원본 v3.2(`docs/policy/`), TBD-decisions(OpenAPI v1.0 구현 결정 A-1~A-15), `docs/erd.md` v1.0.
+    1.0.0 계약과 Phase 2 명세 추가(#90). 기준은 정책 원본(`docs/policy/`), TBD-decisions, `docs/erd.md`.
+    Phase 2는 명세·DTO만 정의했으며 설정 API·저장·프로필 판정 검증의 런타임 구현·활성화는 후속 작업이다.
+    신규 방송 opt-in 계약은 policyVersion=v3.3, evidenceSchemaVersion=2,
+    profileVersion=harassment-profile-v1이다. 기존 v3.1/v3.2 사건의 의미는 변경하지 않는다.
+    전체 명세·오류·배포 절차: docs/phase2-harassment-contracts.md.
     모든 정책 범위(집계, 도배, 재적발, TIMEOUT, 강퇴)는 `liveId`다. `channelId`는 고정 채널 식별자로만 쓴다.
     활성 정책 버전은 `v3.2`(TBD-08, A-27). 새 사건은 활성 버전으로 기록하고, 판정·action 명령의 `policyVersion`은 그 사건에 기록된 버전과 같아야 한다.
     v3.2 전환 전에 만든 사건은 `v3.1`로 남는다.
@@ -177,6 +181,72 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/LiveResponse'
+        '403':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+        '409':
+          $ref: '#/components/responses/Error'
+
+  /api/lives/{liveId}/harassment-settings:
+    parameters:
+      - $ref: '#/components/parameters/LiveId'
+      - $ref: '#/components/parameters/TraceIdHeader'
+    get:
+      tags: [Lives]
+      operationId: getHarassmentSettings
+      summary: 방송 HARASSMENT 설정 조회 (Phase 2 명세, 미구현)
+      description: |
+        PLATFORM_ADMIN은 전 방송, 해당 방송 STREAMER·MODERATOR는 조회만 가능하다.
+        일반 VIEWER는 403 FORBIDDEN이다. 전역 Role.MODERATOR를 방송 소유자로 간주하지 않는다.
+        Phase 2 비활성 기존 방송은 404 NOT_FOUND이며 임의 STANDARD를 반환하지 않는다.
+        종료 방송의 마지막 설정은 조회할 수 있다. #88의 MONITOR·DECIDE·RAW_TEXT와 별도 권한이다.
+      x-owner: B1
+      x-implementation-status: planned
+      responses:
+        '200':
+          description: 현재 설정
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HarassmentSettingsResponse'
+        '401':
+          $ref: '#/components/responses/Error'
+        '403':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+    put:
+      tags: [Lives]
+      operationId: updateHarassmentSettings
+      summary: 방송 HARASSMENT 설정 변경 (Phase 2 명세, 미구현)
+      description: |
+        PLATFORM_ADMIN만 변경한다. 소유자·담당 moderator는 같은 값·재전송도 403이다.
+        세션·CSRF 인증 후 권한과 방송/기능 존재를 확인하고 (liveId, clientRequestId)의 저장 요청을 먼저 확인한다.
+        동일 본문 재전송은 저장 응답을 반환한다(후속 변경·방송 종료 뒤에도 동일). 다른 본문은 409 IDEMPOTENCY_CONFLICT.
+        신규 요청이면 종료 여부(409 LIVE_ENDED), expectedSettingsRevision(409 STALE_VERSION, currentVersion=현재 revision)을
+        확인한다. 값이 같으면 revision·changedAt을 유지하고 이 요청 결과도 저장한다. 실제 변경이면 revision을 1 증가시킨다.
+        변경은 같은 방송의 메시지 접수와 동일 방송 행 잠금으로 직렬화한다. 기존 사건에는 소급하지 않는다.
+        미지원 값·필수 필드 누락·알 수 없는 필드는 400 VALIDATION_FAILED다.
+      x-owner: B1
+      x-implementation-status: planned
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HarassmentSettingsRequest'
+      responses:
+        '200':
+          description: 저장된 변경 결과 또는 동일 요청의 원래 결과
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HarassmentSettingsResponse'
+        '400':
+          $ref: '#/components/responses/Error'
+        '401':
+          $ref: '#/components/responses/Error'
         '403':
           $ref: '#/components/responses/Error'
         '404':
@@ -887,7 +957,12 @@ paths:
         AI 판정 없이 CONTEXT 검토가 이미 열린 사건(A-25): 검토가 결정 전(PENDING)이고 CONTEXT 검토를 기다리는 판정
         (CONTEXT_REVIEW 경로, 또는 NEEDS_REVIEW 포함)이면 그 검토의 AI 제안으로 붙이고 검토 version을 올린다.
         그 밖의 판정(PII_INVESTIGATION의 확정 판정)이거나 이미 결정됐으면 409 STALE_VERSION.
+        Phase 2 확장(#90, 서비스 검증 미구현): 저장 사건 schema 2에서는 evidenceSchemaVersion·harassmentProfile이
+        필수이며 누락/미지원 입력은 400, 유효한 참조의 저장본 불일치는 409 STALE_VERSION이다.
+        ATTACK_TERM의 구조화 평가와 증거 UUID를 검증하며 동일 증거의 다른 판정은 409 IDEMPOTENCY_CONFLICT다.
+        v3.3의 적용 조항은 프로필 표를 따르고 비HARASSMENT는 v3.2를 유지한다.
       x-implementation-status: implemented
+      x-phase2-implementation-status: planned
       x-owner: B2
       security:
         - serviceToken: []
@@ -1211,6 +1286,100 @@ components:
     Timestamp:
       type: string
       format: date-time
+    HarassmentLevel:
+      type: string
+      enum: [STRICT, STANDARD, RELAXED]
+    HarassmentProfile:
+      type: object
+      additionalProperties: false
+      required: [level, profileVersion, settingsRevision]
+      properties:
+        level:
+          $ref: '#/components/schemas/HarassmentLevel'
+        profileVersion:
+          type: string
+          const: harassment-profile-v1
+        settingsRevision:
+          type: integer
+          minimum: 1
+          maximum: 2147483647
+    ProfiledEvidence:
+      type: object
+      description: |
+        기존 snapshot의 evidenceSchemaVersion 누락 또는 1은 legacy(v3.1/v3.2)다.
+        2는 v3.3 프로필 계약이며 세 필드는 모두 필수다. 신규 사건은 서버 저장본으로 판별하므로,
+        요청에서 세 필드를 빼도 legacy로 강등할 수 없다. null은 허용하지 않는다.
+      properties:
+        policyVersion:
+          $ref: '#/components/schemas/PolicyVersion'
+        evidenceSchemaVersion:
+          type: integer
+          enum: [1, 2]
+        harassmentProfile:
+          $ref: '#/components/schemas/HarassmentProfile'
+      allOf:
+        - if:
+            anyOf:
+              - required: [harassmentProfile]
+              - required: [evidenceSchemaVersion]
+                properties:
+                  evidenceSchemaVersion: {const: 2}
+              - required: [policyVersion]
+                properties:
+                  policyVersion: {const: v3.3}
+          then:
+            required: [policyVersion, evidenceSchemaVersion, harassmentProfile]
+            properties:
+              policyVersion: {const: v3.3}
+              evidenceSchemaVersion: {const: 2}
+          else:
+            properties:
+              policyVersion: {enum: [v3.1, v3.2]}
+              evidenceSchemaVersion: {const: 1}
+              harassmentProfile: false
+    HarassmentSettingsRequest:
+      type: object
+      additionalProperties: false
+      required: [clientRequestId, expectedSettingsRevision, harassmentLevel]
+      properties:
+        clientRequestId:
+          $ref: '#/components/schemas/Uuid'
+        expectedSettingsRevision:
+          type: integer
+          minimum: 1
+          maximum: 2147483647
+        harassmentLevel:
+          $ref: '#/components/schemas/HarassmentLevel'
+    HarassmentSettings:
+      type: object
+      additionalProperties: false
+      required: [liveId, policyVersion, profileVersion, harassmentLevel, settingsRevision, changedAt]
+      properties:
+        liveId:
+          $ref: '#/components/schemas/Uuid'
+        policyVersion:
+          type: string
+          const: v3.3
+        profileVersion:
+          type: string
+          const: harassment-profile-v1
+        harassmentLevel:
+          $ref: '#/components/schemas/HarassmentLevel'
+        settingsRevision:
+          type: integer
+          minimum: 1
+          maximum: 2147483647
+        changedAt:
+          $ref: '#/components/schemas/Timestamp'
+          description: 초기 생성 시각 또는 마지막 실제 변경 시각. no-op은 유지한다.
+    HarassmentSettingsResponse:
+      type: object
+      required: [data, traceId]
+      properties:
+        data:
+          $ref: '#/components/schemas/HarassmentSettings'
+        traceId:
+          $ref: '#/components/schemas/Uuid'
     Role:
       type: string
       enum: [VIEWER, MODERATOR, PLATFORM_ADMIN]
@@ -1268,7 +1437,8 @@ components:
       description: |
         정책 버전(TBD-08, A-27). 활성 버전은 환경변수 LIVEGUARD_POLICY_VERSION(기본 v3.2)이며 새 사건에 기록된다.
         v3.1은 전환 전 사건과 되돌리기용이다. v3.2는 집단 대상 비하·배제(CP-3.3, HARASSMENT)를 더했다.
-      enum: [v3.1, v3.2]
+        v3.3은 Phase 2 opt-in 명세다. schema 2·harassment-profile-v1과만 사용하며 런타임 활성 버전은 아직 바꾸지 않는다.
+      enum: [v3.1, v3.2, v3.3]
     MatchingTag:
       type: string
       description: |
@@ -1518,6 +1688,8 @@ components:
           examples: ['policy://0.5/community_policy/CP-2.1']
     CaseSummary:
       type: object
+      allOf:
+        - $ref: '#/components/schemas/ProfiledEvidence'
       required: [caseId, liveId, channelId, userAlias, filterResult, handlingRoute, status, confirmationStatus, version, createdAt]
       properties:
         caseId:
@@ -1550,6 +1722,8 @@ components:
           $ref: '#/components/schemas/Timestamp'
     ContextReview:
       type: object
+      allOf:
+        - $ref: '#/components/schemas/ProfiledEvidence'
       description: |
         문맥 확정 검토. AI 정상 제안(aiVerdict=NO_VIOLATION)이어도 운영자 결정 전까지 PENDING이다.
         Agent 판정이 마감 안에 오지 않았거나 분석이 거절되면 AI 판정 없이 열린다(A-25). 이때 aiVerdict=NEEDS_REVIEW,
@@ -1579,11 +1753,26 @@ components:
           $ref: '#/components/schemas/Timestamp'
     KickReview:
       type: object
+      allOf:
+        - $ref: '#/components/schemas/ProfiledEvidence'
+        - if:
+            required: [evidenceSchemaVersion]
+            properties:
+              evidenceSchemaVersion: {const: 2}
+          then:
+            required: [evidenceCaseId]
       description: |
         강퇴 승인 검토. basisCaseIds는 심사 요청 때 고정한 기준 사건이며 승인 실행 근거를 새 사건으로 바꾸지 않는다.
         결정 상태(status)와 실제 강퇴 결과(ACTION_APPLIED·ACTION_FAILED)는 따로 본다. 강퇴는 방송 종료까지라 만료 시각이 없다.
       required: [reviewId, kind, liveId, userAlias, basisCaseIds, basisSnapshotId, status, summary, version, createdAt]
       properties:
+        evidenceCaseId:
+          $ref: '#/components/schemas/Uuid'
+          description: |
+            표시 증거의 사건 ID=basisCaseIds 마지막. policyVersion·evidenceSchemaVersion·harassmentProfile,
+            messages·findings·evidenceVersion은 모두 이 사건 기준이다. 검토가 연결된 caseId나 전체 근거 집합의 프로필이 아니다.
+            legacy 증거를 보여 주는 혼합 검토는 프로필을 생략하며 다른 근거의 프로필은 각 사건 조회로 확인한다.
+            #88의 decision·execution 확장과 독립적이다.
         reviewId:
           $ref: '#/components/schemas/Uuid'
         kind:
@@ -1967,9 +2156,16 @@ components:
           $ref: '#/components/schemas/Timestamp'
     InternalCase:
       type: object
+      allOf:
+        - $ref: '#/components/schemas/ProfiledEvidence'
       description: Immutable masked evidence shared with ContextData; current target state and case version are separate projections. Missing required metadata returns CASE_NOT_READY.
       required: [caseId, channelId, liveId, snapshotId, evidenceVersion, policyVersion, handlingRoute, filterResult, matchingTags, version, messages, targets, targetMessageIds, targetVersions]
       properties:
+        evidenceSchemaVersion:
+          type: integer
+          enum: [1, 2]
+        harassmentProfile:
+          $ref: '#/components/schemas/HarassmentProfile'
         userId:
           $ref: '#/components/schemas/Uuid'
         confirmationStatus:
@@ -2046,6 +2242,14 @@ components:
           format: uuid
     ContextData:
       type: object
+      allOf:
+        - $ref: '#/components/schemas/ProfiledEvidence'
+        - if:
+            required: [evidenceSchemaVersion]
+            properties:
+              evidenceSchemaVersion: {const: 2}
+          then:
+            required: [caseId, snapshotId, evidenceVersion]
       required: [messages, truncated]
       properties:
         caseId:
@@ -2535,12 +2739,153 @@ components:
         traceId:
           type: string
           format: uuid
+    RequirementStatus:
+      type: string
+      enum: [MET, NOT_MET, UNKNOWN]
+    ExceptionStatus:
+      type: string
+      enum: [NOT_APPLICABLE, APPLIES, DOES_NOT_APPLY, UNKNOWN]
+    HarassmentClause:
+      type: object
+      additionalProperties: false
+      required: [policyId, verdict, targetStatus, conductStatus, targetEvidenceMessageIds, conductEvidenceMessageIds, exceptionStatus, exceptionEvidenceMessageIds]
+      description: |
+        CP-3.2의 target은 식별 가능한 개인, conduct는 그 개인을 향한 공격·괴롭힘이다.
+        CP-3.3의 target은 정체성 집단, conduct는 열등 단정·배제·차별 요구다.
+        MET이면 해당 evidenceMessageIds는 비어 있으면 안 된다. VIOLATION은 두 요건 모두 MET이어야 한다.
+        요건 중 NOT_MET 또는 예외 APPLIES이면 NO_VIOLATION, 두 요건 MET 및 예외
+        NOT_APPLICABLE/DOES_NOT_APPLY이면 VIOLATION, 나머지는 NEEDS_REVIEW여야 한다.
+        인용 UUID는 동결된 마스킹 snapshot.messages에 있어야 하며 원문·자유 텍스트를 추가하지 않는다.
+      properties:
+        policyId:
+          type: string
+          enum: [CP-3.2, CP-3.3]
+        verdict:
+          $ref: '#/components/schemas/Verdict'
+        targetStatus:
+          $ref: '#/components/schemas/RequirementStatus'
+        conductStatus:
+          $ref: '#/components/schemas/RequirementStatus'
+        targetEvidenceMessageIds:
+          type: array
+          items:
+            $ref: '#/components/schemas/Uuid'
+        conductEvidenceMessageIds:
+          type: array
+          items:
+            $ref: '#/components/schemas/Uuid'
+        exceptionStatus:
+          $ref: '#/components/schemas/ExceptionStatus'
+        exceptionEvidenceMessageIds:
+          type: array
+          items:
+            $ref: '#/components/schemas/Uuid'
+      allOf:
+        - if:
+            properties:
+              targetStatus: {const: MET}
+            required: [targetStatus]
+          then:
+            properties:
+              targetEvidenceMessageIds: {minItems: 1}
+        - if:
+            properties:
+              conductStatus: {const: MET}
+            required: [conductStatus]
+          then:
+            properties:
+              conductEvidenceMessageIds: {minItems: 1}
+        - if:
+            properties:
+              verdict: {const: VIOLATION}
+            required: [verdict]
+          then:
+            properties:
+              targetStatus: {const: MET}
+              conductStatus: {const: MET}
+              exceptionStatus: {enum: [NOT_APPLICABLE, DOES_NOT_APPLY]}
+        - if:
+            properties:
+              exceptionStatus: {const: APPLIES}
+            required: [exceptionStatus]
+          then:
+            properties:
+              exceptionEvidenceMessageIds: {minItems: 1}
+        - if:
+            properties:
+              exceptionStatus: {const: NOT_APPLICABLE}
+            required: [exceptionStatus]
+          then:
+            properties:
+              exceptionEvidenceMessageIds: {maxItems: 0}
+    HarassmentAssessment:
+      type: object
+      additionalProperties: false
+      required: [clauses]
+      description: |
+        구조화된 HARASSMENT 평가. STRICT/STANDARD는 CP-3.2·CP-3.3을 각각 한 번, RELAXED는 CP-3.2만 평가한다.
+        CP-3.1은 모든 clause의 공통 제한 원칙이며 독립 위반 근거가 아니다.
+        각 clause의 exceptionStatus는 HARASSMENT의 CP-2.2만 나타낸다. STRICT는 NOT_APPLICABLE 및 빈 exceptionEvidenceMessageIds,
+        STANDARD/RELAXED는 APPLIES/DOES_NOT_APPLY/UNKNOWN이다. APPLIES는 예외 근거 UUID가 필수다.
+        예외는 조항별로 평가한다. 집단 발언 인용의 예외가 별도 개인 공격까지 면제하지 않는다.
+        사칭·PII의 CP-2.2 판단을 이 필드로 통제하지 않는다.
+        clause VIOLATION은 예외가 NOT_APPLICABLE 또는 DOES_NOT_APPLY일 때만 허용한다.
+        clause의 VIOLATION 조항만 finding.policyIds에 포함하며 HARASSMENT category와 일치해야 한다.
+        CP-2.2는 정상 예외로서 policyIds에 기록할 수 있으나 STRICT HARASSMENT 면제 근거로 사용하지 않는다.
+        요건·예외가 불확실하고 다른 충분한 정상 근거가 없으면 clause는 NEEDS_REVIEW,
+        finding.missingFacts에 부족한 사실을 기록한다. 검증은 사유 문자열 검색으로 대체하지 않는다.
+      properties:
+        clauses:
+          type: array
+          minItems: 1
+          maxItems: 2
+          items:
+            $ref: '#/components/schemas/HarassmentClause'
     JudgmentRequest:
       type: object
-      description: Agent 출력(CONTRACTS §5). TARGET 메시지마다 messageFindings 하나.
+      description: |
+        Agent 출력(CONTRACTS §5). TARGET 메시지마다 messageFindings 하나.
+        신규 사건의 harassmentProfile은 HARASSMENT 결과 유무와 관계없이 필수다.
+        신규 finding이 HARASSMENT category 또는 CP-3.1/3.2/3.3을 포함하거나
+        사건 matchingTags에 ATTACK_TERM이 있으면 모든 TARGET finding에 harassmentAssessment가 필수다.
+        비HARASSMENT만 조사한 사건에는 assessment를 요구하지 않는다(CP-2.2만으로 HARASSMENT 평가로 보지 않음).
+        legacy 사건에는 harassmentAssessment를 보내지 않는다.
+      allOf:
+        - $ref: '#/components/schemas/ProfiledEvidence'
+        - if:
+            required: [evidenceSchemaVersion]
+            properties:
+              evidenceSchemaVersion: {const: 2}
+          then:
+            properties:
+              messageFindings:
+                items:
+                  if:
+                    anyOf:
+                      - required: [categories]
+                        properties:
+                          categories:
+                            contains: {const: HARASSMENT}
+                      - required: [policyIds]
+                        properties:
+                          policyIds:
+                            contains: {enum: [CP-3.1, CP-3.2, CP-3.3]}
+                  then:
+                    required: [harassmentAssessment]
+          else:
+            properties:
+              messageFindings:
+                items:
+                  properties:
+                    harassmentAssessment: false
       required: [caseId, liveId, handlingRoute, snapshotId, evidenceVersion, policyVersion, messageFindings]
       additionalProperties: false
       properties:
+        evidenceSchemaVersion:
+          type: integer
+          enum: [1, 2]
+        harassmentProfile:
+          $ref: '#/components/schemas/HarassmentProfile'
         caseId:
           $ref: '#/components/schemas/Uuid'
         liveId:
@@ -2591,6 +2936,8 @@ components:
             properties:
               categories: { maxItems: 0 }
       properties:
+        harassmentAssessment:
+          $ref: '#/components/schemas/HarassmentAssessment'
         messageId:
           $ref: '#/components/schemas/Uuid'
         verdict:

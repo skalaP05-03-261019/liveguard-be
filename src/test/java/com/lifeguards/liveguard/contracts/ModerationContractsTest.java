@@ -83,7 +83,9 @@ class ModerationContractsTest {
 				CaseStatus.class, Category.class, ConfirmationStatus.class, ContextDecision.class, ErrorCode.class,
 				FilterResult.class, HandlingRoute.class, KickDecision.class, MatchingTag.class,
 				ModerationReasonCode.class, Observation.class, ReviewKind.class, ReviewStatus.class, Role.class,
-				Verdict.class, Visibility.class);
+				Verdict.class, Visibility.class, com.lifeguards.liveguard.contracts.enums.HarassmentLevel.class,
+				com.lifeguards.liveguard.contracts.dto.HarassmentAssessment.RequirementStatus.class,
+				com.lifeguards.liveguard.contracts.dto.HarassmentAssessment.ExceptionStatus.class);
 		for (Class<? extends Enum<?>> type : types) {
 			Map<?, ?> schema = assertInstanceOf(Map.class, schemas.get(type.getSimpleName()), type.getSimpleName());
 			assertValues(type, (List<?>) schema.get("enum"));

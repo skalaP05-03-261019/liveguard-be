@@ -4,6 +4,17 @@
 
 ## 적용 원칙
 
+### P2-90: HARASSMENT 프로필 계약 확정 (명세·DTO, 미활성)
+
+병렬 #88·#89의 A 번호와 충돌하지 않도록 이 결정은 이슈 식별자를 사용한다.
+신규 조합은 v3.3/evidenceSchemaVersion=2/harassment-profile-v1이며 기존 v3.1/v3.2
+사건에는 적용하지 않는다(A-27의 활성 정책 불변성). 관리자만 설정 변경,
+소유자·담당 moderator는 조회만 가능하다. 권한을 DECIDE·RAW_TEXT에 묶지 않는다.
+설정 응답 필드·revision·멱등성 순서·동결 snapshot·구조화 근거·오류 코드·배포 절차는
+[확정 명세](../phase2-harassment-contracts.md), OpenAPI 및 공용 DTO에 정의한다.
+승인 v3.3 원문 커밋·해시 고정, 런타임 구현, 평가셋·모델 검증·활성화는 후속 작업이다.
+현재 활성 PolicyProperties·DB 마이그레이션은 변경하지 않는다.
+
 정책의 의미는 팀 문서(PROJECT·POLICY·CONTRACTS·ARCHITECTURE, 2026-10-20 개정)가 원본이고, 이 문서는 그 미정 등록부(TBD-01~12)의 빈칸만 채운다. 문서가 이미 정한 항목은 이 문서로 바꾸지 않는다.
 
 - **채우는 재료**: v0.5 구현에서 이미 정하고 테스트한 값을 우선 쓰고, 문서 용어로 바꿔 적는다 (채널 → liveId, HOLD/REVIEW → handlingRoute).

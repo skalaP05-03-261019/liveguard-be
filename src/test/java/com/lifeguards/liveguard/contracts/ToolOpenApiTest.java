@@ -69,6 +69,12 @@ class ToolOpenApiTest {
 	void v1ContractRecordsHaveTheSameFieldsAsOpenApiSchemas() throws IOException {
 		Map<?, ?> schemas = map(map(contract(), "components"), "schemas");
 		Map<Class<?>, String> records = Map.ofEntries(
+				Map.entry(com.lifeguards.liveguard.contracts.dto.HarassmentProfile.class, "HarassmentProfile"),
+				Map.entry(com.lifeguards.liveguard.contracts.dto.HarassmentAssessment.class, "HarassmentAssessment"),
+				Map.entry(com.lifeguards.liveguard.contracts.dto.HarassmentAssessment.Clause.class, "HarassmentClause"),
+				Map.entry(com.lifeguards.liveguard.contracts.dto.request.HarassmentSettingsRequest.class, "HarassmentSettingsRequest"),
+				Map.entry(com.lifeguards.liveguard.contracts.dto.response.HarassmentSettings.class, "HarassmentSettings"),
+				Map.entry(com.lifeguards.liveguard.contracts.dto.response.ContextData.class, "ContextData"),
 				Map.entry(UserHistory.class, "UserHistory"),
 				Map.entry(UserHistory.RecentCase.class, "UserHistoryRecentCase"),
 				Map.entry(CaseSummary.class, "CaseSummary"),
