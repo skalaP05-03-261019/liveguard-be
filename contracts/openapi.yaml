@@ -1284,8 +1284,11 @@ components:
       enum: [CONTEXT, KICK]
     ReviewStatus:
       type: string
-      description: 결정 상태. 실행 상태(ActionStatus)와 분리한다. 최종 결정이 저장될 때만 DECIDED.
-      enum: [PENDING, DECIDED]
+      description: |
+        결정 상태. 실행 상태(ActionStatus)와 분리한다. 최종 결정이 저장될 때만 DECIDED.
+        INVALIDATED는 강퇴 검토만 쓴다: 승인 뒤 재검증에 실패했거나, 방송이 끝났다(결정·실행 여부와 관계없이 그 방송의 강퇴 검토 전부).
+        다시 결정할 수 없고, 저장된 결정과 실행 결과는 KickReviewCard의 decision·execution으로 본다.
+      enum: [PENDING, DECIDED, INVALIDATED]
     ContextDecision:
       type: string
       description: DEFER는 공개 승인이 아니며 HELD를 유지한다.
@@ -2753,5 +2756,5 @@ components:
     RevokeFindingResponse: {"type": "object", "required": ["data", "traceId"], "properties": {"data": {"$ref": "#/components/schemas/RevokeFindingResult"}, "traceId": {"$ref": "#/components/schemas/Uuid"}}}
 
     ContextReviewCard: {"allOf": [{"$ref": "#/components/schemas/ContextReview"}, {"type": "object", "properties": {"findings": {"type": "array", "items": {"$ref": "#/components/schemas/MessageFinding"}}, "messages": {"type": "array", "items": {"$ref": "#/components/schemas/MaskedMessage"}}, "targetMessageIds": {"type": "array", "items": {"$ref": "#/components/schemas/Uuid"}}, "summary": {"type": "string"}}}]}
-    KickReviewCard: {"allOf": [{"$ref": "#/components/schemas/KickReview"}, {"type": "object", "properties": {"findings": {"type": "array", "description": "가장 늦게 확정된 기준 사건(basisCaseIds 마지막)의 AI 제안 그대로다. 운영자가 AI 제안과 다르게 확정했으면 확정과 다를 수 있다. messages·targetMessageIds·evidenceVersion도 같은 사건 기준이다. caseId는 검토가 붙은 사건(강퇴 결과 이벤트의 caseId)이며 보통 같은 사건이지만, 오판 취소로 예약이 풀린 뒤 다른 사건의 결정에서 검토가 생기면 다를 수 있다.", "items": {"$ref": "#/components/schemas/MessageFinding"}}, "messages": {"type": "array", "items": {"$ref": "#/components/schemas/MaskedMessage"}}, "targetMessageIds": {"type": "array", "items": {"$ref": "#/components/schemas/Uuid"}}, "caseId": {"$ref": "#/components/schemas/Uuid"}, "evidenceVersion": {"type": "integer"}, "aiVerdict": {"$ref": "#/components/schemas/Verdict", "description": "강퇴 카드는 확정 위반을 근거로 하므로 항상 VIOLATION이다(사건의 AI 판정이 아니다)."}}}]}
+    KickReviewCard: {"allOf": [{"$ref": "#/components/schemas/KickReview"}, {"type": "object", "properties": {"findings": {"type": "array", "description": "가장 늦게 확정된 기준 사건(basisCaseIds 마지막)의 AI 제안 그대로다. 운영자가 AI 제안과 다르게 확정했으면 확정과 다를 수 있다. messages·targetMessageIds·evidenceVersion도 같은 사건 기준이다. caseId는 검토가 붙은 사건(강퇴 결과 이벤트의 caseId)이며 보통 같은 사건이지만, 오판 취소로 예약이 풀린 뒤 다른 사건의 결정에서 검토가 생기면 다를 수 있다.", "items": {"$ref": "#/components/schemas/MessageFinding"}}, "messages": {"type": "array", "items": {"$ref": "#/components/schemas/MaskedMessage"}}, "targetMessageIds": {"type": "array", "items": {"$ref": "#/components/schemas/Uuid"}}, "caseId": {"$ref": "#/components/schemas/Uuid"}, "evidenceVersion": {"type": "integer"}, "aiVerdict": {"$ref": "#/components/schemas/Verdict", "description": "강퇴 카드는 확정 위반을 근거로 하므로 항상 VIOLATION이다(사건의 AI 판정이 아니다)."}, "decision": {"description": "최종 결정. 결정 전이면 null이고 DEFER 이력은 넣지 않는다. status가 INVALIDATED여도 그 전에 저장된 결정은 남는다(#88).", "oneOf": [{"type": "object", "required": ["value", "decidedAt"], "properties": {"value": {"$ref": "#/components/schemas/KickDecision"}, "decidedAt": {"$ref": "#/components/schemas/Timestamp"}}}, {"type": "null"}]}, "execution": {"description": "최종 결정의 강퇴 실행 기록. 기각했거나 실행 명령이 아직 없으면 null. 명령만 있고 결과가 없으면 status=PENDING, observation=UNKNOWN이다. 승인 저장을 실행 완료로 보지 않는다(#88).", "oneOf": [{"type": "object", "required": ["status", "observation"], "properties": {"status": {"$ref": "#/components/schemas/ActionStatus"}, "observation": {"$ref": "#/components/schemas/Observation"}}}, {"type": "null"}]}}}]}
     IssuedKickRevalidation: {"allOf": [{"$ref": "#/components/schemas/KickRevalidation"}, {"type": "object", "properties": {"caseId": {"$ref": "#/components/schemas/Uuid"}, "liveId": {"$ref": "#/components/schemas/Uuid"}, "snapshotId": {"$ref": "#/components/schemas/Uuid"}, "evidenceVersion": {"type": "integer", "minimum": 1}, "policyVersion": {"type": "string"}, "status": {"type": "string", "enum": ["APPROVED", "REJECTED", "INVALID"]}, "actionCommand": {"$ref": "#/components/schemas/BusinessActionCommand"}}}]}

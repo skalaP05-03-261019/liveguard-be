@@ -923,7 +923,30 @@ public class LiveModerationService implements LiveGuardPort {
             : c.get("judgment") == null
                 ? "AI 분석 결과를 받지 못했습니다. 주변 문맥을 확인하고 직접 결정해 주세요"
                 : "AI 제안을 확인하고 최종 결정해 주세요");
+    if (kick) {
+      // 새로고침 뒤에도 승인·기각과 강퇴 실행 결과를 보이도록 저장된 최종 결정과 그 결정의 실행 기록을 붙인다(#88)
+      var decision = finalDecision(r);
+      data.put("decision", decision.map(d -> Map.of("value", d.get("value"), "decidedAt", d.get("decided_at"))).orElse(null));
+      data.put("execution", decision.flatMap(d -> kickExecution(id(d.get("id")))).orElse(null));
+    }
     return data;
+  }
+
+  /** 검토의 최종 결정(DEFER 제외, 검토당 1건). 대기 중이면 비어 있다. */
+  private Optional<Map<String, Object>> finalDecision(UUID r) {
+    return db.sql("SELECT id,value,decided_at FROM guard.decisions WHERE review_id=? AND value<>'DEFER'")
+        .param(r).query(new org.springframework.jdbc.core.ColumnMapRowMapper()).optional();
+  }
+
+  /**
+   * 결정의 강퇴 실행 기록(ActionStatus와 Observation). 실행 명령만 있고 결과가 아직 없으면 결과를 모르므로 UNKNOWN이다.
+   * 기각했거나 실행 명령이 아직 없으면 비어 있다. 재검증과 같이 결정별 첫 실행 기록을 본다.
+   */
+  private Optional<Map<String, Object>> kickExecution(UUID d) {
+    return db.sql("SELECT status,coalesce(result->>'observation','UNKNOWN') AS observation FROM guard.live_actions"
+            + " WHERE decision_id=? AND kind='KICK' ORDER BY created_at LIMIT 1")
+        .param(d).query((rs, n) -> Map.<String, Object>of("status", rs.getString("status"), "observation", rs.getString("observation")))
+        .optional();
   }
 
   /**
