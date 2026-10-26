@@ -1270,6 +1270,33 @@ class LiveModerationIntegrationTest {
     assertEquals(Map.of("status","FAILED","observation","CONFIRMED"),card.get("execution"));
   }
 
+  @Test void kickExecutedThenRevokedKeepsItsOutcomeAndTheBasisCaseShowsTheCancellation() {
+    UUID live=lives.start(channel,moderator).liveId();
+    UUID kick=kickAfterViolationWithoutJudgment(live);
+    decide(kick,"APPROVE",1);
+    runPendingKicks();
+    UUID basis=db.queryForObject("SELECT basis_case_ids[1] FROM guard.reviews WHERE id=?",UUID.class,kick);
+    recovery.revoke(confirmedFinding(basis),revokeRequest(basis),moderator);
+    // 오판 취소로 강퇴가 풀려도 카드의 결정·실행 기록은 그대로다. 풀렸는지는 기준 사건의 확정 상태(CANCELLED)로 본다
+    var card=guard.reviewCard(kick);
+    assertEquals("INVALIDATED",card.get("status"));
+    assertEquals("APPROVE",((Map<?,?>)card.get("decision")).get("value"));
+    assertEquals(Map.of("status","SUCCEEDED","observation","CONFIRMED"),card.get("execution"));
+    assertEquals("CANCELLED",db.queryForObject("SELECT confirmation_status FROM guard.live_case_state WHERE case_id=?",String.class,basis));
+    assertDoesNotThrow(()->guard.checkEntry(live,user));
+  }
+
+  @Test void kickRevokedBeforeTheDecisionIsInvalidatedWithoutADecision() {
+    UUID live=lives.start(channel,moderator).liveId();
+    UUID kick=kickAfterViolationWithoutJudgment(live);
+    UUID basis=db.queryForObject("SELECT basis_case_ids[1] FROM guard.reviews WHERE id=?",UUID.class,kick);
+    recovery.revoke(confirmedFinding(basis),revokeRequest(basis),moderator);
+    var card=guard.reviewCard(kick);
+    assertEquals("INVALIDATED",card.get("status"));
+    assertNull(card.get("decision"));
+    assertNull(card.get("execution"));
+  }
+
   @Test void rejectedKickWithoutJudgmentExecutesNothing() {
     UUID live=lives.start(channel,moderator).liveId();
     UUID kick=kickAfterViolationWithoutJudgment(live);

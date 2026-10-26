@@ -45,7 +45,7 @@
 - REVOKE는 기존 `POST /api/findings/{findingId}/revoke`에 적용한다. 사유·expectedCaseVersion·clientRequestId 및 감사 기록은 기존 계약을 따른다.
 - 관리자는 채팅 전송·방송 시작/종료·문맥/강퇴 결정이 403이다. `/internal/**`의 서비스 토큰 인증은 변하지 않는다.
 - 관제 SSE는 기존 TOOL_START·TOOL_END·TASK_FAILED 등을 실시간 전달할 뿐이다. 영속 처리 로그 조회, 모델 내부 추론, 관리자 통계 API는 추가하지 않는다.
-- 강퇴 검토 카드(`KickReviewCard`)는 최종 결정 `decision`(value·decidedAt, 결정 전 null)과 그 결정의 실행 기록 `execution`(ActionStatus·Observation, 기각이거나 명령 전이면 null)을 준다. 새로고침한 운영자·관리자 화면이 실시간 이벤트 없이도 승인·기각과 실행 결과를 구분한다. 승인 저장은 실행 완료가 아니고, 명령만 있으면 PENDING·UNKNOWN이다. 강퇴 검토의 `ReviewStatus`에는 INVALIDATED(승인 뒤 재검증 실패, 방송 종료)가 있으며 그 전에 저장된 결정은 남는다.
+- 강퇴 검토 카드(`KickReviewCard`)는 최종 결정 `decision`(value·decidedAt, 결정 전 null)과 그 결정의 실행 기록 `execution`(ActionStatus·Observation, 기각이거나 명령 전이면 null)을 준다. 새로고침한 운영자·관리자 화면이 실시간 이벤트 없이도 승인·기각과 실행 결과를 구분한다. 승인 저장은 실행 완료가 아니고, 명령만 있으면 PENDING·UNKNOWN이다. 강퇴 검토의 `ReviewStatus`에는 INVALIDATED(승인 뒤 재검증 실패, 기준 사건 오판 취소, 방송 종료)가 있다. 결정 전후 어느 때나 될 수 있고, 이후 실행하지 않으며, 그 전에 저장된 결정·실행 기록은 남는다. 오판 취소로 강퇴가 풀렸는지는 기준 사건의 `confirmationStatus`(CANCELLED)로 본다.
 
 ## 3. 저장 객체
 
