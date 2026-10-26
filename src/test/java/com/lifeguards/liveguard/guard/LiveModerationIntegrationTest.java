@@ -1227,6 +1227,49 @@ class LiveModerationIntegrationTest {
     assertEquals(List.of(),guard.pendingKicksWithoutAgent(HANDOFF,20));
   }
 
+  @Test void kickReviewCardShowsTheFinalDecisionAndItsExecution() {
+    UUID live=lives.start(channel,moderator).liveId();
+    UUID kick=kickAfterViolationWithoutJudgment(live);
+    var pending=guard.reviewCard(kick);
+    assertTrue(pending.containsKey("decision"));
+    assertNull(pending.get("decision"));
+    assertNull(pending.get("execution"));
+    decide(kick,"APPROVE",1);
+    // 승인 저장은 실행 완료가 아니다. 명령만 있고 결과가 없으면 PENDING·UNKNOWN
+    var approved=guard.reviewCard(kick);
+    assertEquals("DECIDED",approved.get("status"));
+    var decision=(Map<?,?>)approved.get("decision");
+    assertEquals("APPROVE",decision.get("value"));
+    assertNotNull(decision.get("decidedAt"));
+    assertEquals(Map.of("status","PENDING","observation","UNKNOWN"),approved.get("execution"));
+    runPendingKicks();
+    assertEquals(Map.of("status","SUCCEEDED","observation","CONFIRMED"),guard.reviewCard(kick).get("execution"));
+    // 문맥 카드에는 붙이지 않는다
+    assertFalse(guard.reviewCard(db.queryForObject("SELECT id FROM guard.reviews WHERE kind='CONTEXT' LIMIT 1",UUID.class)).containsKey("decision"));
+  }
+
+  @Test void rejectedKickReviewCardHasADecisionButNoExecution() {
+    UUID live=lives.start(channel,moderator).liveId();
+    UUID kick=kickAfterViolationWithoutJudgment(live);
+    decide(kick,"REJECT",1);
+    var card=guard.reviewCard(kick);
+    assertEquals("REJECT",((Map<?,?>)card.get("decision")).get("value"));
+    // 기각은 실행 명령이 없다
+    assertNull(card.get("execution"));
+  }
+
+  @Test void invalidatedKickReviewCardKeepsTheDecisionAndTheRecordedFailure() {
+    UUID live=lives.start(channel,moderator).liveId();
+    UUID kick=kickAfterViolationWithoutJudgment(live);
+    db.update("UPDATE guard.findings SET revoked_at=current_timestamp WHERE case_id=(SELECT basis_case_ids[1] FROM guard.reviews WHERE id=?)",kick);
+    decide(kick,"APPROVE",1);
+    // 재검증 실패: 검토는 INVALIDATED지만 결정은 남고, 시도하지 않은 실패가 기록된다
+    var card=guard.reviewCard(kick);
+    assertEquals("INVALIDATED",card.get("status"));
+    assertEquals("APPROVE",((Map<?,?>)card.get("decision")).get("value"));
+    assertEquals(Map.of("status","FAILED","observation","CONFIRMED"),card.get("execution"));
+  }
+
   @Test void rejectedKickWithoutJudgmentExecutesNothing() {
     UUID live=lives.start(channel,moderator).liveId();
     UUID kick=kickAfterViolationWithoutJudgment(live);
