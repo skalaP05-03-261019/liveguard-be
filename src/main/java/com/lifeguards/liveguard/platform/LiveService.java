@@ -28,6 +28,8 @@ public class LiveService implements LivePlatformPort {
   private final org.springframework.context.ApplicationEventPublisher applicationEvents;
   private final SseRegistry chats = new SseRegistry("live-chat-v1", Duration.ofSeconds(15));
   private final SseRegistry events = new SseRegistry("live-guard-v1", Duration.ofSeconds(15));
+  private final SseRegistry adminChats = new SseRegistry("admin-chat-v1", Duration.ofSeconds(15));
+  private final SseRegistry adminEvents = new SseRegistry("admin-guard-v1", Duration.ofSeconds(15));
   private final String policy;
 
   public LiveService(
@@ -70,6 +72,22 @@ public class LiveService implements LivePlatformPort {
     authorizeChannel(live(liveId).channelId(), userId, operator);
   }
 
+  public boolean isAdmin(UUID userId) {
+    return db.sql("SELECT count(*) FROM platform.users WHERE id=? AND role='PLATFORM_ADMIN'")
+        .param(userId).query(Integer.class).single() > 0;
+  }
+
+  @Override
+  public void authorize(UUID liveId, UUID userId, LiveAccess access) {
+    UUID channel = live(liveId).channelId();
+    if (isAdmin(userId)) {
+      if (access == LiveAccess.DECIDE)
+        throw new ApiException(ErrorCode.FORBIDDEN, "Administrators cannot decide reviews");
+      return;
+    }
+    authorizeChannel(channel, userId, access != LiveAccess.READ_CHAT);
+  }
+
   void authorizeChannel(UUID channelId, UUID userId, boolean operator) {
     var role =
         db.sql("SELECT member_role FROM platform.channel_members WHERE channel_id=? AND user_id=?")
@@ -81,6 +99,7 @@ public class LiveService implements LivePlatformPort {
   }
 
   private void requireHost(UUID channel,UUID user) {
+    rejectAdminMutation(user);
     String role=db.sql("SELECT member_role FROM platform.channel_members WHERE channel_id=? AND user_id=?")
       .params(channel,user).query(String.class).optional().orElse("");
     if(!Set.of("STREAMER","MODERATOR").contains(role)) throw new ApiException(ErrorCode.FORBIDDEN,"Only hosts can manage a live");
@@ -104,7 +123,7 @@ public class LiveService implements LivePlatformPort {
 
   @Transactional(readOnly=true)
   public Live current(UUID channel, AuthenticatedUser user) {
-    authorizeChannel(channel,user.userId(),false);
+    if (!isAdmin(user.userId())) authorizeChannel(channel,user.userId(),false);
     return liveQueries.currentLive(channel).orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND,"No live in progress"));
   }
 
@@ -123,6 +142,7 @@ public class LiveService implements LivePlatformPort {
   @Transactional
   public org.springframework.web.servlet.mvc.method.annotation.SseEmitter subscribeChannel(
       UUID channel, UUID user, boolean operator, String session) {
+    if (isAdmin(user)) throw new ApiException(ErrorCode.FORBIDDEN,"Administrators must use liveId streams");
     liveQueries.currentLive(channel).ifPresent(current -> {
       lockLive(current.liveId());
       guard.checkEntry(current.liveId(), user);
@@ -181,6 +201,7 @@ public class LiveService implements LivePlatformPort {
 
   @Transactional
   public Map<String,Object> sendToChannel(UUID channel,AuthenticatedUser user,SendMessageRequest req) {
+    rejectAdminMutation(user.userId());
     authorizeChannel(channel,user.userId(),false);
     messages.lockAuthorInChannel(channel,user.userId());
     var previous=messages.find(channel,user.userId(),req.clientMessageId());
@@ -197,6 +218,7 @@ public class LiveService implements LivePlatformPort {
 
   @Transactional
   public Map<String, Object> send(UUID id, AuthenticatedUser user, SendMessageRequest req) {
+    rejectAdminMutation(user.userId());
     authorize(id, user.userId(), false);
     var live = live(id);
     guard.checkEntry(id,user.userId());
@@ -320,17 +342,20 @@ public class LiveService implements LivePlatformPort {
 
   @Transactional(readOnly=true)
   public Map<String,Object> history(UUID id,AuthenticatedUser user,String cursor,int limit) {
-    authorize(id,user.userId(),false);
+    authorize(id,user.userId(),LiveAccess.READ_CHAT);
+    boolean admin = isAdmin(user.userId());
     guard.checkEntry(id,user.userId());
     if(limit<1||limit>100) throw new ApiException(ErrorCode.VALIDATION_FAILED,"limit must be 1..100");
     MessageCursor after=cursor==null?null:MessageCursor.decode(cursor);
-    var rows=messages.history(live(id).channelId(),id,user.userId(),isOperator(id,user.userId()),after,limit+1);
+    var rows=messages.history(live(id).channelId(),id,user.userId(),admin || isOperator(id,user.userId()),after,limit+1);
     var page=rows.subList(0,Math.min(limit,rows.size()));
     Map<String,Object> result=new LinkedHashMap<>();
     result.put("items",page.stream().map(r->{
       Map<String,Object> m=new LinkedHashMap<>();
       m.put("messageId",r.id());m.put("liveId",r.liveId());m.put("channelId",live(id).channelId());
-      m.put("authorAlias",r.authorNickname());m.put("text",r.text());m.put("visibility",r.visibility());
+      m.put("authorAlias",r.authorNickname());
+      m.put("text",admin && r.visibility()!=Visibility.PUBLIC ? PiiMasker.mask(r.text()) : r.text());
+      m.put("visibility",r.visibility());
       m.put("version",r.version());m.put("sentAt",r.sentAt());m.put("isMine",r.authorId().equals(user.userId()));
       decorate(m,user.userId());return m;
     }).toList());
@@ -351,12 +376,32 @@ public class LiveService implements LivePlatformPort {
   @Transactional
   public org.springframework.web.servlet.mvc.method.annotation.SseEmitter subscribe(
       UUID id, AuthenticatedUser user, String session, boolean operator) {
-    authorize(id, user.userId(), operator);
+    authorize(id, user.userId(), operator ? LiveAccess.MONITOR : LiveAccess.READ_CHAT);
     lockLive(id);
     active(id);
     guard.checkEntry(id, user.userId());
+    if (isAdmin(user.userId()))
+      return (operator ? adminEvents : adminChats).subscribe(id,user.userId(),false,session);
     return (operator ? events : chats)
         .subscribe(id, user.userId(), isOperator(id, user.userId()), session);
+  }
+
+  private void rejectAdminMutation(UUID userId) {
+    if (isAdmin(userId)) throw new ApiException(ErrorCode.FORBIDDEN, "Administrators cannot send chats or manage lives");
+  }
+
+  @Transactional(readOnly=true)
+  public List<Map<String,Object>> channels(AuthenticatedUser user) {
+    boolean admin = isAdmin(user.userId());
+    return db.sql("SELECT c.id,c.name FROM platform.channels c WHERE ? OR EXISTS "
+        + "(SELECT 1 FROM platform.channel_members m WHERE m.channel_id=c.id AND m.user_id=?) ORDER BY c.id")
+        .params(admin,user.userId()).query((r,n)->{
+          UUID channel = r.getObject("id",UUID.class);
+          Map<String,Object> result = new LinkedHashMap<>();
+          result.put("channelId",channel);result.put("name",r.getString("name"));
+          result.put("live",liveQueries.currentLive(channel).orElse(null));
+          return result;
+        }).list();
   }
 
   @Override
@@ -494,6 +539,13 @@ public class LiveService implements LivePlatformPort {
                 envelope,
                 event.equals("LIVE_ENDED"));
           events.broadcast(id, s -> true, event, envelope);
+          Map<String,Object> safeEnvelope = new LinkedHashMap<>(envelope);
+          Map<String,Object> safeData = new LinkedHashMap<>(data);
+          if (restricted && safeData.get("text") instanceof String text) safeData.put("text",PiiMasker.mask(text));
+          safeEnvelope.put("payload",safeData);
+          if (Set.of("CHAT","MESSAGE_VISIBILITY_CHANGED","MESSAGE_RESTORED","LIVE_ENDED").contains(event))
+            adminChats.broadcast(id,s->true,event,safeEnvelope,event.equals("LIVE_ENDED"));
+          adminEvents.broadcast(id,s->true,event,safeEnvelope);
           // 기존 채널 SSE(0.6 형태) 변환은 마지막에 한다. 변환이 실패해도 방송·관제 스트림 전달은 끝나 있다
           if(!event.equals("CHAT"))legacyEvents.integrated(live(id).channelId(),author,restricted,event,data);
         });
@@ -503,14 +555,19 @@ public class LiveService implements LivePlatformPort {
   void logout(org.springframework.security.web.session.HttpSessionDestroyedEvent e) {
     chats.closeSession(e.getId());
     events.closeSession(e.getId());
+    adminChats.closeSession(e.getId());adminEvents.closeSession(e.getId());
   }
 
   @org.springframework.context.event.EventListener
-  void reauthenticated(com.lifeguards.liveguard.common.security.SessionReauthenticatedEvent event) { chats.closeSession(event.previousSessionId()); events.closeSession(event.previousSessionId()); }
+  void reauthenticated(com.lifeguards.liveguard.common.security.SessionReauthenticatedEvent event) {
+    chats.closeSession(event.previousSessionId()); events.closeSession(event.previousSessionId());
+    adminChats.closeSession(event.previousSessionId());adminEvents.closeSession(event.previousSessionId());
+  }
 
   @jakarta.annotation.PreDestroy
   void shutdown() {
     chats.shutdown();
     events.shutdown();
+    adminChats.shutdown();adminEvents.shutdown();
   }
 }

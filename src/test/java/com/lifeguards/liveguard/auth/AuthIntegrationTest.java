@@ -112,6 +112,9 @@ class AuthIntegrationTest {
 		mockMvc.perform(login("admin", PASSWORD))
 				.andExpect(status().isOk())
 				.andExpect(jsonPath("$.data.role").value("PLATFORM_ADMIN"))
+				.andExpect(jsonPath("$.data.capabilities[0]").value("MONITOR"))
+				.andExpect(jsonPath("$.data.capabilities[1]").value("REVOKE"))
+				.andExpect(jsonPath("$.data.capabilities.length()").value(2))
 				.andExpect(jsonPath("$.data.channelIds.length()").value(0));
 	}
 

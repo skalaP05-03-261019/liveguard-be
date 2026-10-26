@@ -37,6 +37,15 @@
 | ActionStatus | PENDING, RUNNING, SUCCEEDED, FAILED | 미확인 결과는 observation과 구분 |
 | Observation | CONFIRMED, UNKNOWN | UNKNOWN일 때 applied=null |
 
+### 관리자 관제 계약 (#88)
+
+- 로그인과 `GET /api/auth/me`의 `Me.capabilities`: PLATFORM_ADMIN은 `[MONITOR, REVOKE]`, 그 외는 `[]`. DECIDE·RAW_TEXT는 예약 값이며 현재 부여하거나 설정으로 활성화할 수 없다. 채널 담당 운영자의 기존 권한은 channelIds와 채널 역할로 유지하며 빈 capabilities가 그 권한을 제거하는 뜻은 아니다.
+- `Me.channelIds`는 실제 소속만 반환한다. 관리자 채널 탐색은 새 `GET /api/channels`를 사용한다. `{channelId, name, live}` 배열이며, 관리자는 전체·그 외는 소속만 조회한다. live는 진행 중인 기존 Live DTO 또는 null이다.
+- MONITOR는 진행 중 방송 조회, liveId 기반 메시지 이력·채팅 SSE·관제 SSE, 사건 목록·상세, CONTEXT/KICK 검토 목록에 적용한다. 이력·SSE의 비공개 본문은 POLICY §4 기준으로 마스킹한다.
+- REVOKE는 기존 `POST /api/findings/{findingId}/revoke`에 적용한다. 사유·expectedCaseVersion·clientRequestId 및 감사 기록은 기존 계약을 따른다.
+- 관리자는 채팅 전송·방송 시작/종료·문맥/강퇴 결정이 403이다. `/internal/**`의 서비스 토큰 인증은 변하지 않는다.
+- 관제 SSE는 기존 TOOL_START·TOOL_END·TASK_FAILED 등을 실시간 전달할 뿐이다. 영속 처리 로그 조회, 모델 내부 추론, 관리자 통계 API는 추가하지 않는다.
+
 ## 3. 저장 객체
 
 | 객체 | 핵심 필드 | 불변식 |

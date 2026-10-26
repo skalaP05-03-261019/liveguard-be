@@ -36,6 +36,16 @@ DB 데이터를 비우려면 `docker compose down -v`를 실행합니다.
 | `moderator` | MODERATOR | 라이브 채널 A, B (운영자) |
 | `admin` | PLATFORM_ADMIN | 없음 |
 
+### 관리자 관제
+
+`admin`은 채널 가입 없이 전 방송의 이력·사건·검토와 liveId 기반 채팅/관제 SSE를 조회하고, 기존 오판 취소 API를 호출할 수 있습니다. 로그인·`/api/auth/me` 응답에 `capabilities: ["MONITOR", "REVOKE"]`를 반환합니다. 다른 계정은 빈 배열이며 기존 채널 역할 권한은 그대로입니다.
+
+- 채널 탐색: `GET /api/channels` → `{data: [{channelId, name, live}], traceId}`. 관리자는 전체, 그 외는 소속 채널만, 진행 중 방송이 없으면 `live: null`입니다. `Me.channelIds`는 실제 소속만 담습니다.
+- 방송 관제: `GET /api/channels/{channelId}/lives/current`, `/api/lives/{liveId}/messages`, `/api/lives/{liveId}/events`, `/api/guard/events?liveId=...`, `/api/cases?liveId=...`, `/api/cases/{caseId}`, `/api/reviews?liveId=...&kind=CONTEXT|KICK`.
+- 오판 취소: `POST /api/findings/{findingId}/revoke`의 기존 요청·버전 검증·감사 기록·멱등성을 유지합니다.
+- HELD·HIDDEN 이력/SSE는 개인정보를 마스킹합니다. 사건/검토는 기존 마스킹 증거를 사용합니다. DECIDE·RAW_TEXT, 채팅 전송, 방송 시작/종료는 허용하지 않습니다. 관리자에게 채널 운영자 소속이 있어도 같습니다.
+- 관리자는 deprecated 채널 이력/SSE 대신 위 liveId 경로를 사용해야 합니다. FE도 MODERATOR 전용 분기 대신 capabilities에 맞춰 조회·SSE 연결을 해야 합니다. 새 관리자 통계 API나 영속 Agent 처리 로그 API는 포함하지 않습니다.
+
 FE 연동: FE는 Vite 개발 서버 프록시(`/api` → `http://localhost:8080`)로 같은 출처에서 붙으므로 CORS는 설정하지 않습니다. 로그인 전에 `GET /api/auth/me`(401)로 `XSRF-TOKEN` 쿠키를 받고, 변경 요청에는 `X-XSRF-TOKEN` 헤더를 보냅니다.
 
 테스트(`./gradlew test`)는 Testcontainers가 `pgvector/pgvector:pg16` 컨테이너를 직접 띄우므로

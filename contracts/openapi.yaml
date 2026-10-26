@@ -64,6 +64,42 @@ security:
   - sessionCookie: []
 
 paths:
+  /api/channels:
+    get:
+      tags: [Lives]
+      operationId: listChannels
+      summary: 조회 가능한 채널과 진행 중 방송
+      description: |
+        PLATFORM_ADMIN(MONITOR)은 전 채널, 그 외는 소속 채널만 반환한다.
+        방송이 없으면 live=null이다. Me.channelIds는 기존 소속 채널 의미를 유지한다.
+      x-owner: B1
+      responses:
+        '200':
+          description: 채널 목록
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, traceId]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      required: [channelId, name, live]
+                      properties:
+                        channelId:
+                          $ref: '#/components/schemas/Uuid'
+                        name:
+                          type: string
+                        live:
+                          oneOf:
+                            - $ref: '#/components/schemas/Live'
+                            - type: 'null'
+                  traceId:
+                    $ref: '#/components/schemas/Uuid'
+        '401':
+          $ref: '#/components/responses/Error'
   /api/auth/login:
     post:
       tags: [Auth]
@@ -228,7 +264,7 @@ paths:
       tags: [Messages]
       operationId: listMessages
       summary: 채팅 이력 (이 방송)
-      description: 일반 시청자에게는 PUBLIC과 본인의 HELD·HIDDEN만, 담당 운영자에게는 전부 반환한다. 재접속 조회에도 같은 가시성 인가를 적용한다.
+      description: 일반 시청자에게는 PUBLIC과 본인의 HELD·HIDDEN만, 담당 운영자에게는 전부 반환한다. PLATFORM_ADMIN(MONITOR)은 채널 소속 없이 전부 조회하되 HELD·HIDDEN은 PiiMasker로 마스킹한다. 재접속 조회에도 같은 가시성 인가를 적용한다.
       x-owner: B1
       parameters:
         - name: cursor
@@ -328,7 +364,8 @@ paths:
       description: |
         FE 호환용(A-18). `GET /api/lives/{liveId}/events`(SseEnvelope)로 대체 예정이며, 그 전까지 0.6 형태를 유지한다.
         envelope 없이 data가 payload이고, 이벤트는 CHAT(ChatEvent), MESSAGE_VISIBILITY_CHANGED(복원 시 text·authorAlias·sentAt 포함),
-        USER_KICKED(대상 본인)다. HELD·HIDDEN 메시지의 CHAT은 작성자·담당 운영자에게만 보낸다. 15초 heartbeat.
+        USER_KICKED(대상 본인)다. HELD·HIDDEN 메시지 원문의 CHAT은 작성자·담당 운영자에게만 보낸다.
+        PLATFORM_ADMIN(MONITOR)은 채널 소속 없이 구독하며 비공개 본문은 PiiMasker로 마스킹한다. 15초 heartbeat.
       x-owner: B1
       responses:
         '200':
@@ -374,8 +411,10 @@ paths:
     get:
       tags: [Streams]
       operationId: subscribeGuard
-      summary: 관제 SSE (담당 운영자)
+      summary: 관제 SSE (담당 운영자 또는 관리자 MONITOR)
       description: |
+        PLATFORM_ADMIN은 채널 소속 없이 liveId 경로로 구독한다. 비공개 채팅 본문은 PiiMasker로 마스킹한다.
+        deprecated channelId 구독은 관리자가 사용할 수 없다. 과거 이벤트 재생·영속 로그 조회는 제공하지 않는다.
         모든 이벤트의 data는 SseEnvelope이고, x-sse-events는 그 payload schema다.
         TOOL_START·TOOL_END는 Agent 진행 이벤트(평가 항목 "진행 이벤트")로, 원문 인자는 넣지 않는다.
         CONTEXT_REVIEW_REQUIRED와 KICK_REVIEW_REQUIRED는 화면에서 따로 보여 준다.
@@ -409,10 +448,11 @@ paths:
     get:
       tags: [Cases]
       operationId: listCases
-      summary: 사건 목록 (담당 운영자)
+      summary: 사건 목록 (담당 운영자 또는 관리자 MONITOR)
       description: |
         항목은 사건 상세(CaseDetail)와 같다. 운영 화면이 목록에서 대상 메시지·확정 위반·누적 수를 바로 그리므로
-        요약(CaseSummary)으로 줄이지 않는다. 담당 운영자만 호출하므로 HELD·HIDDEN 원문을 포함할 수 있다.
+        요약(CaseSummary)으로 줄이지 않는다. 증거 본문은 기존 PiiMasker 마스킹 snapshot이다.
+        PLATFORM_ADMIN(MONITOR)은 채널 소속 없이 조회한다.
         최신 사건이 먼저다(createdAt 내림차순).
       x-owner: B2
       parameters:
@@ -448,6 +488,7 @@ paths:
       tags: [Cases]
       operationId: getCase
       summary: 사건 상세 (메시지, 판정, 근거, 정책 원문, 강퇴 검토)
+      description: 담당 운영자 또는 PLATFORM_ADMIN(MONITOR)이 조회한다. 증거 본문은 기존 마스킹 snapshot이며 내부 raw text API를 개방하지 않는다.
       x-owner: B2
       responses:
         '200':
@@ -468,8 +509,9 @@ paths:
     get:
       tags: [Reviews]
       operationId: listReviews
-      summary: 검토 목록 (담당 운영자)
+      summary: 검토 목록 (담당 운영자 또는 관리자 MONITOR)
       description: |
+        PLATFORM_ADMIN(MONITOR)은 채널 소속 없이 조회하되 결정 권한은 없다.
         kind=CONTEXT는 문맥 확정 검토, kind=KICK은 강퇴 승인 검토. 화면에서 둘을 따로 보여 준다.
         AI 정상 제안이어도 CONTEXT 검토는 결정 전까지 PENDING이다. threadId는 브라우저에 보내지 않는다(A-6).
       x-owner: B2
@@ -1106,7 +1148,7 @@ paths:
 
   /internal/reviews/{reviewId}/decisions/{decisionId}: {"get": {"tags": ["Internal"], "operationId": "internalReadStoredDecision", "security": [{"serviceToken": []}], "parameters": [{"name": "reviewId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/Uuid"}}, {"name": "decisionId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/Uuid"}}], "responses": {"200": {"description": "Success", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/InternalDecisionResponse"}}}}, "403": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}}}}
   /internal/reviews/{reviewId}/apply: {"post": {"tags": ["Internal"], "operationId": "internalApplyStoredContextDecision", "description": "Idempotent by stored final review/decision. Validates case/live/snapshot/evidence/policy/task/thread and actor. DEFER cannot apply.", "security": [{"serviceToken": []}], "parameters": [{"name": "reviewId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/Uuid"}}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/InternalApplyRequest"}}}}, "responses": {"200": {"description": "Success", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/InternalApplyResponse"}}}}, "403": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}, "422": {"$ref": "#/components/responses/Error"}}}}
-  /api/findings/{findingId}/revoke: {"post": {"tags": ["Reviews"], "operationId": "revokeConfirmedFinding", "description": "담당 MODERATOR의 오판 취소. 기록·소진 이력은 보존하고 자기 hold 원인과 남은 유형별 TIMEOUT 및 강퇴 기준을 재검증한다. 다른 hold 원인이 있으면 공개하지 않는다.", "parameters": [{"name": "findingId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/Uuid"}}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RevokeFindingRequest"}}}}, "responses": {"200": {"description": "Success", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RevokeFindingResponse"}}}}, "403": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}}}}
+  /api/findings/{findingId}/revoke: {"post": {"tags": ["Reviews"], "operationId": "revokeConfirmedFinding", "description": "담당 MODERATOR 또는 PLATFORM_ADMIN(REVOKE)의 오판 취소. 관리자는 채널 소속 없이 허용하며 기존 사유·버전·멱등성·결정자 감사 기록을 유지한다. 기록·소진 이력은 보존하고 자기 hold 원인과 남은 유형별 TIMEOUT 및 강퇴 기준을 재검증한다. 다른 hold 원인이 있으면 공개하지 않는다.", "parameters": [{"name": "findingId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/Uuid"}}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RevokeFindingRequest"}}}}, "responses": {"200": {"description": "Success", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RevokeFindingResponse"}}}}, "403": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}}}}
 
 components:
   securitySchemes:
@@ -1214,6 +1256,12 @@ components:
     Role:
       type: string
       enum: [VIEWER, MODERATOR, PLATFORM_ADMIN]
+    Capability:
+      type: string
+      description: |
+        관리자 기능 표시용. 현재 PLATFORM_ADMIN은 MONITOR·REVOKE만, 그 외는 빈 배열이다.
+        DECIDE·RAW_TEXT는 예약된 값이며 부여하지 않는다. 설정으로 권한 확대할 수 없다.
+      enum: [MONITOR, REVOKE, DECIDE, RAW_TEXT]
     Visibility:
       type: string
       enum: [PUBLIC, HELD, HIDDEN]
@@ -1373,8 +1421,13 @@ components:
           format: password
     Me:
       type: object
-      required: [userId, nickname, role, channelIds]
+      required: [userId, nickname, role, channelIds, capabilities]
       properties:
+        capabilities:
+          type: array
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/Capability'
         userId:
           $ref: '#/components/schemas/Uuid'
         nickname:

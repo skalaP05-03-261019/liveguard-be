@@ -50,6 +50,8 @@ class MessageService {
 	/** The deprecated channel history still includes pre-live messages without inventing broadcasts. */
 	@Transactional(readOnly=true)
 	MessagePage historyOfChannel(UUID channelId, AuthenticatedUser viewer, String cursor, int limit) {
+		if(moderation.isAdmin(viewer.userId()))
+			throw new ApiException(ErrorCode.FORBIDDEN,"Administrators must use liveId history");
 		if(limit<1||limit>100)throw new InvalidContractException("limit must be between 1 and 100");
 		MessageCursor after=cursor==null?null:MessageCursor.decode(cursor);
 		AuthorRole role=memberships.memberRole(channelId,viewer.userId())

@@ -36,6 +36,8 @@ class GuardEventController {
 		if(liveId!=null)return ResponseEntity.ok().header("Cache-Control","no-cache").header("X-Accel-Buffering","no")
 			.body(lives.subscribe(liveId,user,request.getSession().getId(),true));
 		if(channelId==null)throw new ApiException(ErrorCode.VALIDATION_FAILED,"liveId or channelId required");
+		if(lives.isAdmin(user.userId()))
+			throw new ApiException(ErrorCode.FORBIDDEN,"Administrators must use liveId streams");
 		boolean moderator = memberships.memberRole(channelId, user.userId())
 				.filter(role -> role == AuthorRole.MODERATOR)
 				.isPresent();
